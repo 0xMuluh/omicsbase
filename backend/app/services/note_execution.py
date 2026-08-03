@@ -169,7 +169,7 @@ def _evaluate_driver(
         "  paste(vapply(as.list(.note_parsed), function(e) {\n"
         "    if (is.call(e) && identical(e[[1L]], as.name('print')) && length(e) >= 2L) "
         "e[[1L]] <- as.name('.note_display')\n"
-        "    deparse(e, width.cutoff = 500L)\n"
+        "    paste(deparse(e, width.cutoff = 500L), collapse = '\\n')\n"
         "  }, character(1)), collapse = '\\n')\n"
         "}, error = function(e) e)\n"
         "tryCatch({\n"

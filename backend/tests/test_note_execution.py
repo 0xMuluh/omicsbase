@@ -284,6 +284,38 @@ async def test_r_execution_uses_fixed_script_and_bounded_preview(tmp_path, monke
     assert artifact["sha256"] == hashlib.sha256(b"result\n").hexdigest()
 
 
+def test_driver_rewrites_multiline_cells_without_vapply_length_error():
+    """The print->.note_display rewrite must collapse deparse output.
+
+    deparse() returns a character vector of length > 1 for multi-line
+    expressions, so feeding it to vapply(..., character(1)) fails with
+    "values must be length 1, but FUN(X[[1]]) result is length N" and
+    the harness dies before the cell code ever runs.
+    """
+    from app.services.note_execution import _evaluate_driver
+
+    source = (
+        "# Rename non-top phyla as \"Other\"\n"
+        "phylum_renamed <- lapply(x, function(v) {\n"
+        "    if (v %in% top) { v } else { \"Other\" }\n"
+        "})\n"
+        "print(phylum_renamed)\n"
+    )
+    driver = _evaluate_driver(
+        source=source,
+        run_dir_rel=".omicsbase/note-executions/test",
+        shared_workspace=False,
+        quiet_package_startup=True,
+        capture_plots=True,
+    )
+    rewrite = driver.split(".note_source <- tryCatch({", 1)[1].split(
+        "}, error = function(e) e)",
+        1,
+    )[0]
+    assert "paste(deparse(e, width.cutoff = 500L), collapse = '\\n')" in rewrite
+    assert "character(1)), collapse = '\\n')" in rewrite
+
+
 def test_task_persists_artifact_and_provenance(monkeypatch, tmp_path):
     engine, testing_session, project_id = _setup_db()
     client = TestClient(app)
