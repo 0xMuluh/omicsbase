@@ -138,6 +138,25 @@ export interface Job {
   updated_at: string;
 }
 
+export interface ClarificationQuestion {
+  id: string;
+  prompt: string;
+  options: string[];
+  multiple: boolean;
+  allow_custom: boolean;
+  depends_on?: string | null;
+}
+
+export interface ClarificationRequest {
+  message: string;
+  questions: ClarificationQuestion[];
+}
+
+export interface ClarificationAnswer {
+  id: string;
+  values: string[];
+}
+
 
 
 export interface ChunkRunResult {
@@ -410,6 +429,13 @@ export const api = {
   // Planning & Generation
   startPlanning: (projectId: string) =>
     request<Job>(`/projects/${projectId}/plan`, { method: "POST" }),
+  getClarifications: (projectId: string) =>
+    request<ClarificationRequest | null>(`/projects/${projectId}/clarifications`),
+  submitClarifications: (projectId: string, answers: ClarificationAnswer[]) =>
+    request<Job>(`/projects/${projectId}/clarifications`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    }),
   approvePlan: (projectId: string, plan: AnalysisPlan) =>
     request<{ status: string }>(`/projects/${projectId}/approve`, {
       method: "POST",

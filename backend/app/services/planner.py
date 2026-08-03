@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from app.config import settings
-from app.schemas.schemas import AnalysisPlan
+from app.schemas.schemas import AnalysisPlan, ClarificationAnswer, ClarificationQuestion, ClarificationRequest
 from app.services.file_inspector import format_file_summary_for_llm
 from app.services.llm import call_llm, load_system_prompt
 from app.services.recipe_registry import (
@@ -14,10 +14,29 @@ from app.services.recipe_registry import (
     load_recipe_registry,
     resolve_recipe,
 )
-from app.services.registry import format_registry_for_llm
+from app.services.registry import format_registry_for_llm, get_ensemble_methods
 from app.services.study_manifest import format_manifest_for_llm
 
 logger = logging.getLogger(__name__)
+
+
+def _answers_by_id(clarifications: list[ClarificationAnswer] | None) -> dict[str, list[str]]:
+    return {answer.id: answer.values for answer in (clarifications or [])}
+
+
+def _grouping_from_answers(
+    study_manifest: dict | None,
+    answers: dict[str, list[str]],
+) -> dict | None:
+    """Resolve the grouping variable from manifest candidates or clarified answers."""
+    candidates = (study_manifest or {}).get("grouping_candidates", [])
+    chosen = (answers.get("grouping_variable") or [None])[0]
+    if chosen:
+        return next(
+            (c for c in candidates if str(c.get("column")) == chosen),
+            {"column": chosen, "levels": []},
+        )
+    return candidates[0] if candidates else {}
 
 
 async def generate_plan(
@@ -26,8 +45,14 @@ async def generate_plan(
     notes: str | None = None,
     custom_plan_text: str | None = None,
     study_manifest: dict | None = None,
-) -> AnalysisPlan:
-    """Generate an analysis plan from user question, uploaded files, and optional custom plan."""
+    clarifications: list[ClarificationAnswer] | None = None,
+) -> AnalysisPlan | ClarificationRequest:
+    """Generate an analysis plan from user question, uploaded files, and optional custom plan.
+
+    When the study design cannot be inferred, returns a ClarificationRequest
+    instead of guessing; answers are passed back as ``clarifications`` on re-run.
+    """
+    answers = _answers_by_id(clarifications)
 
     provider = settings.llm_provider.lower()
     provider_has_key = {
@@ -50,6 +75,7 @@ async def generate_plan(
             notes,
             custom_plan_text,
             study_manifest,
+            answers,
         )
 
     try:
@@ -71,6 +97,20 @@ You MUST treat this custom plan as the primary authority for the analysis workfl
 ```
 """
 
+        clarifications_section = ""
+        if answers:
+            formatted = "\n".join(
+                f"- {answer_id}: {', '.join(values)}"
+                for answer_id, values in answers.items()
+                if values
+            )
+            if formatted:
+                clarifications_section = f"""## Answered Clarifications (final — do NOT re-ask)
+
+The user has already answered these questions. Treat them as authoritative:
+{formatted}
+"""
+
         user_prompt = f"""## Task
 
 You are generating an executable downstream analysis plan. The user has uploaded study files and described their research question. Your job is to:
@@ -89,6 +129,8 @@ You are generating an executable downstream analysis plan. The user has uploaded
 {f"## Additional Notes{chr(10)}{notes}" if notes else ""}
 
 {user_plan_section}
+
+{clarifications_section}
 
 ## Uploaded Data Files
 
@@ -110,7 +152,9 @@ You are generating an executable downstream analysis plan. The user has uploaded
 
 ## Response Format
 
-Return ONLY valid JSON matching this structure (no markdown, no explanation outside the JSON):
+Return ONLY valid JSON (no markdown, no explanation outside the JSON).
+
+If the study design CAN be determined, return an analysis plan matching this structure:
 
 {{
   "project_name": "string — inferred from question or custom plan",
@@ -138,6 +182,28 @@ Return ONLY valid JSON matching this structure (no markdown, no explanation outs
   "recipe_registry_version": "{load_recipe_registry().get('version')}",
   "notes": "note whether a custom user plan was attached and incorporated"
 }}
+
+If the study design CANNOT be determined (e.g. which column defines the comparison groups, what the group levels are, or whether the comparison is two-group or longitudinal), do NOT guess. Return instead:
+
+{{
+  "needs_clarification": {{
+    "message": "one short sentence explaining what is missing",
+    "questions": [
+      {{
+        "id": "unique_slug",
+        "prompt": "a concrete question with options",
+        "options": ["option 1", "option 2"],
+        "multiple": false,
+        "allow_custom": true
+      }}
+    ]
+  }}
+}}
+
+Rules for needs_clarification:
+- Ask only what blocks a decision; never re-ask questions already answered above.
+- Ask at most 2-4 questions; options must be concrete (real column names from the manifest, real method names).
+- Never use needs_clarification when the design is determinable — a usable plan is always preferred.
 """
 
         response = await call_llm(
@@ -155,6 +221,20 @@ Return ONLY valid JSON matching this structure (no markdown, no explanation outs
             clean = clean.strip()
 
         plan_data = json.loads(clean)
+
+        if isinstance(plan_data, dict) and plan_data.get("needs_clarification"):
+            request = _parse_clarification_request(plan_data["needs_clarification"])
+            if request and request.questions:
+                return request
+            return _build_default_plan(
+                question,
+                file_summaries,
+                notes,
+                custom_plan_text,
+                study_manifest,
+                answers,
+            )
+
         return _bind_recipes(AnalysisPlan(**plan_data))
 
     except Exception as e:
@@ -165,7 +245,105 @@ Return ONLY valid JSON matching this structure (no markdown, no explanation outs
             notes,
             custom_plan_text,
             study_manifest,
+            answers,
         )
+
+
+def _parse_clarification_request(data: dict) -> ClarificationRequest | None:
+    """Build a validated ClarificationRequest from a parsed LLM needs_clarification payload."""
+    if not isinstance(data, dict):
+        return None
+    raw_questions = data.get("questions") or []
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return None
+
+    questions: list[ClarificationQuestion] = []
+    for raw in raw_questions[:4]:
+        if not isinstance(raw, dict) or not raw.get("id") or not raw.get("prompt"):
+            continue
+        options = [str(o) for o in (raw.get("options") or [])][:8]
+        questions.append(
+            ClarificationQuestion(
+                id=str(raw["id"])[:64],
+                prompt=str(raw["prompt"])[:500],
+                options=options,
+                multiple=bool(raw.get("multiple")),
+                allow_custom=bool(raw.get("allow_custom", True)),
+            )
+        )
+    if not questions:
+        return None
+    return ClarificationRequest(
+        message=str(data.get("message") or "A couple of quick decisions before I can build the plan.")[:500],
+        questions=questions,
+    )
+
+
+def _clarification_request_for_fallback(
+    study_manifest: dict | None,
+) -> ClarificationRequest:
+    """Fallback planner's questions when the grouping design is unresolved."""
+    candidates = (study_manifest or {}).get("grouping_candidates", [])
+    grouping_options = [
+        f"{candidate.get('column')} ({', '.join(candidate.get('levels') or [])})"
+        for candidate in candidates
+    ]
+    questions: list[ClarificationQuestion] = [
+        ClarificationQuestion(
+            id="grouping_variable",
+            prompt="Which column in the metadata defines the groups you want to compare?",
+            options=grouping_options,
+            multiple=False,
+            allow_custom=True,
+        )
+    ]
+    if candidates:
+        questions.append(
+            ClarificationQuestion(
+                id="differential_abundance_method",
+                prompt="How should differential abundance be handled?",
+                options=[
+                    "Run all methods as an ensemble (recommended)",
+                    "ANCOM-BC2 only",
+                    "ALDEx2 only",
+                    "DESeq2 only",
+                    "LimROTS only",
+                ],
+                multiple=False,
+                allow_custom=False,
+            )
+        )
+    return ClarificationRequest(
+        message="A couple of quick decisions before I can build the analysis plan.",
+        questions=questions,
+    )
+
+
+def _apply_da_method_answer(
+    plan: AnalysisPlan,
+    da_answer: list[str] | None,
+) -> AnalysisPlan:
+    """Fill the differential abundance ensemble, narrowed to one method when chosen."""
+    default_ensemble = get_ensemble_methods("differential_abundance") or []
+    for step in plan.workflow:
+        if step.id == "differential_abundance" and not step.ensemble_methods:
+            step.ensemble_methods = default_ensemble
+    if not da_answer:
+        return plan
+    choice = (da_answer or [""])[0]
+    if choice.lower().startswith("run all") or not choice:
+        return plan
+    wanted = next(
+        (method for method in default_ensemble
+         if choice.lower().startswith(method["name"].lower())),
+        None,
+    )
+    if not wanted:
+        return plan
+    for step in plan.workflow:
+        if step.id == "differential_abundance":
+            step.ensemble_methods = [wanted]
+    return plan
 
 
 def _build_default_plan(
@@ -174,10 +352,12 @@ def _build_default_plan(
     notes: str | None = None,
     custom_plan_text: str | None = None,
     study_manifest: dict | None = None,
-) -> AnalysisPlan:
+    answers: dict[str, list[str]] | None = None,
+) -> AnalysisPlan | ClarificationRequest:
     """Generate a high-quality scientific rule-based analysis plan fallback."""
     from app.schemas.schemas import WorkflowStep
 
+    answers = answers or {}
     detected = []
     if study_manifest:
         detected = [
@@ -199,9 +379,11 @@ def _build_default_plan(
                 "details": f"{s.get('format', 'tabular')} dataset with {s.get('dimensions', {})}",
             })
 
-    grouping_candidates = (study_manifest or {}).get("grouping_candidates", [])
-    grouping = grouping_candidates[0] if grouping_candidates else {}
+    grouping = _grouping_from_answers(study_manifest, answers)
     group_levels = grouping.get("levels", [])
+    if not group_levels and not answers.get("grouping_variable"):
+        return _clarification_request_for_fallback(study_manifest)
+
     study_type = (
         "two_group_comparison"
         if len(group_levels) == 2
@@ -296,23 +478,26 @@ def _build_default_plan(
         ]
         default_question = "Comparative analysis of microbiome composition and diversity."
 
-    return _bind_recipes(AnalysisPlan(
-        project_name="Omics Comparative Study",
-        domain=domain,
-        study_type=study_type,
-        question=question or default_question,
-        detected_inputs=detected,
-        grouping_variable=grouping.get("column"),
-        group_levels=group_levels,
-        workflow=workflow,
-        estimated_runtime_minutes=3,
-        recipe_registry_version=load_recipe_registry().get("version"),
-        notes=(
-            "Generated using the deterministic fallback planner. "
-            "Review the detected grouping variable before building."
-            + (" A user-provided plan was attached and should be reviewed manually." if custom_plan_text else "")
-        ),
-    ))
+    return _apply_da_method_answer(
+        _bind_recipes(AnalysisPlan(
+            project_name="Omics Comparative Study",
+            domain=domain,
+            study_type=study_type,
+            question=question or default_question,
+            detected_inputs=detected,
+            grouping_variable=grouping.get("column"),
+            group_levels=group_levels,
+            workflow=workflow,
+            estimated_runtime_minutes=3,
+            recipe_registry_version=load_recipe_registry().get("version"),
+            notes=(
+                "Generated using the deterministic fallback planner. "
+                "Review the detected grouping variable before building."
+                + (" A user-provided plan was attached and should be reviewed manually." if custom_plan_text else "")
+            ),
+        )),
+        answers.get("differential_abundance_method"),
+    )
 
 
 def _bind_recipes(plan: AnalysisPlan) -> AnalysisPlan:

@@ -41,6 +41,7 @@ import {
   FileCode,
   FileText,
   Globe,
+  HelpCircle,
   History,
   Image,
   Loader2,
@@ -56,6 +57,7 @@ import {
   Table2,
   Unlock,
   X,
+  ArrowRight,
 } from "lucide-react";
 
 const stateCopy: Record<string, string> = {
@@ -1198,6 +1200,24 @@ export default function WorkspacePage() {
                     Queued guidance: {project.agent_memory.pending_guidance.map((item: { content: string }) => item.content).join("; ")}
                   </p>
                 ) : null}
+              </div>
+            ) : null}
+
+            {project?.status === "needs_clarification" ? (
+              <div className="flex items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                <HelpCircle className="h-4 w-4 shrink-0 text-amber-400" />
+                <p className="flex-1 text-xs leading-5 text-amber-700 dark:text-amber-200/90">
+                  The planner needs a couple of decisions before it can build the analysis.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-200"
+                  onClick={() => router.push(`/projects/${projectId}/plan`)}
+                >
+                  <ArrowRight className="h-3.5 w-3.5" />
+                  Answer
+                </Button>
               </div>
             ) : null}
 

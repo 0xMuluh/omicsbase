@@ -49,7 +49,8 @@ except ImportError:
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "created": {"planning", "planned", "failed"},
-    "planning": {"planned", "needs_user", "failed"},
+    "planning": {"planned", "needs_user", "needs_clarification", "failed"},
+    "needs_clarification": {"planning", "failed"},
     "planned": {"approved", "planning", "failed"},
     "approved": {"generating", "failed"},
     "generating": {"rendering", "repairing", "failed"},
@@ -222,6 +223,15 @@ def run_planning(*args, **kwargs):
         custom_plan_text = "\n\n".join(part for part in custom_plan_parts if part.strip()) or None
 
         # Run the async planner in a sync context
+        from app.schemas.schemas import ClarificationAnswer, ClarificationRequest
+
+        stored_clarifications = (project.agent_memory or {}).get("clarifications") or []
+        clarifications = [
+            ClarificationAnswer(**item)
+            for item in stored_clarifications
+            if isinstance(item, dict)
+        ]
+
         loop = asyncio.new_event_loop()
         try:
             plan = loop.run_until_complete(generate_plan(
@@ -230,9 +240,22 @@ def run_planning(*args, **kwargs):
                 notes=project.notes,
                 custom_plan_text=custom_plan_text,
                 study_manifest=project.study_manifest,
+                clarifications=clarifications,
             ))
         finally:
             loop.close()
+
+        if isinstance(plan, ClarificationRequest):
+            agent_memory = dict(project.agent_memory or {})
+            agent_memory["pending_clarifications"] = plan.model_dump()
+            project.agent_memory = agent_memory
+            project.status = "needs_clarification"
+            project.analysis_plan = None
+            db.commit()
+            set_agent_state(db, project, "needs_user", plan.message)
+            record_agent_action(db, project, "plan", "clarification_needed", plan.message, job_id=job_id)
+            _update_job(db, job_id, status="completed", progress=[{"step": "planning", "status": "clarification_needed"}])
+            return {"status": "clarification_needed", "clarification": plan.model_dump()}
 
         # Save plan to project
         project.analysis_plan = plan.model_dump()

@@ -9,7 +9,13 @@ from app.auth import get_current_tenant, get_project_for_tenant
 from app.config import settings
 from app.database import get_db
 from app.models.project import Job, Project, UploadedFile
-from app.schemas.schemas import EditRequest, JobOut, PlanApproval
+from app.schemas.schemas import (
+    ClarificationRequest,
+    ClarificationsSubmit,
+    EditRequest,
+    JobOut,
+    PlanApproval,
+)
 from app.services.assistant import is_edit_prompt
 
 router = APIRouter()
@@ -84,6 +90,62 @@ def start_planning(
     from app.services.agent_runtime import record_agent_action, set_agent_state
     set_agent_state(db, project, "planning", "Planning analysis workflow")
     record_agent_action(db, project, "plan", "started", "Planning analysis workflow", job_id=str(job.id))
+
+    from app.tasks.analysis import run_planning
+    _dispatch_task(run_planning, project, job, db, background_tasks)
+
+    return job
+
+
+@router.get("/{project_id}/clarifications", response_model=ClarificationRequest | None)
+def get_clarifications(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Return the planner's pending clarification questions, if any."""
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    pending = (project.agent_memory or {}).get("pending_clarifications")
+    if not pending:
+        return None
+    return ClarificationRequest(**pending)
+
+
+@router.post("/{project_id}/clarifications", response_model=JobOut, status_code=202)
+def submit_clarifications(
+    project_id: str,
+    data: ClarificationsSubmit,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Record the user's answers and re-run planning with them."""
+    project = get_project_for_tenant(db, project_id, tenant_id)
+
+    agent_memory = dict(project.agent_memory or {})
+    stored = {
+        item["id"]: item
+        for item in agent_memory.get("clarifications") or []
+        if isinstance(item, dict)
+    }
+    for answer in data.answers:
+        stored[answer.id] = answer.model_dump()
+    agent_memory["clarifications"] = list(stored.values())
+    agent_memory.pop("pending_clarifications", None)
+    project.agent_memory = agent_memory
+    project.status = "planning"
+    project.analysis_plan = None
+    db.commit()
+
+    job = Job(project_id=project_id, job_type="plan", status="pending")
+    db.add(job)
+    project.status = "planning"
+    db.commit()
+    db.refresh(job)
+
+    from app.services.agent_runtime import record_agent_action, set_agent_state
+    set_agent_state(db, project, "planning", "Re-planning with answered questions")
+    record_agent_action(db, project, "plan", "restarted", "Re-planning with answered questions", job_id=str(job.id))
 
     from app.tasks.analysis import run_planning
     _dispatch_task(run_planning, project, job, db, background_tasks)

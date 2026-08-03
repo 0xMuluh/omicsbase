@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { api, WorkflowStep } from "@/lib/api";
+import { api, ClarificationQuestion, WorkflowStep } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
   FileCheck,
   Beaker,
   Info,
+  HelpCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -148,6 +149,155 @@ function StepItem({
   );
 }
 
+function ClarificationPanel({ projectId }: { projectId: string }) {
+  const { data: clarification, isLoading } = useQuery({
+    queryKey: ["clarifications", projectId],
+    queryFn: () => api.getClarifications(projectId),
+  });
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [customText, setCustomText] = useState<Record<string, string>>({});
+
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      const payload = (clarification?.questions || [])
+        .filter((question) => (answers[question.id] ?? []).length > 0)
+        .map((question) => ({ id: question.id, values: answers[question.id] }));
+      await api.submitClarifications(projectId, payload);
+    },
+  });
+
+  const toggleValue = (question: ClarificationQuestion, option: string) => {
+    setAnswers((prev) => {
+      const current = prev[question.id] ?? [];
+      if (question.multiple) {
+        return {
+          ...prev,
+          [question.id]: current.includes(option)
+            ? current.filter((value) => value !== option)
+            : [...current, option],
+        };
+      }
+      return { ...prev, [question.id]: current[0] === option ? [] : [option] };
+    });
+  };
+
+  const setCustom = (question: ClarificationQuestion, value: string) => {
+    setCustomText((prev) => ({ ...prev, [question.id]: value }));
+    setAnswers((prev) => ({
+      ...prev,
+      [question.id]: value.trim() ? [value.trim()] : [],
+    }));
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!clarification?.questions?.length) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-20 text-center">
+        <p className="text-sm text-muted-foreground">
+          Waiting for the planner to continue...
+        </p>
+      </div>
+    );
+  }
+
+  const ready = clarification.questions.every(
+    (question) => (answers[question.id] ?? []).length > 0
+  );
+
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-12">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+        <div className="mb-8 flex items-start gap-3">
+          <HelpCircle className="mt-0.5 h-6 w-6 shrink-0 text-teal-400" />
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              A couple of quick decisions
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {clarification.message}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          {clarification.questions.map((question) => (
+            <Card key={question.id} className="border-border/50 bg-card/30">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium leading-6">
+                  {question.prompt}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {question.options.map((option) => {
+                  const selected = (answers[question.id] ?? []).includes(option);
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => toggleValue(question, option)}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-sm transition ${
+                        selected
+                          ? "border-teal-500 bg-teal-500/10 text-foreground"
+                          : "border-border/60 bg-background/40 text-foreground hover:bg-muted"
+                      }`}
+                    >
+                      <span
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded ${
+                          question.multiple ? "rounded-sm" : "rounded-full"
+                        } border ${
+                          selected ? "border-teal-500 bg-teal-500" : "border-border"
+                        }`}
+                      >
+                        {selected && <CheckCircle2 className="h-3 w-3 text-white" />}
+                      </span>
+                      <span className="text-foreground/90">{option}</span>
+                    </button>
+                  );
+                })}
+                {question.allow_custom ? (
+                  <input
+                    type="text"
+                    value={customText[question.id] ?? ""}
+                    onChange={(event) => setCustom(question, event.target.value)}
+                    placeholder="Or type another value..."
+                    className="mt-1 h-9 w-full rounded-md border border-border/60 bg-background px-3 text-sm text-foreground outline-none focus:border-teal-500/60"
+                  />
+                ) : null}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <Button
+          onClick={() => submitMutation.mutate()}
+          disabled={!ready || submitMutation.isPending}
+          className="mt-8 w-full gap-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 h-12 text-base shadow-lg shadow-teal-500/20"
+        >
+          {submitMutation.isPending ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : (
+            <Play className="h-5 w-5" />
+          )}
+          Continue
+        </Button>
+        {submitMutation.isError ? (
+          <p className="mt-3 text-center text-sm text-red-600 dark:text-red-300">
+            {(submitMutation.error as Error).message}
+          </p>
+        ) : null}
+      </motion.div>
+    </div>
+  );
+}
+
+
 export default function PlanningPage() {
   const params = useParams();
   const router = useRouter();
@@ -209,6 +359,10 @@ export default function PlanningPage() {
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
+  }
+
+  if (project?.status === "needs_clarification") {
+    return <ClarificationPanel projectId={projectId} />;
   }
 
   if (project?.status === "planning") {

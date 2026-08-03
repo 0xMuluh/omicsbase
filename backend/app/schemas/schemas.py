@@ -121,6 +121,33 @@ class PlanApproval(BaseModel):
     plan: AnalysisPlan
 
 
+class ClarificationQuestion(BaseModel):
+    """A single multi-option question the planner asks before it can plan."""
+    id: str
+    prompt: str
+    options: list[str] = Field(default_factory=list)
+    multiple: bool = False
+    allow_custom: bool = False
+    depends_on: str | None = None
+
+
+class ClarificationRequest(BaseModel):
+    """Planner output when the study design cannot be inferred."""
+    message: str
+    questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+class ClarificationAnswer(BaseModel):
+    """User's answer to one ClarificationQuestion."""
+    id: str
+    values: list[str] = Field(default_factory=list)
+
+
+class ClarificationsSubmit(BaseModel):
+    """Answers posted back to the planning flow."""
+    answers: list[ClarificationAnswer] = Field(default_factory=list)
+
+
 class GenerateRequest(BaseModel):
     """Request to generate the Quarto project from an approved plan."""
     project_id: uuid.UUID

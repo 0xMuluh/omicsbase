@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models.project import Job, Project
+from app.models.notes import NoteThread  # noqa: F401  (registers mapper for Project.note_threads)
 from app.tasks.analysis import (
     ALLOWED_TRANSITIONS,
     _update_job,
