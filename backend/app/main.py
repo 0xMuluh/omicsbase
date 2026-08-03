@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.chat import router as chat_router
 from app.api.files import router as files_router
 from app.api.inline_edit import router as inline_edit_router
 from app.api.projects_notes import note_agent_router, standalone_router as standalone_notes_router
@@ -99,7 +98,6 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(files_router)
-app.include_router(chat_router)
 app.include_router(inline_edit_router)
 app.include_router(standalone_notes_router)
 app.include_router(note_agent_router)

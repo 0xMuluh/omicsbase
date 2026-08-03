@@ -30,11 +30,6 @@ interface AttachedFile {
   role: string;
 }
 
-interface HomeTurn {
-  role: "user" | "assistant";
-  content: string;
-}
-
 function inferRole(file: File): string {
   const lower = file.name.toLowerCase();
   if (
@@ -81,23 +76,19 @@ async function launchStudy(options: {
   mode: LaunchMode;
   name?: string;
   question?: string;
-  existingProjectId?: string | null;
   onStep: (step: "uploading" | "planning") => void;
 }): Promise<string> {
   const hasDataFile = options.files.some((item) => item.role !== "analysis_plan");
   const { question, customPlanText } = splitPrompt(options.question || options.text);
   options.onStep("uploading");
 
-  let projectId = options.existingProjectId;
-  if (!projectId) {
-    const project = await api.createProject({
-      name: options.name || undefined,
-      question,
-      custom_plan_text: customPlanText,
-      auto_build: options.mode === "build",
-    });
-    projectId = project.id;
-  }
+  const project = await api.createProject({
+    name: options.name || undefined,
+    question,
+    custom_plan_text: customPlanText,
+    auto_build: options.mode === "build",
+  });
+  const projectId = project.id;
 
   const uploadFailures: string[] = [];
   for (const item of options.files) {
@@ -110,9 +101,7 @@ async function launchStudy(options: {
     }
   }
   if (uploadFailures.length) {
-    if (!options.existingProjectId) {
-      await api.deleteProject(projectId).catch(() => undefined);
-    }
+    await api.deleteProject(projectId).catch(() => undefined);
     throw new Error(`Uploads failed: ${uploadFailures.join("; ")}`);
   }
 
@@ -139,12 +128,7 @@ export function StartComposer({
   const [modeOpen, setModeOpen] = useState(false);
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const [step, setStep] = useState<"idle" | "chatting" | "uploading" | "planning">("idle");
-  const [turns, setTurns] = useState<HomeTurn[]>([]);
-  const [streaming, setStreaming] = useState("");
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
-  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const [step, setStep] = useState<"idle" | "uploading" | "planning">("idle");
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const next = Array.from(incoming).map((file) => ({
@@ -165,12 +149,6 @@ export function StartComposer({
   }, []);
 
   useEffect(() => {
-    const bottom = chatBottomRef.current;
-    if (!bottom) return;
-    bottom.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [turns, streaming]);
-
-  useEffect(() => {
     const node = textareaRef.current;
     if (!node) return;
     node.style.height = "0px";
@@ -180,7 +158,6 @@ export function StartComposer({
   const createMutation = useMutation({
     mutationFn: async () => {
       const text = prompt.trim();
-      const hasDataFile = files.some((item) => item.role !== "analysis_plan");
       if (!text && files.length === 0) {
         throw new Error("Ask a question, describe an analysis, or attach study files.");
       }
@@ -190,7 +167,6 @@ export function StartComposer({
         text: text || "Analyze the study.",
         files,
         mode,
-        existingProjectId: activeProjectId,
         onStep: setStep,
       });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -203,16 +179,13 @@ export function StartComposer({
     },
     onError: () => {
       setStep("idle");
-      setStreaming("");
     },
     onSettled: () => setStep("idle"),
   });
 
   const canSubmit = Boolean(prompt.trim() || files.length) && !createMutation.isPending;
   const statusLabel =
-    step === "chatting"
-      ? "Thinking..."
-      : step === "uploading"
+    step === "uploading"
         ? "Uploading study files..."
         : step === "planning"
           ? mode === "build"
@@ -230,27 +203,6 @@ export function StartComposer({
           <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
             Describe the study, attach data with +, choose Build or Plan, and let the agent take control.
           </p>
-        </div>
-      ) : null}
-
-      {(turns.length > 0 || streaming) ? (
-        <div ref={chatScrollRef} className="mb-4 max-h-[40vh] space-y-3 overflow-y-auto rounded-[24px] border border-border bg-[var(--composer-elevated)]/80 p-4 text-sm leading-6">
-          {turns.map((turn, index) => (
-            <div
-              key={`${turn.role}-${index}`}
-              className={`whitespace-pre-wrap ${
-                turn.role === "user"
-                  ? "ml-8 rounded-2xl bg-teal-500/15 px-3 py-2 text-foreground"
-                  : "mr-4 text-foreground/90"
-              }`}
-            >
-              {turn.content}
-            </div>
-          ))}
-          {streaming ? (
-            <div className="mr-4 whitespace-pre-wrap text-foreground/90">{streaming}</div>
-          ) : null}
-          <div ref={chatBottomRef} className="h-px" />
         </div>
       ) : null}
 
