@@ -1,0 +1,38 @@
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+backend/.env
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Backend runtime state
+backend/projects/
+backend/omicsbase.db
+*.sqlite
+*.sqlite3
+
+# Knowledge sync clones (materialised from git at sync time; bioc_books.yaml is tracked)
+backend/knowledge/repositories/
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/coverage/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+
+# Logs and OS files
+*.log
+.DS_Store
+
+# SQLite databases
+*.db

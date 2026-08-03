@@ -1,0 +1,156 @@
+---
+title: "Longitudinal metabolite models"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r}
+source("recipe_runtime.R")
+if (!requireNamespace("lmerTest", quietly = TRUE)) {
+  stop("Package 'lmerTest' is required for the longitudinal metabolomics recipe.")
+}
+analysis_data <- readRDS("../output/derived/analysis_data.rds")
+config <- analysis_data$config
+metadata <- analysis_data$metadata
+assay_matrix <- analysis_data$assay
+recipe_parameters <- config$analyses$recipe_parameters[["metabolomics.repeated_measures_mixed_model"]] %||% list()
+exposure <- config$variables$grouping
+subject_id <- config$identifiers$subject_id
+visit <- config$identifiers$visit
+covariates <- intersect(
+  unlist(config$variables$covariates %||% character(0), use.names = FALSE),
+  names(metadata)
+)
+min_n <- as.integer(recipe_parameters$min_complete_cases %||% 30)
+identifier_config <- list(exposure = exposure, subject_id = subject_id, visit = visit)
+missing_identifiers <- names(identifier_config)[
+  vapply(identifier_config, function(value) is.null(value) || !value %in% names(metadata), logical(1))
+]
+if (length(missing_identifiers)) {
+  stop("Longitudinal models require configured exposure, subject, and visit columns.")
+}
+```
+
+## Model specification
+
+Each standardized metabolite is modeled with exposure, visit, their interaction, configured covariates, and a participant-level random intercept. Every feature receives an explicit completed, skipped, or failed status.
+
+```{r}
+specification <- data.frame(
+  field = c("Exposure", "Visit", "Subject ID", "Covariates", "Minimum observations"),
+  value = c(
+    exposure,
+    visit,
+    subject_id,
+    if (length(covariates)) paste(covariates, collapse = ", ") else "None",
+    min_n
+  )
+)
+knitr::kable(specification)
+```
+
+## Mixed-model results
+
+```{r}
+fit_feature_lmm <- function(feature) {
+  model_data <- metadata
+  model_data$.outcome <- as.numeric(assay_matrix[feature, ])
+  required <- unique(c(".outcome", exposure, visit, subject_id, covariates))
+  complete <- stats::complete.cases(model_data[, required, drop = FALSE])
+  model_data <- model_data[complete, required, drop = FALSE]
+
+  if (nrow(model_data) < min_n) {
+    return(list(
+      result = NULL,
+      status = data.frame(feature = feature, status = "skipped", n = nrow(model_data), note = "too_few_complete_cases")
+    ))
+  }
+  if (length(unique(model_data[[subject_id]])) < 3 || !anyDuplicated(model_data[[subject_id]])) {
+    return(list(
+      result = NULL,
+      status = data.frame(feature = feature, status = "skipped", n = nrow(model_data), note = "insufficient_repeated_subjects")
+    ))
+  }
+
+  fixed_terms <- paste0("`", exposure, "` * `", visit, "`")
+  if (length(covariates)) {
+    fixed_terms <- paste(fixed_terms, paste(sprintf("`%s`", covariates), collapse = " + "), sep = " + ")
+  }
+  formula <- stats::as.formula(
+    paste0(".outcome ~ ", fixed_terms, " + (1 | `", subject_id, "`)")
+  )
+  model <- try(
+    lmerTest::lmer(formula, data = model_data, REML = FALSE),
+    silent = TRUE
+  )
+  if (inherits(model, "try-error")) {
+    return(list(
+      result = NULL,
+      status = data.frame(feature = feature, status = "failed", n = nrow(model_data), note = as.character(model))
+    ))
+  }
+
+  coefficients <- summary(model)$coefficients
+  keep_terms <- setdiff(rownames(coefficients), "(Intercept)")
+  intervals <- suppressMessages(stats::confint(model, parm = keep_terms, method = "Wald"))
+  result <- data.frame(
+    feature = feature,
+    exposure = exposure,
+    term = keep_terms,
+    n = nrow(model_data),
+    subjects = length(unique(model_data[[subject_id]])),
+    estimate = coefficients[keep_terms, "Estimate"],
+    std.error = coefficients[keep_terms, "Std. Error"],
+    conf.low = intervals[keep_terms, 1],
+    conf.high = intervals[keep_terms, 2],
+    p.value = coefficients[keep_terms, "Pr(>|t|)"],
+    stringsAsFactors = FALSE
+  )
+  list(
+    result = result,
+    status = data.frame(
+      feature = feature,
+      status = if (lme4::isSingular(model)) "warning" else "completed",
+      n = nrow(model_data),
+      note = if (lme4::isSingular(model)) "singular_fit" else "ok"
+    )
+  )
+}
+
+model_runs <- lapply(rownames(assay_matrix), fit_feature_lmm)
+result_parts <- lapply(model_runs, `[[`, "result")
+result_parts <- result_parts[!vapply(result_parts, is.null, logical(1))]
+lmm_results <- if (length(result_parts)) do.call(rbind, result_parts) else data.frame()
+lmm_status <- do.call(rbind, lapply(model_runs, `[[`, "status"))
+if (nrow(lmm_results)) {
+  lmm_results$q.value <- stats::p.adjust(
+    lmm_results$p.value,
+    method = recipe_parameters$fdr_method %||% "BH"
+  )
+  lmm_results <- lmm_results[order(lmm_results$q.value, lmm_results$p.value), ]
+}
+
+dir.create("../output/results", recursive = TRUE, showWarnings = FALSE)
+utils::write.csv(lmm_results, "../output/results/metabolite_lmm.csv", row.names = FALSE)
+utils::write.csv(lmm_status, "../output/results/lmm_model_status.csv", row.names = FALSE)
+if (nrow(lmm_results)) {
+  knitr::kable(utils::head(lmm_results, 30), digits = 4)
+} else {
+  cat("No longitudinal model completed. See `lmm_model_status.csv`.")
+}
+```
+
+## Interpretation boundary
+
+The exposure-by-visit interaction tests whether longitudinal metabolite patterns differ by exposure group. Singular fits are retained as warnings and should not be treated as stable evidence.
+
+## Reproducibility
+
+```{r}
+sessionInfo()
+```

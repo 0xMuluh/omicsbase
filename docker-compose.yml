@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: omicsbase
+      POSTGRES_PASSWORD: omicsbase
+      POSTGRES_DB: omicsbase
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    image: omicsbase-backend:dev
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      # The dev backend image is already the controlled Bioconductor runtime.
+      # Production deployments must use a dedicated sandbox runner instead.
+      USE_DOCKER_SANDBOX: "false"
+      AGENT_MAX_STEPS: "10"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/projects:/app/projects
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+      - ./backend/knowledge:/app/knowledge
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    image: omicsbase-backend:dev
+    command: celery -A app.tasks.analysis worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      # The dev backend image is already the controlled Bioconductor runtime.
+      # Production deployments must use a dedicated sandbox runner instead.
+      USE_DOCKER_SANDBOX: "false"
+      AGENT_MAX_STEPS: "10"
+    volumes:
+      - ./backend/projects:/app/projects
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+      - ./backend/knowledge:/app/knowledge
+    depends_on:
+      - postgres
+      - redis
+
+  beat:
+    image: omicsbase-backend:dev
+    command: celery -A app.tasks.analysis beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      # The dev backend image is already the controlled Bioconductor runtime.
+      # Production deployments must use a dedicated sandbox runner instead.
+      USE_DOCKER_SANDBOX: "false"
+      AGENT_MAX_STEPS: "10"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/knowledge:/app/knowledge
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  pgdata:

@@ -1,0 +1,82 @@
+version: "1.0.0"
+last_reviewed: "2026-07-29"
+
+decision_points:
+
+  differential_abundance:
+    classification: contested
+    rationale: >
+      Nearing et al. (2022, Nature Communications) benchmarked 14 DA methods
+      across 38 real 16S datasets. Different methods produce materially different
+      significant-taxa lists on identical data. ALDEx2 and ANCOM-II were the
+      most mutually consistent; several widely used tools (LEfSe, edgeR)
+      produced inconsistent results or failed FDR control.
+    default_ensemble:
+      - id: ancombc
+        name: "ANCOM-BC2"
+        r_package: ANCOMBC
+        role: primary
+      - id: aldex2
+        name: "ALDEx2"
+        r_package: ALDEx2
+        role: primary
+      - id: deseq2
+        name: "DESeq2"
+        r_package: DESeq2
+        role: reference
+      - id: limrots
+        name: "LimROTS"
+        r_package: LimROTS
+        role: sensitivity
+    references:
+      - "Nearing et al. (2022) Nat Commun 13:342"
+      - "Anwar et al. (2025) Bioinformatics: btaf570"
+
+  normalization:
+    classification: contested
+    rationale: >
+      Rarefaction vs library-size normalization: McMurdie & Holmes (2014)
+      argued rarefying discards real information; Weiss et al. (2017) showed
+      rarefaction can be appropriate for uneven library sizes.
+    default_ensemble:
+      - id: rarefaction
+        name: "Rarefaction"
+        role: primary
+      - id: css
+        name: "CSS (cumulative sum scaling)"
+        role: primary
+    references:
+      - "McMurdie & Holmes (2014) PLoS Comp Bio"
+      - "Weiss et al. (2017) Microbiome 5:27"
+
+  alpha_diversity_metric:
+    classification: standard
+    default:
+      - shannon
+      - simpson
+      - observed
+    rationale: >
+      Shannon and Simpson are broadly accepted; choice rarely
+      changes conclusions materially.
+
+  beta_diversity_metric:
+    classification: standard
+    default: bray
+    rationale: >
+      Bray-Curtis is the field standard for exploratory beta diversity.
+
+  permanova:
+    classification: standard
+    default:
+      method: adonis2
+      permutations: 999
+    rationale: >
+      vegan::adonis2 with 999 permutations is the accepted standard.
+
+  qc_thresholds:
+    classification: standard
+    defaults:
+      min_reads: 1000
+      min_prevalence: 0.10
+    rationale: >
+      Basic QC thresholds are broadly consistent across published protocols.

@@ -1,0 +1,146 @@
+---
+title: "Metabolite panel associations"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r}
+source("recipe_runtime.R")
+if (!requireNamespace("limma", quietly = TRUE)) {
+  stop("Package 'limma' is required for the metabolite panel recipe.")
+}
+analysis_data <- readRDS("../output/derived/analysis_data.rds")
+config <- analysis_data$config
+metadata <- analysis_data$metadata
+assay_matrix <- analysis_data$assay
+recipe_parameters <- config$analyses$recipe_parameters[["metabolomics.linear_feature_scan"]] %||% list()
+exposure <- config$variables$grouping
+covariates <- intersect(
+  unlist(config$variables$covariates %||% character(0), use.names = FALSE),
+  names(metadata)
+)
+min_n <- as.integer(recipe_parameters$min_complete_cases %||% 20)
+if (is.null(exposure) || !exposure %in% names(metadata)) {
+  stop("The limma panel recipe requires a confirmed exposure/grouping variable.")
+}
+```
+
+## Analysis contract
+
+The recipe fits a common limma design across standardized metabolite features, uses model-specific available outcome values, and applies Benjamini–Hochberg correction across the complete feature–coefficient result family.
+
+```{r}
+contract <- data.frame(
+  field = c("Samples", "Features", "Exposure", "Covariates", "Minimum observations"),
+  value = c(
+    ncol(assay_matrix),
+    nrow(assay_matrix),
+    exposure,
+    if (length(covariates)) paste(covariates, collapse = ", ") else "None",
+    min_n
+  )
+)
+knitr::kable(contract)
+```
+
+## Feature-level limma models
+
+```{r}
+design_variables <- unique(c(exposure, covariates))
+complete_design <- stats::complete.cases(metadata[, design_variables, drop = FALSE])
+model_metadata <- metadata[complete_design, , drop = FALSE]
+model_assay <- assay_matrix[, complete_design, drop = FALSE]
+if (nrow(model_metadata) < min_n) {
+  stop("Too few complete design rows for the configured minimum: ", nrow(model_metadata))
+}
+
+design_formula <- stats::reformulate(design_variables)
+design <- stats::model.matrix(design_formula, data = model_metadata)
+target_terms <- grep(paste0("^", make.names(exposure)), make.names(colnames(design)), value = FALSE)
+target_terms <- setdiff(target_terms, which(colnames(design) == "(Intercept)"))
+if (!length(target_terms)) stop("No exposure coefficient was estimable in the limma design.")
+
+fit <- limma::lmFit(model_assay, design)
+fit <- limma::eBayes(fit, trend = TRUE)
+feature_n <- rowSums(is.finite(model_assay))
+
+term_results <- lapply(target_terms, function(term_index) {
+  table <- limma::topTable(
+    fit,
+    coef = term_index,
+    number = Inf,
+    sort.by = "none",
+    confint = TRUE
+  )
+  data.frame(
+    feature = rownames(table),
+    exposure = exposure,
+    term = colnames(design)[[term_index]],
+    n = feature_n[rownames(table)],
+    estimate = table$logFC,
+    std.error = fit$stdev.unscaled[, term_index] * fit$sigma,
+    conf.low = table$CI.L,
+    conf.high = table$CI.R,
+    p.value = table$P.Value,
+    stringsAsFactors = FALSE
+  )
+})
+
+panel_results <- do.call(rbind, term_results)
+panel_results <- panel_results[panel_results$n >= min_n, , drop = FALSE]
+panel_results$q.value <- stats::p.adjust(
+  panel_results$p.value,
+  method = recipe_parameters$fdr_method %||% "BH"
+)
+panel_results <- panel_results[order(panel_results$q.value, panel_results$p.value), ]
+model_status <- data.frame(
+  feature = rownames(model_assay),
+  status = ifelse(feature_n >= min_n, "completed", "skipped"),
+  n = feature_n,
+  note = ifelse(feature_n >= min_n, "ok", "too_few_observed_outcomes"),
+  stringsAsFactors = FALSE
+)
+
+dir.create("../output/results", recursive = TRUE, showWarnings = FALSE)
+utils::write.csv(panel_results, "../output/results/metabolite_panel.csv", row.names = FALSE)
+utils::write.csv(model_status, "../output/results/model_status.csv", row.names = FALSE)
+knitr::kable(utils::head(panel_results, 25), digits = 4)
+```
+
+## Effect overview
+
+```{r}
+#| fig-width: 9
+#| fig-height: 7
+if (nrow(panel_results) && requireNamespace("ggplot2", quietly = TRUE)) {
+  top_results <- utils::head(panel_results, 20)
+  top_results$label <- factor(
+    paste(top_results$feature, top_results$term, sep = " · "),
+    levels = rev(paste(top_results$feature, top_results$term, sep = " · "))
+  )
+  print(
+    ggplot2::ggplot(top_results, ggplot2::aes(x = estimate, y = label)) +
+      ggplot2::geom_vline(xintercept = 0, color = "grey75") +
+      ggplot2::geom_errorbarh(ggplot2::aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+      ggplot2::geom_point(ggplot2::aes(color = q.value < 0.05), size = 2) +
+      ggplot2::scale_color_manual(values = c("TRUE" = "#0f766e", "FALSE" = "#71717a"), guide = "none") +
+      ggplot2::labs(x = "Standardized effect estimate (95% CI)", y = NULL) +
+      ggplot2::theme_minimal(base_size = 11)
+  )
+}
+```
+
+## Interpretation boundary
+
+These are feature-wise associations rather than causal effects. Factor coefficients are interpreted relative to the reference level encoded in the model matrix.
+
+## Reproducibility
+
+```{r}
+sessionInfo()
+```

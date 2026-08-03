@@ -1,0 +1,126 @@
+version: "1.2.0"
+
+recipes:
+  microbiome.inventory:
+    domain: microbiome
+    name: Microbiome data inventory
+    classification: standard
+    aliases: [import, data_import, inventory, quality_control, preprocessing]
+    r_packages: [yaml, jsonlite, readxl, haven]
+    required_roles: [feature_table]
+    parameters:
+      feature_orientation: auto
+      input_scale: auto
+      min_prevalence: 0.10
+      min_total_abundance: 0
+    outputs:
+      - output/derived/analysis_data.rds
+      - output/derived/data_validation.json
+
+  microbiome.alpha_diversity:
+    domain: microbiome
+    name: Alpha diversity
+    classification: standard
+    aliases: [alpha, alpha_diversity, alpha_diversity_metric]
+    r_packages: [ggplot2, knitr]
+    depends_on: [microbiome.inventory]
+    parameters:
+      metrics: [observed, shannon, simpson]
+      fdr_method: BH
+    outputs:
+      - output/results/alpha_diversity.csv
+      - output/primary/alpha_diversity.html
+
+  microbiome.beta_diversity:
+    domain: microbiome
+    name: Beta diversity ordination
+    classification: standard
+    aliases: [beta, beta_diversity, ordination, community_composition]
+    r_packages: [vegan, ggplot2, knitr]
+    depends_on: [microbiome.inventory]
+    parameters:
+      distance: bray
+      ordination: pcoa
+    outputs:
+      - output/derived/beta_distance.rds
+      - output/results/beta_ordination.csv
+      - output/primary/beta_diversity.html
+
+  microbiome.permanova:
+    domain: microbiome
+    name: PERMANOVA community comparison
+    classification: standard
+    aliases: [permanova, adonis2, community_comparison]
+    r_packages: [vegan, knitr]
+    depends_on: [microbiome.beta_diversity]
+    parameters:
+      permutations: 999
+      seed: 20260730
+    outputs:
+      - output/results/permanova.csv
+      - output/results/beta_dispersion.csv
+      - output/primary/permanova.html
+
+  microbiome.limrots_differential_abundance:
+    domain: microbiome
+    name: LimROTS differential abundance
+    classification: contested
+    aliases: [differential_abundance, limrots, daa_limrots, robust_differential_abundance]
+    r_packages: [LimROTS, SummarizedExperiment, S4Vectors, ggplot2, knitr]
+    depends_on: [microbiome.inventory]
+    parameters:
+      transform: clr
+      pseudocount: 0.000001
+      bootstrap_iterations: 200
+      trend: true
+      robust: true
+    outputs:
+      - output/results/limrots_differential_abundance.csv
+      - output/results/limrots_model_status.csv
+      - output/primary/differential_abundance_limrots.html
+
+  metabolomics.inventory:
+    domain: metabolomics
+    name: Metabolomics data inventory
+    classification: standard
+    aliases: [import, data_import, inventory, descriptive_inventory, quality_control, preprocessing]
+    r_packages: [yaml, jsonlite, readxl, haven, MultiAssayExperiment, SummarizedExperiment, S4Vectors]
+    required_roles: [feature_table]
+    parameters:
+      feature_orientation: samples_by_features
+      transform: log_z
+    outputs:
+      - output/derived/analysis_data.rds
+      - output/derived/MAE.rds
+      - output/derived/data_validation.json
+
+  metabolomics.linear_feature_scan:
+    domain: metabolomics
+    name: Cross-sectional metabolite panel model
+    classification: standard
+    aliases: [linear_feature_scan, cross_sectional_feature_scan, association, regression]
+    r_packages: [limma, ggplot2, knitr]
+    depends_on: [metabolomics.inventory]
+    parameters:
+      fdr_method: BH
+      min_complete_cases: 20
+    outputs:
+      - output/results/metabolite_panel.csv
+      - output/results/model_status.csv
+      - output/primary/metabolite_panel.html
+
+  metabolomics.repeated_measures_mixed_model:
+    domain: metabolomics
+    name: Longitudinal metabolite mixed models
+    classification: standard
+    aliases: [longitudinal, repeated_measures, repeated_measures_mixed_model, lmm]
+    r_packages: [lmerTest, lme4, knitr]
+    depends_on: [metabolomics.inventory]
+    parameters:
+      fdr_method: BH
+      min_complete_cases: 30
+      random_intercept: subject
+    outputs:
+      - output/results/metabolite_lmm.csv
+      - output/results/lmm_model_status.csv
+      - output/primary/longitudinal_models.html

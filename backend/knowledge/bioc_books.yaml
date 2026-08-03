@@ -1,0 +1,51 @@
+# Curated QMD-first sources. Keep this list explicit and reviewable.
+#
+# A local source_path is useful for development and tests. Production entries
+# use trusted HTTPS repositories and stable-ref policies; aliases are resolved
+# to concrete refs at sync time.
+
+books:
+  - slug: osca
+    title: Orchestrating Single-Cell Analysis with Bioconductor
+    book_url: https://bioconductor.org/books/release/OSCA/
+    repository_url: https://github.com/OSCA-source/OSCA
+    license: CC BY 4.0
+    stable_ref: auto
+    preview_ref: devel
+    enabled: true
+
+  - slug: osta
+    title: Orchestrating Spatial Transcriptomics Analysis with Bioconductor
+    book_url: https://bioconductor.org/books/release/OSTA/
+    repository_url: https://github.com/lmweber/OSTA
+    license: CC BY 4.0
+    stable_ref: auto
+    preview_ref: devel
+    enabled: true
+
+  - slug: oma
+    title: Orchestrating Microbiome Analysis with Bioconductor
+    book_url: https://bioconductor.org/books/release/OMA/
+    repository_url: https://github.com/microbiome/OMA
+    license: CC BY 4.0
+    stable_ref: release
+    preview_ref: devel
+    enabled: true
+
+  - slug: r-for-mass-spectrometry
+    title: R for Mass Spectrometry
+    book_url: https://rformassspectrometry.github.io/book/
+    repository_url: https://github.com/rformassspectrometry/rformassspectrometry.github.io
+    license: CC BY-SA 4.0
+    stable_ref: master
+    preview_ref: master
+    enabled: true
+
+  - slug: metabonaut
+    title: Metabonaut
+    book_url: https://rformassspectrometry.github.io/Metabonaut/
+    repository_url: https://github.com/rformassspectrometry/Metabonaut
+    license: CC BY-SA 4.0
+    stable_ref: latest_tag
+    preview_ref: devel
+    enabled: true

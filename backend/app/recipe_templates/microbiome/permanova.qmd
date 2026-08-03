@@ -1,0 +1,108 @@
+---
+title: "PERMANOVA community comparison"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r}
+source("recipe_runtime.R")
+if (!requireNamespace("vegan", quietly = TRUE)) {
+  stop("Package 'vegan' is required for the PERMANOVA recipe.")
+}
+analysis_data <- readRDS("../output/derived/analysis_data.rds")
+config <- analysis_data$config
+metadata <- analysis_data$metadata
+group_variable <- config$variables$grouping
+recipe_parameters <- config$analyses$recipe_parameters[["microbiome.permanova"]] %||% list()
+beta_parameters <- config$analyses$recipe_parameters[["microbiome.beta_diversity"]] %||% list()
+distance_method <- beta_parameters$distance %||% "bray"
+if (is.null(group_variable) || !group_variable %in% names(metadata)) {
+  stop("PERMANOVA requires a confirmed grouping variable in study_config.yml.")
+}
+if (!file.exists("../output/derived/beta_distance.rds")) {
+  beta_distance <- vegan::vegdist(
+    t(analysis_data$relative_abundance),
+    method = distance_method
+  )
+} else {
+  beta_distance <- readRDS("../output/derived/beta_distance.rds")
+}
+```
+
+## Model specification
+
+```{r}
+grouping <- droplevels(factor(metadata[[group_variable]]))
+if (length(levels(grouping)) < 2) stop("PERMANOVA requires at least two observed groups.")
+model_data <- data.frame(grouping = grouping, row.names = metadata$.sample_id)
+distance_labels <- attr(beta_distance, "Labels")
+model_data <- model_data[distance_labels, , drop = FALSE]
+permutations <- as.integer(recipe_parameters$permutations %||% 999)
+seed <- as.integer(recipe_parameters$seed %||% 20260730)
+set.seed(seed)
+
+permanova_fit <- vegan::adonis2(
+  beta_distance ~ grouping,
+  data = model_data,
+  permutations = permutations
+)
+permanova_results <- data.frame(
+  term = rownames(permanova_fit),
+  Df = permanova_fit$Df,
+  SumOfSqs = permanova_fit$SumOfSqs,
+  R2 = permanova_fit$R2,
+  F = permanova_fit$F,
+  p.value = permanova_fit$`Pr(>F)`,
+  row.names = NULL,
+  check.names = FALSE
+)
+
+dispersion <- vegan::betadisper(beta_distance, model_data$grouping)
+set.seed(seed)
+dispersion_test <- vegan::permutest(dispersion, permutations = permutations)
+dispersion_table <- data.frame(
+  term = rownames(dispersion_test$tab),
+  Df = dispersion_test$tab[, "Df"],
+  SumOfSqs = dispersion_test$tab[, "Sum Sq"],
+  F = dispersion_test$tab[, "F"],
+  p.value = dispersion_test$tab[, "Pr(>F)"],
+  row.names = NULL,
+  check.names = FALSE
+)
+
+dir.create("../output/results", recursive = TRUE, showWarnings = FALSE)
+utils::write.csv(permanova_results, "../output/results/permanova.csv", row.names = FALSE)
+utils::write.csv(dispersion_table, "../output/results/beta_dispersion.csv", row.names = FALSE)
+```
+
+## PERMANOVA results
+
+```{r}
+knitr::kable(permanova_results, digits = 4)
+```
+
+PERMANOVA tests whether the centroids of the configured groups differ in the configured `r distance_method` distance space. The reported R² is the proportion of distance variation associated with the grouping variable.
+
+## Dispersion diagnostic
+
+```{r}
+knitr::kable(dispersion_table, digits = 4)
+```
+
+A significant dispersion result indicates that differing within-group variability may contribute to the PERMANOVA result and should be considered during interpretation.
+
+## Reproducibility
+
+```{r}
+reproducibility <- data.frame(
+  parameter = c("Distance", "Permutations", "Random seed", "Grouping variable"),
+  value = c(distance_method, permutations, seed, group_variable)
+)
+knitr::kable(reproducibility)
+sessionInfo()
+```
