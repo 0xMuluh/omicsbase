@@ -186,7 +186,7 @@ export function StartComposer({
         for (const item of files) {
           await api.uploadStandaloneNoteFile(thread.id, item.file);
         }
-        router.push(`/notes?thread=${thread.id}`);
+        router.push(`/notes?thread=${thread.id}&prompt=${encodeURIComponent(text)}`);
         return { kind: "note" as const, id: thread.id };
       }
 

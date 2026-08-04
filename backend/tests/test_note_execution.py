@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
+import subprocess
 import uuid
 
 import pytest
@@ -13,6 +16,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
+
+R_AVAILABLE = shutil.which("Rscript") is not None
 from app.models.notes import CellExecution, NoteExecutionArtifact, NoteExecutionEvent
 from app.models.project import Project
 
@@ -317,6 +322,50 @@ def test_driver_rewrites_multiline_cells_without_vapply_length_error():
     )[0]
     assert "paste(deparse(e, width.cutoff = 500L), collapse = '\\n')" in rewrite
     assert "character(1)), collapse = '\\n')" in rewrite
+
+
+@pytest.mark.skipif(not R_AVAILABLE, reason="Rscript not available")
+def test_harness_merges_incremental_base_graphics(tmp_path):
+    """Incremental additions (points/legend) merge into one figure; new
+    plot() calls start new figures — knitr-compatible capture semantics."""
+    from app.services.note_execution import _evaluate_driver
+
+    run_dir = tmp_path / ".omicsbase" / "note-executions" / "smoke"
+    run_dir.mkdir(parents=True)
+    source = (
+        "boxplot(mtcars$mpg, col = 'lightcoral', main = 'Boxplot')\n"
+        "points(mean(mtcars$mpg), col = 'red', pch = 18, cex = 2)\n"
+        "points(median(mtcars$mpg), col = 'blue', pch = 18, cex = 2)\n"
+        "legend('topright', legend = c('Mean', 'Median'), col = c('red', 'blue'), pch = 18, bty = 'n')\n"
+        "hist(rnorm(30), main = 'hist one')\n"
+        "hist(rnorm(30), main = 'hist two')\n"
+    )
+    driver = _evaluate_driver(
+        source=source,
+        run_dir_rel=".omicsbase/note-executions/smoke",
+        shared_workspace=False,
+        quiet_package_startup=True,
+        capture_plots=True,
+    )
+    cell = run_dir / "cell.R"
+    cell.write_text(driver)
+    completed = subprocess.run(
+        ["Rscript", "--vanilla", str(cell)],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert completed.returncode == 0, completed.stderr[-500:]
+    plots = sorted((run_dir / "plots").glob("*.png"))
+    assert len(plots) == 3, [p.name for p in plots]
+    events = [
+        json.loads(line)
+        for line in (run_dir / ".note_events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    plot_events = [event["path"] for event in events if event["type"] == "plot"]
+    assert plot_events == [str(path.relative_to(tmp_path)) for path in plots]
 
 
 def test_task_persists_artifact_and_provenance(monkeypatch, tmp_path):

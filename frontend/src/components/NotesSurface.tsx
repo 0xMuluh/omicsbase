@@ -2,7 +2,7 @@
 
 import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -37,6 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { CodeBlock } from "@/components/CodeBlock";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExecutionBlocks } from "@/components/ExecutionBlocks";
 import { ExecutionHistory } from "@/components/ExecutionHistory";
 import { ExecutionOutput } from "@/components/ExecutionOutput";
@@ -206,6 +207,16 @@ function DatasetPicker({
         )}
       </div>
     </>
+  );
+}
+
+function TypingDots({ className = "" }: { className?: string }) {
+  return (
+    <span className={"flex items-center gap-1 " + className}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current typing-dot" style={{ animationDelay: "0ms" }} />
+      <span className="h-1.5 w-1.5 rounded-full bg-current typing-dot" style={{ animationDelay: "180ms" }} />
+      <span className="h-1.5 w-1.5 rounded-full bg-current typing-dot" style={{ animationDelay: "360ms" }} />
+    </span>
   );
 }
 
@@ -388,6 +399,24 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   }, [threads, selectedThreadId, initialThreadId]);
 
+  // Auto-run the first turn when a launch from home arrives with ?prompt=.
+  const searchParams = useSearchParams();
+  const autoRunPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    const promptParam = searchParams.get("prompt");
+    if (promptParam && autoRunPromptRef.current === null) {
+      autoRunPromptRef.current = promptParam;
+    }
+  }, [searchParams]);
+  useEffect(() => {
+    if (!selectedThreadId || turnStreaming) return;
+    const message = autoRunPromptRef.current;
+    if (!message) return;
+    autoRunPromptRef.current = null;
+    router.replace(`${pathname}?thread=${selectedThreadId}`, { scroll: false });
+    void runTurn(selectedThreadId, message);
+  }, [selectedThreadId, turnStreaming, pathname, router]);
+
   useEffect(() => {
     // Only write the URL when it does not already name a thread — never fight
     // a sidebar navigation (that caused an A->B->A oscillation).
@@ -546,7 +575,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     if (!message || !threadId || turnStreaming) return;
     setTurnDraft("");
     setTurnStreaming(true);
-    setTurnStatus("Thinking about your question");
+    setTurnStatus("Thinking");
     setLiveTurnText("");
     setTurnError(null);
     try {
@@ -558,7 +587,8 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
             setLiveTurnText((current) => current + (event.token || ""));
           }
           if (event.type === "status" || event.type === "tool_started") {
-            setTurnStatus(event.message || event.status || (event.tool === "run_r_cell" ? "Running R cell…" : event.tool ? "Using " + event.tool : "Working"));
+            const raw = event.message || event.status || (event.tool === "run_r_cell" ? "Running R cell…" : event.tool ? "Using " + event.tool : "Working");
+            setTurnStatus(/^thinking about/i.test(raw) ? "Thinking" : raw);
           }
           if (event.type === "error") {
             setTurnError(event.message || "This question encountered an error.");
@@ -689,6 +719,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                 {promoteThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Promote to workspace
               </Button>
             ) : null}
+            <ThemeToggle />
           </div>
         </header>
           <div ref={threadScrollRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -1011,7 +1042,9 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                             <>
                               {(() => {
                                 const events = (execution.result_metadata?.events || []) as { type?: string }[];
-                                const hasBlocks = events.some((event) => event.type === "text");
+                                const hasBlocks = events.some((event) =>
+                                  ["text", "table", "plot", "warning", "error"].includes(String(event.type || "")),
+                                );
                                 const inlineKinds = new Set(["table", "image"]);
                                 const actions = resultActions[execution.id] || {};
                                 const filesArtifacts = (execution.artifacts || []).filter((artifact) => !inlineKinds.has(artifact.artifact_type));
@@ -1106,6 +1139,17 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                 })}
               </div>
               <div ref={threadBottomRef} className="h-px" />
+              {turnStreaming ? (
+                <div
+                  data-overview-block
+                  data-overview-type="status"
+                  data-overview-id={`${selectedThreadId}-status`}
+                  className="flex items-center gap-2 px-1 pb-2 text-sm text-muted-foreground"
+                >
+                  <TypingDots className="text-teal-500" />
+                  <span>{turnStatus || "Thinking"}</span>
+                </div>
+              ) : null}
             </div>
           )}
           </div>
@@ -1227,7 +1271,6 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       className="max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:opacity-60"
                       placeholder="Ask OmicsBase..."
                     />
-                    {turnStreaming ? <span className="shrink-0 text-[11px] text-teal-600 dark:text-teal-300">Working</span> : null}
                     <Button type="button" size="icon" className="h-10 w-10 shrink-0 rounded-full" onClick={() => void submitTurn()} disabled={turnStreaming || !turnDraft.trim() || currentThread.status !== "active"} title="Send" aria-label="Send">
                       {turnStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                     </Button>
