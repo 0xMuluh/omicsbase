@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     note_execution_max_output_artifacts: int = 25
     note_execution_max_output_artifact_bytes: int = 25 * 1024 * 1024
 
+    # Persistent R kernel: one long-lived R process per thread keeps the
+    # workspace in memory between cells (no per-cell process boot or
+    # full-workspace save.image). The kernel is killed after the idle TTL.
+    note_kernel_enabled: bool = True
+    note_kernel_idle_ttl_seconds: int = 1800
+
     # Workspace agent autonomy
     agent_max_steps: int = 6
     agent_run_stale_after_seconds: int = 300

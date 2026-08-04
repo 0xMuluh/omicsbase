@@ -259,6 +259,9 @@ async def test_r_execution_uses_fixed_script_and_bounded_preview(tmp_path, monke
         return True, "result\n"
 
     monkeypatch.setattr(note_execution, "_run_command", fake_run_command)
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "note_kernel_enabled", False)
     status, metadata, error = await note_execution.execute_r_cell(
         project_dir=str(tmp_path),
         execution_id=str(uuid.uuid4()),

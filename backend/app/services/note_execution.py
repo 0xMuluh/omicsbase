@@ -475,14 +475,7 @@ async def execute_r_cell(
     shared_workspace = bool(getattr(settings, "note_execution_shared_workspace", True))
     quiet_package_startup = bool(getattr(settings, "note_execution_quiet_package_startup", True))
     capture_plots = bool(getattr(settings, "note_execution_capture_plots", True))
-    driver = _evaluate_driver(
-        source=source,
-        run_dir_rel=relative_dir.as_posix(),
-        shared_workspace=shared_workspace,
-        quiet_package_startup=quiet_package_startup,
-        capture_plots=capture_plots,
-    )
-    script_path.write_text(driver, encoding="utf-8")
+    use_kernel = bool(getattr(settings, "note_kernel_enabled", True)) and shared_workspace
     parameters_path.write_text(encoded_parameters, encoding="utf-8")
 
     lock_handle = None
@@ -492,12 +485,52 @@ async def execute_r_cell(
         relative_script = (relative_dir / "cell.R").as_posix()
         relative_parameters = (relative_dir / "parameters.json").as_posix()
         started_at = time.time()
-        success, output = await _run_command(
-            ["Rscript", "--vanilla", relative_script],
-            cwd=str(Path(project_dir).resolve()),
-            timeout=timeout_seconds,
-            cancel_check=cancel_check,
-        )
+        if use_kernel:
+            script_path.write_text(source, encoding="utf-8")
+            from app.services.note_kernel import (
+                KernelCancelled,
+                KernelDied,
+                KernelTimeout,
+                ensure_kernel,
+                request_cell,
+            )
+
+            kernel = ensure_kernel(project_dir)
+            try:
+                request_cell(
+                    kernel,
+                    request_id=execution_id,
+                    run_dir_rel=relative_dir.as_posix(),
+                    source=source,
+                    timeout_seconds=timeout_seconds,
+                    cancel_check=cancel_check,
+                )
+                success = True
+                output = ""
+            except KernelCancelled:
+                success = False
+                output = "Process cancelled"
+            except KernelTimeout:
+                success = False
+                output = "Process timed out"
+            except KernelDied:
+                success = False
+                output = "The R kernel process died; the cell was not executed"
+        else:
+            driver = _evaluate_driver(
+                source=source,
+                run_dir_rel=relative_dir.as_posix(),
+                shared_workspace=shared_workspace,
+                quiet_package_startup=quiet_package_startup,
+                capture_plots=capture_plots,
+            )
+            script_path.write_text(driver, encoding="utf-8")
+            success, output = await _run_command(
+                ["Rscript", "--vanilla", relative_script],
+                cwd=str(Path(project_dir).resolve()),
+                timeout=timeout_seconds,
+                cancel_check=cancel_check,
+            )
     finally:
         if lock_handle is not None:
             _release_thread_lock(lock_handle)

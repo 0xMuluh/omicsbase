@@ -87,6 +87,15 @@ def test_cells_share_one_persistent_workspace(monkeypatch, tmp_path):
 
     asyncio.run(scenario())
 
+    # With the persistent kernel the workspace is kept in memory during the
+    # session; it is serialized only when the kernel is shut down.
+    from app.services import note_kernel
+
+    assert not (tmp_path / ".omicsbase" / "note-kernel" / "workspace.RData").exists()
+    handle = note_kernel._kernels.get(str(tmp_path))
+    assert handle is not None
+    note_kernel.shutdown_kernel(handle)
+
     assert (tmp_path / ".omicsbase" / "note-kernel" / "workspace.RData").is_file()
     objects_path = tmp_path / ".omicsbase" / "note-kernel" / "workspace-objects.txt"
     assert objects_path.is_file()
