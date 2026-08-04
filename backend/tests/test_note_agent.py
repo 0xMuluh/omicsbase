@@ -30,7 +30,7 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
         for event in events:
             yield event
 
-    monkeypatch.setattr(note_agent, "stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
 
     async def action_handler(_name, _arguments):
         return {
@@ -147,7 +147,7 @@ def test_standalone_turn_receives_terminal_cell_result(monkeypatch, tmp_path):
             "artifacts": [],
         }
 
-    monkeypatch.setattr(note_agent, "stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     monkeypatch.setattr("app.api.projects_notes._wait_for_note_execution", fake_wait)
     from app.config import settings
@@ -193,7 +193,7 @@ def test_standalone_turn_persists_user_code_execution_and_answer(monkeypatch, tm
         for event in events:
             yield event
 
-    monkeypatch.setattr(note_agent, "stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 
@@ -261,7 +261,7 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
         for event in events:
             yield event
 
-    monkeypatch.setattr(note_agent, "stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 

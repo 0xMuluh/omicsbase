@@ -12,8 +12,8 @@ from typing import Any, AsyncIterator, Callable
 
 from app.config import settings
 from app.models.notes import NoteCell, NoteCellRevision, NoteThread
+from app.services.agent_core import ToolCallResult, run_agent_loop
 from app.services.agent_runtime import normalise_cell_type
-from app.services.llm import stream_llm_with_tools
 
 logger = logging.getLogger(__name__)
 
@@ -225,129 +225,143 @@ async def stream_note_agent(
     cancel_check: Callable[[], bool] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one autonomous NoteThread turn using only notebook-safe tools."""
-    current_message = (message or "").strip()
-    if not current_message:
-        yield {"type": "final", "message": "Tell me what you want to investigate in this notebook."}
-        return
-
-    yield {"type": "status", "status": "thinking", "message": "Thinking about the notebook question"}
-    messages: list[dict[str, Any]] = conversation_from_cells(cells)
-    messages.append({"role": "user", "content": current_message})
-    collected_text = ""
-    step_limit = max(2, min(int(max_steps or getattr(settings, "agent_max_steps", 6) or 6), MAX_NOTE_STEPS))
-
-    for step in range(1, step_limit + 1):
-        if cancel_check and cancel_check():
-            yield {"type": "cancelled", "message": "This NoteThread run was cancelled."}
-            return
-        tool_calls: list[dict[str, Any]] = []
-        step_text = ""
-        try:
-            async for event in stream_llm_with_tools(
-                system_prompt=NOTE_AGENT_SYSTEM_PROMPT,
-                messages=messages,
-                tools=NOTE_TOOLS,
-                max_tokens=3000,
-                live_context=_live_context(context),
-            ):
-                if event.get("type") == "usage":
-                    yield {"type": "usage", "usage": event.get("usage") or {}}
-                elif event.get("type") == "text_delta":
-                    token = str(event.get("content") or "")
-                    step_text += token
-                    collected_text += token
-                    if token:
-                        yield {"type": "token", "token": token}
-                elif event.get("type") == "tool_call":
-                    tool_calls.append(event)
-        except Exception as exc:
-            fallback = _fallback_message(exc)
-            yield {"type": "error", "message": fallback}
-            yield {"type": "final", "message": fallback}
-            return
-
-        if not tool_calls:
-            final_text = collected_text.strip() or "I could not produce a grounded notebook response."
-            yield {"type": "final", "message": final_text}
-            return
-
-        assistant_tool_calls = [
-            {
-                "id": str(tool_call.get("id") or f"note-call-{step}-{index}"),
-                "type": "function",
-                "function": {
-                    "name": str(tool_call.get("name") or ""),
-                    "arguments": json.dumps(tool_call.get("arguments") or {}, default=str),
-                },
-            }
-            for index, tool_call in enumerate(tool_calls)
-        ]
-        messages.append({
-            "role": "assistant",
-            "content": step_text or None,
-            "tool_calls": assistant_tool_calls,
-        })
-
-        for tool_call in tool_calls:
-            tool_name = str(tool_call.get("name") or "")
-            arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-            tool_call_id = str(tool_call.get("id") or f"note-call-{step}")
-            yield {
-                "type": "tool_started",
-                "tool": tool_name,
-                "tool_call_id": tool_call_id,
-                "step": step,
-                "message": f"Using {tool_name}",
-            }
-            if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note"}:
-                observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
-            elif action_handler is None:
-                observation = {"status": "error", "error": "NoteThread tools are unavailable"}
-            else:
-                try:
-                    observation = await action_handler(tool_name, arguments)
-                    if not isinstance(observation, dict):
-                        observation = {"status": "ok", "result": observation}
-                except Exception as exc:
-                    logger.exception("NoteThread tool %s failed: %s", tool_name, exc)
-                    observation = {"status": "error", "error": str(exc)[:4000]}
-
-            if observation.get("cell"):
-                yield {
-                    "type": "note_cell",
-                    "cell": observation["cell"],
-                    "turn_id": observation.get("turn_id"),
-                }
-            if observation.get("execution"):
-                yield {
-                    "type": "execution_queued",
-                    "execution": observation["execution"],
-                    "cell": observation.get("cell"),
-                    "turn_id": observation.get("turn_id"),
-                }
-            summary = _tool_summary(tool_name, observation)
-            yield {
-                "type": "tool_completed",
-                "tool": tool_name,
-                "tool_call_id": tool_call_id,
-                "status": "error" if observation.get("status") == "error" else "ok",
-                "summary": summary,
-                "step": step,
-            }
-            safe_observation = json.dumps(observation, default=str)[:MAX_NOTE_TOOL_CHARS]
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": safe_observation,
-            })
-
-        collected_text = ""
-
-    final_text = (
-        "I inspected the notebook but reached the safe action limit for this turn. "
-        "The persisted cells and any queued execution remain available above."
+    executor = NoteAgentExecutor(
+        message=message,
+        cells=cells,
+        context=context,
+        action_handler=action_handler,
+        max_steps=max_steps,
     )
-    yield {"type": "final", "message": final_text}
+    async for event in run_agent_loop(executor, message, cancel_check=cancel_check):
+        yield event
+
+
+class NoteAgentExecutor:
+    """NoteThread lens: four notebook-safe tools on the shared agent core."""
+
+    def __init__(
+        self,
+        *,
+        message: str,
+        cells: list[Any],
+        context: dict[str, Any],
+        action_handler: ActionHandler | None = None,
+        max_steps: int | None = None,
+    ):
+        self.cells = cells
+        self.context = context
+        self.action_handler = action_handler
+        self.max_steps = max(2, min(int(max_steps or getattr(settings, "agent_max_steps", 6) or 6), MAX_NOTE_STEPS))
+        self.max_tokens = 3000
+        self.max_tool_chars = MAX_NOTE_TOOL_CHARS
+        self.system_prompt = NOTE_AGENT_SYSTEM_PROMPT
+        self.tools = NOTE_TOOLS
+        self.use_retry_guard = False
+        self.cancelled_message = "This NoteThread run was cancelled."
+        self.default_final_message = "I could not produce a grounded notebook response."
+
+    def initial_events(self, message: str) -> tuple[list[dict], bool]:
+        current_message = (message or "").strip()
+        if not current_message:
+            return [{"type": "final", "message": "Tell me what you want to investigate in this notebook."}], True
+        return [{"type": "status", "status": "thinking", "message": "Thinking about the notebook question"}], False
+
+    def build_messages(self, message: str) -> list[dict]:
+        messages: list[dict[str, Any]] = conversation_from_cells(self.cells)
+        messages.append({"role": "user", "content": message})
+        return messages
+
+    def build_live_context(self) -> str:
+        return _live_context(self.context)
+
+    def fallback_events(self, exc: Exception) -> list[dict]:
+        fallback = _fallback_message(exc)
+        return [
+            {"type": "error", "message": fallback},
+            {"type": "final", "message": fallback},
+        ]
+
+    def final_event(self, message: str) -> dict:
+        return {"type": "final", "message": message}
+
+    def max_steps_events(self) -> list[dict]:
+        return [{
+            "type": "final",
+            "message": (
+                "I inspected the notebook but reached the safe action limit for this turn. "
+                "The persisted cells and any queued execution remain available above."
+            ),
+        }]
+
+    def tool_completed_event(
+        self,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        status: str,
+        summary: str,
+        step: int,
+    ) -> dict:
+        return {
+            "type": "tool_completed",
+            "tool": tool_name,
+            "tool_call_id": tool_call_id,
+            "status": status,
+            "summary": summary,
+            "step": step,
+        }
+
+    def summary_for(self, tool_name: str, observation: dict) -> str:
+        return _tool_summary(tool_name, observation)
+
+    async def legacy_llm_step(self, messages: list[dict], *, step: int) -> None:
+        return None
+
+    async def execute_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        step: int,
+        tool_call_id: str,
+        persisted_arguments: dict[str, Any],
+        step_text: str,
+    ) -> ToolCallResult:
+        events: list[dict[str, Any]] = [{
+            "type": "tool_started",
+            "tool": tool_name,
+            "tool_call_id": tool_call_id,
+            "step": step,
+            "message": f"Using {tool_name}",
+        }]
+        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note"}:
+            observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
+        elif self.action_handler is None:
+            observation = {"status": "error", "error": "NoteThread tools are unavailable"}
+        else:
+            try:
+                observation = await self.action_handler(tool_name, arguments)
+                if not isinstance(observation, dict):
+                    observation = {"status": "ok", "result": observation}
+            except Exception as exc:
+                logger.exception("NoteThread tool %s failed: %s", tool_name, exc)
+                observation = {"status": "error", "error": str(exc)[:4000]}
+
+        if observation.get("cell"):
+            events.append({
+                "type": "note_cell",
+                "cell": observation["cell"],
+                "turn_id": observation.get("turn_id"),
+            })
+        if observation.get("execution"):
+            events.append({
+                "type": "execution_queued",
+                "execution": observation["execution"],
+                "cell": observation.get("cell"),
+                "turn_id": observation.get("turn_id"),
+            })
+        return ToolCallResult(observation=observation, events=events)
+
 
 
 __all__ = ["NOTE_AGENT_SYSTEM_PROMPT", "NOTE_TOOLS", "append_note_cell", "conversation_from_cells", "stream_note_agent"]

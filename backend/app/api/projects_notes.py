@@ -988,6 +988,18 @@ async def note_thread_turn(
             )
         return {
             "status": "ok",
+            "stdout": str(((execution_payload or {}).get("result_metadata") or {}).get("stdout_preview") or "")[:4000],
+            "stderr": (
+                str(execution_payload.get("error") or "")[:4000]
+                if str(execution_payload.get("status") or "") in {"failed", "timed_out", "cancelled"}
+                else ""
+            ),
+            "summary": {
+                "execution_status": str(execution_payload.get("status") or "queued"),
+                "output_chars": ((execution_payload or {}).get("result_metadata") or {}).get("output_chars", 0),
+                "output_truncated": bool(((execution_payload or {}).get("result_metadata") or {}).get("output_truncated")),
+                "had_errors": bool(((execution_payload or {}).get("result_metadata") or {}).get("had_errors")),
+            },
             "cell": cell_payload,
             "execution": execution_payload,
             "turn_id": turn_id,
