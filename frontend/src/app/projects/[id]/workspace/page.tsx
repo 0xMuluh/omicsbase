@@ -1104,7 +1104,7 @@ export default function WorkspacePage() {
         {viewMode === "chat" ? (
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1">
-              <ProjectsSidebarContent notesScope={project?.id || ""} onClose={() => setSidebarOpen(false)} />
+              <ProjectsSidebarContent notesScope="recent" onClose={() => setSidebarOpen(false)} />
             </div>
             <div className="flex shrink-0 items-center justify-between border-t border-border p-3">
               <ThemeToggle />

@@ -50,7 +50,7 @@ export function StartExperience() {
               See beyond the counts.
             </h1>
             <p className="mx-auto mt-4 max-w-lg text-[17px] leading-7 text-muted-foreground">
-              Create downstream omics reports by chatting with AI.
+              Create downstream omics reports by chatting with OmicsBase.
             </p>
           </motion.div>
 

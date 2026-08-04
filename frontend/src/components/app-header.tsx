@@ -7,7 +7,7 @@ export function AppHeader() {
   const pathname = usePathname();
 
   // Start surfaces and project routes own their chrome.
-  if (pathname === "/" || pathname.startsWith("/projects/")) {
+  if (pathname === "/" || pathname.startsWith("/projects/") || pathname.startsWith("/notes")) {
     return null;
   }
 

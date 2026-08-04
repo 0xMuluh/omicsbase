@@ -415,6 +415,23 @@ export interface FilePreview {
   error?: string;
 }
 
+export interface NoteDataFile {
+  name: string;
+  format: string;
+  size_bytes: number;
+  dimensions?: Record<string, number>;
+  columns?: string[];
+  note?: string;
+  r_path: string;
+}
+
+export interface ImportableDataset {
+  package: string;
+  dataset: string;
+  description: string;
+  domain_hint?: string;
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -577,6 +594,42 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  // Example datasets + thread-attached data files
+  listImportableDatasets: () =>
+    request<{ datasets: { package: string; dataset: string; description: string; domain_hint?: string }[] }>("/datasets/importable"),
+  importProjectDataset: (projectId: string, packageName: string, dataset: string) =>
+    request<{ status: string; files: { name: string; role: string; format: string }[] }>("/datasets/projects/" + projectId + "/import", {
+      method: "POST",
+      body: JSON.stringify({ package: packageName, dataset }),
+    }),
+  uploadStandaloneNoteFile: async (threadId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE}/notes/${threadId}/files`, { method: "POST", body: formData });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(`Upload failed (${res.status}): ${detail}`);
+    }
+    return res.json() as Promise<NoteDataFile>;
+  },
+  listStandaloneNoteFiles: (threadId: string) => request<NoteDataFile[]>(`/notes/${threadId}/files`),
+  importStandaloneNoteDataset: (threadId: string, packageName: string, dataset: string) =>
+    request<{ status: string; package: string; dataset: string; files: { name: string; format: string; r_path: string }[] }>(
+      `/notes/${threadId}/datasets/import`,
+      { method: "POST", body: JSON.stringify({ package: packageName, dataset }) },
+    ),
+  uploadProjectNoteFile: async (projectId: string, threadId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE}/projects/${projectId}/notes/${threadId}/files`, { method: "POST", body: formData });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(`Upload failed (${res.status}): ${detail}`);
+    }
+    return res.json() as Promise<NoteDataFile>;
+  },
+
   getStandaloneNoteThread: (threadId: string) =>
     request<NoteThread>("/notes/" + threadId),
   updateStandaloneNoteThread: (

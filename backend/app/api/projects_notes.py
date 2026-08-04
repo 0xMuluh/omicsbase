@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -49,12 +49,14 @@ from app.schemas.schemas import (
     NoteThreadUpdate,
     NoteThreadTurnRequest,
     NoteThreadReportExportRequest,
+    DatasetImportRequest,
     ReportOut,
 )
 from app.config import settings
 from app.services.agent_runtime import normalise_cell_type
 from app.services.note_scope import standalone_storage_path
 from app.services.note_agent import append_note_cell, conversation_from_cells, stream_note_agent
+from app.services.note_data import MAX_THREAD_UPLOAD_BYTES
 from app.services.note_report import build_note_qmd, report_payload, safe_report_slug
 from app.services.note_execution import (
     environment_fingerprint,
@@ -285,6 +287,45 @@ def create_note_thread(
     db.refresh(thread)
     _publish_note_event(project_id, str(thread.id), "note_thread_created")
     return _thread_payload(thread)
+
+
+@router.post("/{project_id}/notes/{thread_id}/files", status_code=status.HTTP_201_CREATED)
+def upload_note_thread_file(
+    project_id: str,
+    thread_id: str,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Attach one data file to a project NoteThread so the agent can inspect it."""
+    from app.services.note_data import save_thread_upload
+
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
+    if thread.status != "active":
+        raise HTTPException(status_code=409, detail="Cannot attach files to an archived NoteThread")
+    content = file.file.read(MAX_THREAD_UPLOAD_BYTES + 1)
+    try:
+        summary = save_thread_upload(thread, content, filename=file.filename or "upload.bin", project=project)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    thread.updated_at = _now()
+    db.commit()
+    return summary
+
+
+@router.get("/{project_id}/notes/{thread_id}/files")
+def list_note_thread_files(
+    project_id: str,
+    thread_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    from app.services.note_data import list_thread_data_files
+
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
+    return list_thread_data_files(thread, project=project)
 
 
 @router.get("/{project_id}/notes/{thread_id}", response_model=NoteThreadOut)
@@ -715,8 +756,16 @@ def _note_agent_context(db: Session, thread: NoteThread) -> dict[str, Any]:
         "cells": cells,
         "workspace_objects": _read_workspace_objects(thread),
     }
+    project = None
     if thread.project_id:
         project = db.query(Project).filter(Project.id == thread.project_id).first()
+    try:
+        from app.services.note_data import list_thread_data_files
+
+        context["data_files"] = list_thread_data_files(thread, project=project)
+    except (OSError, ValueError):
+        context["data_files"] = []
+    if thread.project_id:
         if project is not None:
             context["workspace"] = {
                 "id": str(project.id),
@@ -922,6 +971,17 @@ async def note_thread_turn(
         fresh_thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
         if tool_name == "inspect_note":
             return {"status": "ok", "context": _note_agent_context(db, fresh_thread), "turn_id": turn_id}
+        if tool_name == "inspect_data_files":
+            from app.services.note_data import list_thread_data_files
+
+            project = None
+            if fresh_thread.project_id:
+                project = db.query(Project).filter(Project.id == fresh_thread.project_id).first()
+            return {
+                "status": "ok",
+                "files": list_thread_data_files(fresh_thread, project=project),
+                "turn_id": turn_id,
+            }
         if tool_name == "promote_to_workspace":
             return _promote_cell_to_workspace(db, fresh_thread, arguments, turn_id=turn_id)
         if tool_name == "search_bioc_books":
@@ -1482,6 +1542,67 @@ def delete_standalone_note_thread(
     shutil.rmtree(storage, ignore_errors=True)
     db.delete(thread)
     db.commit()
+
+
+@standalone_router.post("/{thread_id}/files", status_code=status.HTTP_201_CREATED)
+def upload_standalone_note_file(
+    thread_id: str,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Attach one data file to a standalone NoteThread so the agent can inspect it."""
+    from app.services.note_data import save_thread_upload
+
+    thread = _get_standalone_thread(db, thread_id, tenant_id)
+    if thread.status != "active":
+        raise HTTPException(status_code=409, detail="Cannot attach files to an archived NoteThread")
+    content = file.file.read(MAX_THREAD_UPLOAD_BYTES + 1)
+    try:
+        summary = save_thread_upload(thread, content, filename=file.filename or "upload.bin")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    thread.updated_at = _now()
+    db.commit()
+    return summary
+
+
+@standalone_router.get("/{thread_id}/files")
+def list_standalone_note_files(
+    thread_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    from app.services.note_data import list_thread_data_files
+
+    thread = _get_standalone_thread(db, thread_id, tenant_id)
+    return list_thread_data_files(thread)
+
+
+@standalone_router.post("/{thread_id}/datasets/import")
+def import_standalone_note_dataset(
+    thread_id: str,
+    data: DatasetImportRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Export a known R package dataset into a standalone NoteThread's files."""
+    from app.services.note_data import import_dataset_into_thread
+
+    thread = _get_standalone_thread(db, thread_id, tenant_id)
+    if thread.status != "active":
+        raise HTTPException(status_code=409, detail="Cannot import into an archived NoteThread")
+    try:
+        result = import_dataset_into_thread(
+            thread,
+            package=data.package,
+            dataset=data.dataset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    thread.updated_at = _now()
+    db.commit()
+    return result
 
 
 @standalone_router.post("/{thread_id}/cells", response_model=NoteCellOut, status_code=status.HTTP_201_CREATED)

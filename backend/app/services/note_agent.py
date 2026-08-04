@@ -38,6 +38,7 @@ Build the notebook like a literate analysis, not a code dump:
 - If a question genuinely requires a calculation, call run_r_cell with the smallest reproducible R cell.
 - For methodological questions or reusable analysis code, call search_bioc_books first when the catalog has relevant material.
 - Treat book excerpts as methodological guidance, not evidence about the user's data; preserve and cite the returned source metadata.
+- Data files attached to this notebook (uploaded by the user or imported from an R package dataset) are listed by inspect_data_files with their format, columns, and an r_path. When the user asks about their data, call inspect_data_files first, then read the file in an R cell using the given r_path (relative to the notebook's working directory). Never invent file names or columns; inspect first.
 - Never invent files, columns, observations, p-values, or results. If the notebook lacks the required data, say what is missing.
 - Do not install packages, fetch data, or render a report from this thread. Do not edit the Workspace either — except that when the user explicitly asks to move a tested step into the report, promote_to_workspace may copy a cell into the project's code directory.
 
@@ -112,6 +113,10 @@ NOTE_TOOLS = [
             "required": ["path", "content"],
         },
     ),
+    _tool_def(
+        "inspect_data_files",
+        "List data files attached to this notebook (user uploads or imported example datasets) with format, columns, and the r_path to read each in an R cell.",
+    ),
 ]
 
 
@@ -170,6 +175,14 @@ def _tool_summary(name: str, observation: dict[str, Any]) -> str:
         return "Markdown note appended to the notebook"
     if name == "promote_to_workspace":
         return f"Promoted to {observation.get('path', 'the workspace')}"
+    if name == "inspect_data_files":
+        files = observation.get("files") or []
+        if observation.get("status") == "error":
+            return "Data file inspection failed"
+        if not files:
+            return "No data files attached to this notebook"
+        names = ", ".join(str(item.get("name")) for item in files[:5])
+        return f"Inspected {len(files)} data file(s): {names}"
     return f"{name} completed"
 
 
@@ -361,7 +374,7 @@ class NoteAgentExecutor:
             "step": step,
             "message": f"Using {tool_name}",
         }]
-        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace"}:
+        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace", "inspect_data_files"}:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
         elif self.action_handler is None:
             observation = {"status": "error", "error": "NoteThread tools are unavailable"}

@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
   ArrowUp,
   Check,
   Code2,
+  Database,
   Download,
   Eye,
   FileText,
@@ -28,7 +30,7 @@ import {
   Upload,
 } from "lucide-react";
 
-import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteExecutionArtifact, WorkspaceResult } from "@/lib/api";
+import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteExecutionArtifact, WorkspaceResult, type ImportableDataset } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -78,6 +80,7 @@ function ComposerAddButton({
   onAddCode,
   onExport,
   onInsertResult,
+  onImportDataset,
   exportPending,
   exported,
   showExport,
@@ -90,6 +93,7 @@ function ComposerAddButton({
   onAddCode: () => void;
   onExport: () => void;
   onInsertResult?: () => void;
+  onImportDataset?: () => void;
   exportPending: boolean;
   exported: boolean;
   showExport: boolean;
@@ -109,10 +113,23 @@ function ComposerAddButton({
         <Plus className="h-4 w-4" />
       </Button>
       {open ? (
-        <div className="absolute bottom-11 left-0 z-20 min-w-48 rounded-xl border border-border bg-popover p-1.5 text-sm shadow-xl">
+        <AnimatePresence>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 6 }}
+            transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.9 }}
+            style={{ transformOrigin: "bottom left" }}
+            className="absolute bottom-11 left-0 z-20 min-w-48 rounded-xl border border-border bg-popover p-1.5 text-sm shadow-xl"
+          >
           <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted" onClick={onAddData}>
-            <Upload className="h-4 w-4 text-muted-foreground" /> Add data or plan
+            <Upload className="h-4 w-4 text-muted-foreground" /> Add data
           </button>
+          {onImportDataset ? (
+            <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted" onClick={onImportDataset}>
+              <Database className="h-4 w-4 text-muted-foreground" /> Import example dataset
+            </button>
+          ) : null}
           <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted" onClick={onAddNote}>
             <FileText className="h-4 w-4 text-muted-foreground" /> Add note
           </button>
@@ -135,9 +152,60 @@ function ComposerAddButton({
               {exported ? "Exported QMD" : "Export draft QMD"}
             </button>
           ) : null}
-        </div>
+          </motion.div>
+        </AnimatePresence>
       ) : null}
     </div>
+  );
+}
+
+function DatasetPicker({
+  datasets,
+  onClose,
+  onPick,
+  pending,
+}: {
+  datasets: ImportableDataset[] | null;
+  onClose: () => void;
+  onPick: (dataset: ImportableDataset) => void;
+  pending: boolean;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 z-20" onClick={onClose} />
+      <div className="absolute bottom-16 left-2 z-30 max-h-64 w-80 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-sm shadow-xl">
+        <p className="px-2.5 py-1.5 text-xs font-medium text-muted-foreground">
+          Import example dataset
+        </p>
+        {datasets === null ? (
+          <p className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" /> Loading...
+          </p>
+        ) : datasets.length === 0 ? (
+          <p className="px-2.5 py-2 text-xs text-muted-foreground">No example datasets available.</p>
+        ) : (
+          datasets.map((dataset) => (
+            <button
+              key={`${dataset.package}::${dataset.dataset}`}
+              type="button"
+              disabled={pending}
+              onClick={() => onPick(dataset)}
+              className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted"
+            >
+              <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-medium">
+                  {dataset.package}::{dataset.dataset}
+                </span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {dataset.description}
+                </span>
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
@@ -190,6 +258,42 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const [resultActions, setResultActions] = useState<Record<string, { history?: boolean; files?: boolean }>>({});
   const [downloadingResult, setDownloadingResult] = useState<string | null>(null);
+  const [datasetOpen, setDatasetOpen] = useState(false);
+  const [datasets, setDatasets] = useState<ImportableDataset[] | null>(null);
+
+  const openDatasetPicker = useCallback(async () => {
+    setComposerMenuOpen(false);
+    setDatasetOpen(true);
+    if (datasets === null) {
+      try {
+        const result = await api.listImportableDatasets();
+        setDatasets(result.datasets);
+      } catch {
+        setDatasets([]);
+      }
+    }
+  }, [datasets]);
+
+  const importDataset = useMutation({
+    mutationFn: async (dataset: ImportableDataset) => {
+      const threadId = await ensureThread();
+      if (!threadId) throw new Error("Could not create a note to import into.");
+      if (workspaceId) {
+        await api.importProjectDataset(workspaceId, dataset.package, dataset.dataset);
+        queryClient.invalidateQueries({ queryKey: ["projects"] });
+      } else {
+        await api.importStandaloneNoteDataset(threadId, dataset.package, dataset.dataset);
+        queryClient.invalidateQueries({ queryKey: ["note-thread", scopeId, threadId] });
+      }
+    },
+    onSuccess: () => {
+      setDatasetOpen(false);
+      setTurnStatus("Example dataset imported");
+    },
+    onError: (error) => {
+      setTurnError(error instanceof Error ? error.message : "The dataset could not be imported.");
+    },
+  });
 
   const toggleResultAction = (executionId: string, key: "history" | "files") => {
     setResultActions((prev) => {
@@ -506,6 +610,37 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   };
 
+  // Create (and select) a thread when an action needs one but none is open.
+  const ensureThread = async (): Promise<string | null> => {
+    if (selectedThreadId) return selectedThreadId;
+    try {
+      const thread = await createScopedThread({ title: "Untitled note" });
+      setSelectedThreadId(thread.id);
+      router.replace(`${pathname}?thread=${thread.id}`, { scroll: false });
+      queryClient.invalidateQueries({ queryKey: ["note-threads", scopeId] });
+      return thread.id;
+    } catch {
+      setTurnError("Could not create a note.");
+      return null;
+    }
+  };
+
+  const addCellWithEnsure = async (cellType: NoteCellType) => {
+    const threadId = await ensureThread();
+    if (!threadId) return;
+    try {
+      await createScopedCell(threadId, {
+        cell_type: cellType,
+        language: cellType === "code" ? "r" : null,
+        content: "",
+      });
+      queryClient.invalidateQueries({ queryKey: ["note-thread", scopeId, threadId] });
+      queryClient.invalidateQueries({ queryKey: ["note-threads", scopeId] });
+    } catch (error) {
+      setTurnError(error instanceof Error ? error.message : "The cell could not be added.");
+    }
+  };
+
   return (
     <main className="flex h-screen overflow-hidden bg-background">
       {sidebarOpen ? (
@@ -551,13 +686,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
           <div className="flex items-center gap-2">
             {!workspaceId && selectedThreadId ? (
               <Button size="sm" variant="outline" onClick={() => promoteThread.mutate()} disabled={promoteThread.isPending}>
-                {promoteThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} Promote to workspace
-              </Button>
-            ) : null}
-            {!workspaceId ? (
-              <Button size="sm" onClick={() => createThread.mutate("Untitled note")} disabled={!scopeId || createThread.isPending}>
-                {createThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                New note
+                {promoteThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Promote to workspace
               </Button>
             ) : null}
           </div>
@@ -571,11 +700,33 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                     See beyond the counts.
                   </h1>
                   <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-                    Create downstream omics reports by chatting with AI.
+                    Create downstream omics reports by chatting with OmicsBase.
                   </p>
                 </div>
-                <div className="rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+                <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
                   <div className="flex items-end gap-1.5">
+                    <ComposerAddButton
+                      open={composerMenuOpen}
+                      onToggle={() => setComposerMenuOpen((value) => !value)}
+                      disabled={createThread.isPending || turnStreaming}
+                      onAddData={() => {
+                        setComposerMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      onImportDataset={() => void openDatasetPicker()}
+                      onAddNote={() => {
+                        setComposerMenuOpen(false);
+                        void addCellWithEnsure("markdown");
+                      }}
+                      onAddCode={() => {
+                        setComposerMenuOpen(false);
+                        void addCellWithEnsure("code");
+                      }}
+                      onExport={() => undefined}
+                      exportPending={false}
+                      exported={false}
+                      showExport={false}
+                    />
                     <Textarea
                       value={emptyPrompt}
                       onChange={(event) => setEmptyPrompt(event.target.value)}
@@ -593,6 +744,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       {createThread.isPending || turnStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                     </Button>
                   </div>
+                  {datasetOpen ? (
+                    <DatasetPicker
+                      datasets={datasets}
+                      onClose={() => setDatasetOpen(false)}
+                      onPick={(dataset) => importDataset.mutate(dataset)}
+                      pending={importDataset.isPending}
+                    />
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -606,7 +765,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                     See beyond the counts.
                   </h1>
                   <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-                    Create downstream omics reports by chatting with AI.
+                    Create downstream omics reports by chatting with OmicsBase.
                   </p>
                 </div>
                 <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
@@ -642,6 +801,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       </div>
                     </>
                   ) : null}
+                  {datasetOpen ? (
+                    <DatasetPicker
+                      datasets={datasets}
+                      onClose={() => setDatasetOpen(false)}
+                      onPick={(dataset) => importDataset.mutate(dataset)}
+                      pending={importDataset.isPending}
+                    />
+                  ) : null}
                   <div className="flex items-end gap-1.5">
                     <ComposerAddButton
                       open={composerMenuOpen}
@@ -651,6 +818,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                         setComposerMenuOpen(false);
                         fileInputRef.current?.click();
                       }}
+                      onImportDataset={() => void openDatasetPicker()}
                       onAddNote={() => {
                         setComposerMenuOpen(false);
                         addCell("markdown");
@@ -957,15 +1125,21 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                   event.target.value = "";
                   setComposerMenuOpen(false);
                   if (!files.length) return;
-                  if (!workspaceId) {
-                    setTurnError("Add data after this note is connected to a workspace.");
-                    return;
+                  let threadId = selectedThreadId;
+                  if (!threadId) {
+                    threadId = await ensureThread();
+                    if (!threadId) return;
                   }
                   try {
-                    for (const file of files) await api.uploadFile(workspaceId, file, "auto");
+                    if (workspaceId) {
+                      for (const file of files) await api.uploadFile(workspaceId, file, "auto");
+                      queryClient.invalidateQueries({ queryKey: ["projects"] });
+                    } else {
+                      for (const file of files) await api.uploadStandaloneNoteFile(threadId, file);
+                      queryClient.invalidateQueries({ queryKey: ["note-thread", scopeId, threadId] });
+                    }
                     setTurnError(null);
                     setTurnStatus(files.length === 1 ? files[0].name + " added" : files.length + " files added");
-                    queryClient.invalidateQueries({ queryKey: ["projects"] });
                   } catch (error) {
                     setTurnError(error instanceof Error ? error.message : "The files could not be added.");
                   }
@@ -1004,6 +1178,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       </div>
                     </>
                   ) : null}
+                  {datasetOpen ? (
+                    <DatasetPicker
+                      datasets={datasets}
+                      onClose={() => setDatasetOpen(false)}
+                      onPick={(dataset) => importDataset.mutate(dataset)}
+                      pending={importDataset.isPending}
+                    />
+                  ) : null}
                   <div className="flex items-end gap-1.5">
                   <ComposerAddButton
                     open={composerMenuOpen}
@@ -1013,6 +1195,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       setComposerMenuOpen(false);
                       fileInputRef.current?.click();
                     }}
+                    onImportDataset={() => void openDatasetPicker()}
                     onAddNote={() => {
                       setComposerMenuOpen(false);
                       addCell("markdown");

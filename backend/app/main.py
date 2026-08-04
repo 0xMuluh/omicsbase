@@ -12,6 +12,7 @@ from app.api.projects_note_executions import standalone_execution_router as stan
 from app.api.knowledge import router as knowledge_router
 from app.api.runs import router as runs_router
 from app.api.input_contract import router as input_contract_router
+from app.api.datasets import router as datasets_router
 from app.api.projects import router as projects_router
 from app.config import settings
 from app.middleware.auth import ApiKeyMiddleware
@@ -105,6 +106,7 @@ app.include_router(standalone_note_execution_router)
 app.include_router(knowledge_router)
 app.include_router(runs_router)
 app.include_router(input_contract_router)
+app.include_router(datasets_router)
 
 
 @app.get("/api/health")

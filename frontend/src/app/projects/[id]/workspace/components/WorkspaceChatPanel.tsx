@@ -272,10 +272,7 @@ export function WorkspaceChatPanel({
                       className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs hover:bg-muted"
                     >
                       <Code2 className="h-3.5 w-3.5 text-teal-500" />
-                      <div className="text-left">
-                        <div className="font-medium">Build Mode</div>
-                        <div className="text-[10px] text-muted-foreground">Executes R code & edits reports</div>
-                      </div>
+                      <div className="font-medium">Build</div>
                     </button>
                     <button
                       type="button"
@@ -286,10 +283,7 @@ export function WorkspaceChatPanel({
                       className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs hover:bg-muted"
                     >
                       <MessageSquare className="h-3.5 w-3.5 text-indigo-400" />
-                      <div className="text-left">
-                        <div className="font-medium">Discuss Mode</div>
-                        <div className="text-[10px] text-muted-foreground">Answers questions without edits</div>
-                      </div>
+                      <div className="font-medium">Discuss</div>
                     </button>
                   </div>
                 )}

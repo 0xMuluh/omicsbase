@@ -218,6 +218,11 @@ class NoteThreadUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class DatasetImportRequest(BaseModel):
+    package: str = Field(min_length=1, max_length=128)
+    dataset: str = Field(min_length=1, max_length=128)
+
+
 class NoteThreadTurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     auto_execute: bool = True

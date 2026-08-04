@@ -13,6 +13,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
   ChevronDown,
+  Database,
   FileText,
   Loader2,
   Mic,
@@ -20,10 +21,10 @@ import {
   X,
 } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, type ImportableDataset } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
-type LaunchMode = "build" | "plan";
+type LaunchMode = "notes" | "build" | "plan";
 
 interface AttachedFile {
   file: File;
@@ -69,13 +70,6 @@ function splitPrompt(prompt: string): { question: string; customPlanText?: strin
   }
   return { question: trimmed };
 }
-
-const DESIGN_SUGGESTIONS = [
-  "Compare two groups",
-  "More than two groups",
-  "Longitudinal samples",
-  "Include covariates",
-];
 
 async function launchStudy(options: {
   text: string;
@@ -126,11 +120,28 @@ export function StartComposer({
   const modeMenuRef = useRef<HTMLDivElement>(null);
 
   const [prompt, setPrompt] = useState("");
-  const [mode, setMode] = useState<LaunchMode>("build");
+  const [mode, setMode] = useState<LaunchMode>("notes");
   const [modeOpen, setModeOpen] = useState(false);
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [step, setStep] = useState<"idle" | "uploading">("idle");
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [datasets, setDatasets] = useState<ImportableDataset[] | null>(null);
+  const [datasetOpen, setDatasetOpen] = useState(false);
+  const [selectedDataset, setSelectedDataset] = useState<ImportableDataset | null>(null);
+
+  const openDatasetPicker = useCallback(async () => {
+    setAddMenuOpen(false);
+    setDatasetOpen(true);
+    if (datasets === null) {
+      try {
+        const result = await api.listImportableDatasets();
+        setDatasets(result.datasets);
+      } catch {
+        setDatasets([]);
+      }
+    }
+  }, [datasets]);
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const next = Array.from(incoming).map((file) => ({
@@ -164,6 +175,21 @@ export function StartComposer({
         throw new Error("Ask a question, describe an analysis, or attach study files.");
       }
 
+      if (mode === "notes") {
+        const thread = await api.createStandaloneNoteThread({
+          title: text.slice(0, 72) || "Untitled note",
+        });
+        queryClient.invalidateQueries({ queryKey: ["note-threads"] });
+        if (selectedDataset) {
+          await api.importStandaloneNoteDataset(thread.id, selectedDataset.package, selectedDataset.dataset);
+        }
+        for (const item of files) {
+          await api.uploadStandaloneNoteFile(thread.id, item.file);
+        }
+        router.push(`/notes?thread=${thread.id}`);
+        return { kind: "note" as const, id: thread.id };
+      }
+
       // Immediately create project and navigate to workspace
       const projectId = await launchStudy({
         text: text || "Analyze the study.",
@@ -172,6 +198,9 @@ export function StartComposer({
         onStep: setStep,
       });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
+      if (selectedDataset) {
+        await api.importProjectDataset(projectId, selectedDataset.package, selectedDataset.dataset);
+      }
       router.push(`/projects/${projectId}/workspace`);
       return { kind: "project" as const, id: projectId };
     },
@@ -179,17 +208,6 @@ export function StartComposer({
       setStep("idle");
     },
     onSettled: () => setStep("idle"),
-  });
-
-  const createNoteMutation = useMutation({
-    mutationFn: async () => {
-      const thread = await api.createStandaloneNoteThread({
-        title: prompt.trim().slice(0, 72) || "Untitled note",
-      });
-      queryClient.invalidateQueries({ queryKey: ["note-threads"] });
-      router.push(`/notes?thread=${thread.id}`);
-      return { kind: "note" as const, id: thread.id };
-    },
   });
 
   const canSubmit = Boolean(prompt.trim() || files.length) && !createMutation.isPending;
@@ -203,7 +221,7 @@ export function StartComposer({
             See beyond the counts.
           </h1>
           <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-            Describe the study, attach data with +, and talk it through in the project chat.
+            Ask a question, attach data with +, and choose Notes, Build, or Plan.
           </p>
         </div>
       ) : null}
@@ -248,22 +266,78 @@ export function StartComposer({
                   </button>
                 </div>
               ))}
+              {selectedDataset ? (
+                <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-xs text-foreground">
+                  <Database className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
+                  <span className="truncate">
+                    {selectedDataset.package}::{selectedDataset.dataset}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-full p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                    onClick={() => setSelectedDataset(null)}
+                    aria-label="Remove example dataset"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
             </motion.div>
           ) : null}
         </AnimatePresence>
 
-        {prompt === "" && files.length === 0 && !createMutation.isPending ? (
-          <div className="mb-1.5 flex flex-wrap gap-1.5 px-1">
-            {DESIGN_SUGGESTIONS.map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => setPrompt(suggestion)}
-                className="rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              >
-                {suggestion}
-              </button>
-            ))}
+        {datasetOpen ? (
+          <div className="mb-1.5 px-1">
+            <div className="rounded-2xl border border-border bg-popover p-2 text-sm shadow-xl">
+              <div className="mb-1 flex items-center justify-between px-1">
+                <p className="text-xs font-medium text-muted-foreground">Import example dataset</p>
+                <button
+                  type="button"
+                  className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => setDatasetOpen(false)}
+                  aria-label="Close dataset picker"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {datasets === null ? (
+                <p className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading datasets…
+                </p>
+              ) : datasets.length === 0 ? (
+                <p className="px-1 py-2 text-xs text-muted-foreground">
+                  No example datasets available right now.
+                </p>
+              ) : (
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {datasets.map((dataset) => (
+                    <button
+                      key={`${dataset.package}::${dataset.dataset}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedDataset(dataset);
+                        setDatasetOpen(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left transition hover:bg-muted ${
+                        selectedDataset?.package === dataset.package &&
+                        selectedDataset?.dataset === dataset.dataset
+                          ? "bg-teal-500/10"
+                          : ""
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {dataset.package}::{dataset.dataset}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {dataset.description}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
 
@@ -278,17 +352,52 @@ export function StartComposer({
               event.target.value = "";
             }}
           />
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={createMutation.isPending}
-            className="h-10 w-10 shrink-0 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Add files"
-          >
-            <Plus className="h-4 w-4" />
-          </Button>
+          <div className="relative shrink-0">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setAddMenuOpen((open) => !open)}
+              disabled={createMutation.isPending}
+              className="h-10 w-10 shrink-0 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Add files or an example dataset"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            <AnimatePresence>
+              {addMenuOpen ? (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setAddMenuOpen(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.96, y: -6 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.96, y: -6 }}
+                    transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.9 }}
+                    style={{ transformOrigin: "top left" }}
+                    className="absolute left-0 top-[calc(100%+8px)] z-30 w-56 overflow-hidden rounded-2xl border border-border bg-[var(--composer-elevated)] p-1 shadow-2xl"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-foreground transition hover:bg-muted"
+                    >
+                      Add files
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openDatasetPicker}
+                      className="w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-foreground transition hover:bg-muted"
+                    >
+                      Import example dataset
+                    </button>
+                  </motion.div>
+                </>
+              ) : null}
+            </AnimatePresence>
+          </div>
 
           <div className="min-w-0 flex-1">
             <ComposerTextarea
@@ -310,20 +419,29 @@ export function StartComposer({
                 disabled={createMutation.isPending}
                 className="inline-flex h-10 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium text-foreground transition hover:bg-muted"
               >
-                {mode === "build" ? "Build" : "Plan"}
+                {mode === "notes" ? "Notes" : mode === "build" ? "Build" : "Plan"}
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
               <AnimatePresence>
                 {modeOpen ? (
                   <motion.div
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 6 }}
-                    className="absolute right-0 bottom-[calc(100%+8px)] z-20 w-64 overflow-hidden rounded-2xl border border-border bg-[var(--composer-elevated)] p-1 shadow-2xl"
+                    initial={{ opacity: 0, scale: 0.96, y: -6 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.96, y: -6 }}
+                    transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.9 }}
+                    style={{ transformOrigin: "top right" }}
+                    className="absolute right-0 top-[calc(100%+8px)] z-20 w-40 overflow-hidden rounded-2xl border border-border bg-[var(--composer-elevated)] p-1 shadow-2xl"
                   >
                     <ModeOption
+                      title="Notes"
+                      active={mode === "notes"}
+                      onClick={() => {
+                        setMode("notes");
+                        setModeOpen(false);
+                      }}
+                    />
+                    <ModeOption
                       title="Build"
-                      description="When a study starts, the agent builds the report."
                       active={mode === "build"}
                       onClick={() => {
                         setMode("build");
@@ -332,7 +450,6 @@ export function StartComposer({
                     />
                     <ModeOption
                       title="Plan"
-                      description="When a study starts, pause for plan approval."
                       active={mode === "plan"}
                       onClick={() => {
                         setMode("plan");
@@ -382,7 +499,9 @@ export function StartComposer({
         <p className="mt-4 text-center text-sm text-muted-foreground">
           {mode === "build"
             ? "Build mode lets the AI take control when the study plan is clear."
-            : "Plan mode pauses for your approval before generation."}
+            : mode === "plan"
+              ? "Plan mode pauses for your approval before generation."
+              : "Notes opens a lightweight notebook."}
         </p>
       )}
 
@@ -391,33 +510,16 @@ export function StartComposer({
           {(createMutation.error as Error).message}
         </p>
       ) : null}
-
-      <button
-        type="button"
-        onClick={() => createNoteMutation.mutate()}
-        disabled={createNoteMutation.isPending || createMutation.isPending}
-        className="mx-auto mt-5 flex items-center gap-1.5 rounded-full border border-border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
-        title="Start a lightweight notebook without a project"
-      >
-        {createNoteMutation.isPending ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <FileText className="h-3.5 w-3.5" />
-        )}
-        Start a notebook instead — New note
-      </button>
     </div>
   );
 }
 
 function ModeOption({
   title,
-  description,
   active,
   onClick,
 }: {
   title: string;
-  description: string;
   active: boolean;
   onClick: () => void;
 }) {
@@ -425,14 +527,13 @@ function ModeOption({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
+      className={`w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${
         active
           ? "bg-teal-500/10 text-teal-800 dark:bg-teal-400/15 dark:text-teal-100"
           : "text-foreground hover:bg-muted"
       }`}
     >
-      <div className="text-sm font-medium">{title}</div>
-      <div className="mt-0.5 text-xs leading-4 text-muted-foreground">{description}</div>
+      {title}
     </button>
   );
 }

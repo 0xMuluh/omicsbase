@@ -34,7 +34,9 @@ def inspect_file(file_path: str) -> dict[str, Any]:
         elif suffix in (".xlsx", ".xls"):
             return _inspect_excel(path)
         elif suffix == ".rds":
-            return _inspect_rds(path)
+            return _inspect_r_object(path, "rds")
+        elif suffix in (".rda", ".rdata"):
+            return _inspect_r_object(path, "rda")
         elif suffix == ".sav":
             return _inspect_sav(path)
         elif suffix == ".json":
@@ -249,14 +251,78 @@ def _inspect_excel(path: Path) -> dict[str, Any]:
     return result
 
 
-def _inspect_rds(path: Path) -> dict[str, Any]:
-    """Basic inspection of R .rds files — just size and type detection."""
-    return {
-        "format": "rds",
+def _inspect_r_object(path: Path, kind: str) -> dict[str, Any]:
+    """Inspect R .rds / .rda objects via R when available; size-only fallback.
+
+    Portable R data formats: .rds (single object) and .rda/.RData (workspace
+    images with named objects). Contents are read with a sandboxed Rscript
+    so the structured summary (class, dimensions, columns) is available to
+    agents and the UI without loading the object into Python.
+    """
+    result = {
+        "format": "rds" if kind == "rds" else "r_workspace",
         "name": path.name,
         "size_bytes": path.stat().st_size,
-        "note": "RDS files are read natively in R; the generated data.R will use readRDS().",
+        "editable": False,
     }
+    if path.stat().st_size > 200 * 1024 * 1024:
+        result["note"] = "File too large for preview inspection; it can still be read in R."
+        return result
+    try:
+        import subprocess
+
+        r_path = str(path).replace("\\", "\\\\").replace('"', '\\"')
+        if kind == "rds":
+            script = f"""
+obj <- readRDS("{r_path}")
+info <- list(class = paste(class(obj), collapse = "/"))
+if (is.data.frame(obj) || is.matrix(obj)) info$dimensions <- dim(obj)
+if (is.data.frame(obj)) info$columns <- colnames(obj)[1:min(50, ncol(obj))]
+if (inherits(obj, "phyloseq")) info$dimensions <- c(phyloseq::ntaxa(obj), phyloseq::nsamples(obj))
+cat(jsonlite::toJSON(info, auto_unbox = TRUE, null = "null"))
+"""
+        else:
+            script = f"""
+env <- new.env()
+load("{r_path}", envir = env)
+objs <- ls(env, all.names = TRUE)
+info <- list(objects = lapply(objs, function(nm) {{
+  obj <- get(nm, envir = env)
+  entry <- list(name = nm, class = paste(class(obj), collapse = "/"))
+  if (is.data.frame(obj) || is.matrix(obj)) entry$dimensions <- dim(obj)
+  if (is.data.frame(obj)) entry$columns <- colnames(obj)[1:min(50, ncol(obj))]
+  entry
+}}))
+cat(jsonlite::toJSON(info, auto_unbox = TRUE, null = "null"))
+"""
+        completed = subprocess.run(
+            ["Rscript", "--vanilla", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            payload = json.loads(completed.stdout.strip())
+            _normalise_r_dimensions(payload)
+            result.update({key: value for key, value in payload.items() if value is not None})
+    except Exception as exc:
+        result["note"] = f"R preview unavailable ({str(exc)[:200]}); the file can still be read in R."
+    return result
+
+
+def _normalise_r_dimensions(payload: dict[str, Any]) -> None:
+    """Convert R dim() vectors into the platform's {rows, columns} shape."""
+
+    def as_rows_cols(value: Any) -> Any:
+        if isinstance(value, list) and len(value) == 2 and all(isinstance(v, int) for v in value):
+            return {"rows": value[0], "columns": value[1]}
+        return value
+
+    if "dimensions" in payload:
+        payload["dimensions"] = as_rows_cols(payload["dimensions"])
+    for entry in payload.get("objects") or []:
+        if isinstance(entry, dict) and "dimensions" in entry:
+            entry["dimensions"] = as_rows_cols(entry["dimensions"])
 
 
 def _inspect_sav(path: Path, *, max_preview_rows: int = 5) -> dict[str, Any]:
