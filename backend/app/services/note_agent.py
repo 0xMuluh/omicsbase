@@ -39,7 +39,7 @@ Build the notebook like a literate analysis, not a code dump:
 - For methodological questions or reusable analysis code, call search_bioc_books first when the catalog has relevant material.
 - Treat book excerpts as methodological guidance, not evidence about the user's data; preserve and cite the returned source metadata.
 - Never invent files, columns, observations, p-values, or results. If the notebook lacks the required data, say what is missing.
-- Do not install packages, fetch data, edit a Workspace, or render a report from this thread.
+- Do not install packages, fetch data, or render a report from this thread. Do not edit the Workspace either — except that when the user explicitly asks to move a tested step into the report, promote_to_workspace may copy a cell into the project's code directory.
 
 Return natural language unless a tool is needed. Tool arguments must be valid JSON."""
 
@@ -99,6 +99,19 @@ NOTE_TOOLS = [
             "required": ["text"],
         },
     ),
+    _tool_def(
+        "promote_to_workspace",
+        "Copy a tested R cell into the project's code directory (e.g. data_processing.R) so the next report build adopts it. Only usable in a notebook attached to a project, and only when the user asks to move the work into the report. The path is relative to the project code directory.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file name under code/, e.g. data_processing.R"},
+                "content": {"type": "string", "description": "The full R content to write"},
+                "purpose": {"type": "string", "description": "What this promoted step does in the pipeline"},
+            },
+            "required": ["path", "content"],
+        },
+    ),
 ]
 
 
@@ -155,6 +168,8 @@ def _tool_summary(name: str, observation: dict[str, Any]) -> str:
         return f"R cell {execution_status}"
     if name == "add_note":
         return "Markdown note appended to the notebook"
+    if name == "promote_to_workspace":
+        return f"Promoted to {observation.get('path', 'the workspace')}"
     return f"{name} completed"
 
 
@@ -334,7 +349,7 @@ class NoteAgentExecutor:
             "step": step,
             "message": f"Using {tool_name}",
         }]
-        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note"}:
+        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace"}:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
         elif self.action_handler is None:
             observation = {"status": "error", "error": "NoteThread tools are unavailable"}

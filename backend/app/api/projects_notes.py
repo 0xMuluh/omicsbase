@@ -609,6 +609,64 @@ def _get_note_thread_for_tenant(db: Session, thread_id: str, tenant_id: str) -> 
     return thread
 
 
+def _promote_cell_to_workspace(
+    db: Session,
+    thread: NoteThread,
+    arguments: dict[str, Any],
+    *,
+    turn_id: str | None = None,
+) -> dict[str, Any]:
+    """Copy a tested cell into the project's code directory (guarded write)."""
+    from pathlib import Path
+
+    from app.services.apply_edits import is_path_locked, safe_resolve_path
+
+    if not thread.project_id:
+        return {
+            "status": "error",
+            "error": "This notebook is not attached to a project. Attach it first, then promote.",
+            "turn_id": turn_id,
+        }
+    project = db.query(Project).filter(Project.id == thread.project_id).first()
+    base = Path(project.project_dir).resolve() if project and project.project_dir else None
+    if not base or not base.exists():
+        return {
+            "status": "error",
+            "error": "The project has no generated workspace yet. Build the report first, then promote.",
+            "turn_id": turn_id,
+        }
+
+    relative_path = str(arguments.get("path") or "").strip()
+    content = str(arguments.get("content") or "")
+    if not relative_path or not content.strip():
+        return {"status": "error", "error": "promote_to_workspace needs a path and cell content.", "turn_id": turn_id}
+    if not relative_path.lower().endswith((".r", ".qmd", ".md")):
+        return {"status": "error", "error": "Only .R, .qmd, and .md files can be promoted.", "turn_id": turn_id}
+    if len(content) > 200_000:
+        return {"status": "error", "error": "The promoted content exceeds the 200 KB limit.", "turn_id": turn_id}
+
+    project_relative = f"code/{relative_path}"
+    if is_path_locked(base, project_relative):
+        return {
+            "status": "error",
+            "error": f"{project_relative} is locked. Unlock it in the workspace before promoting.",
+            "turn_id": turn_id,
+        }
+    code_dir = base / "code"
+    target = safe_resolve_path(code_dir, relative_path)
+    if target is None:
+        return {"status": "error", "error": "The path escapes the project code directory.", "turn_id": turn_id}
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return {
+        "status": "ok",
+        "path": project_relative,
+        "promoted": True,
+        "turn_id": turn_id,
+    }
+
+
 def _note_agent_context(db: Session, thread: NoteThread) -> dict[str, Any]:
     cells: list[dict[str, Any]] = []
     ordered_cells = sorted(thread.cells, key=lambda item: (int(item.position or 0), item.created_at))
@@ -864,6 +922,8 @@ async def note_thread_turn(
         fresh_thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
         if tool_name == "inspect_note":
             return {"status": "ok", "context": _note_agent_context(db, fresh_thread), "turn_id": turn_id}
+        if tool_name == "promote_to_workspace":
+            return _promote_cell_to_workspace(db, fresh_thread, arguments, turn_id=turn_id)
         if tool_name == "search_bioc_books":
             from app.services.bioc_knowledge import search_bioc_knowledge
 

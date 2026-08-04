@@ -157,6 +157,12 @@ export interface ClarificationAnswer {
   values: string[];
 }
 
+export interface WorkspaceResult {
+  path: string;
+  name: string;
+  source: "note" | "workspace";
+}
+
 export interface PendingQuestion {
   id: string;
   question: string;
@@ -434,6 +440,8 @@ export const api = {
     return res.json() as Promise<ProjectFile>;
   },
   listFiles: (projectId: string) => request<ProjectFile[]>(`/projects/${projectId}/files`),
+  getNoteResults: (projectId: string) =>
+    request<WorkspaceResult[]>(`/projects/${projectId}/note-results`),
 
   // Planning & Generation
   startPlanning: (projectId: string) =>

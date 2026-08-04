@@ -24,10 +24,11 @@ import {
   Square,
   Sparkles,
   Sun,
+  Table2,
   Upload,
 } from "lucide-react";
 
-import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteExecutionArtifact } from "@/lib/api";
+import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteExecutionArtifact, WorkspaceResult } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -76,6 +77,7 @@ function ComposerAddButton({
   onAddNote,
   onAddCode,
   onExport,
+  onInsertResult,
   exportPending,
   exported,
   showExport,
@@ -87,6 +89,7 @@ function ComposerAddButton({
   onAddNote: () => void;
   onAddCode: () => void;
   onExport: () => void;
+  onInsertResult?: () => void;
   exportPending: boolean;
   exported: boolean;
   showExport: boolean;
@@ -116,6 +119,11 @@ function ComposerAddButton({
           <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted" onClick={onAddCode}>
             <Code2 className="h-4 w-4 text-muted-foreground" /> Add R code
           </button>
+          {onInsertResult ? (
+            <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground hover:bg-muted" onClick={onInsertResult}>
+              <Table2 className="h-4 w-4 text-muted-foreground" /> Insert workspace result
+            </button>
+          ) : null}
           {showExport ? (
             <button
               type="button"
@@ -167,6 +175,8 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const [editingCellId, setEditingCellId] = useState<string | null>(null);
   const [turnDraft, setTurnDraft] = useState("");
   const [emptyPrompt, setEmptyPrompt] = useState("");
+  const [workspaceResults, setWorkspaceResults] = useState<WorkspaceResult[] | null>(null);
+  const [resultPickerOpen, setResultPickerOpen] = useState(false);
   const [turnStreaming, setTurnStreaming] = useState(false);
   const [turnStatus, setTurnStatus] = useState<string | null>(null);
   const [liveTurnText, setLiveTurnText] = useState("");
@@ -403,6 +413,27 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const addCell = (cellType: NoteCellType) => {
     if (selectedThreadId && !createCell.isPending) createCell.mutate(cellType);
   };
+
+  const openResultPicker = () => {
+    setComposerMenuOpen(false);
+    setResultPickerOpen(true);
+    if (workspaceResults === null && workspaceId) {
+      api
+        .getNoteResults(workspaceId)
+        .then(setWorkspaceResults)
+        .catch(() => setWorkspaceResults([]));
+    }
+  };
+
+  const insertWorkspaceResult = (path: string) => {
+    setResultPickerOpen(false);
+    const line = `[workspace result: ${path}]`;
+    if (currentThread && currentThread.cells.length > 0) {
+      setTurnDraft((prev) => (prev.trim() ? `${prev}\n${line}` : line));
+    } else {
+      setEmptyPrompt((prev) => (prev.trim() ? `${prev}\n${line}` : line));
+    }
+  };
   const saveCell = (cell: NoteCell) => {
     if (!selectedThreadId || saveRevision.isPending) return;
     saveRevision.mutate({ cell, content: drafts[cell.id] ?? latestRevision(cell)?.content ?? "" });
@@ -578,7 +609,39 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                     Create downstream omics reports by chatting with AI.
                   </p>
                 </div>
-                <div className="rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+                <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+                  {resultPickerOpen ? (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setResultPickerOpen(false)} />
+                      <div className="absolute bottom-16 left-2 z-30 max-h-56 w-72 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-sm shadow-xl">
+                        <p className="px-2.5 py-1.5 text-xs font-medium text-muted-foreground">
+                          Workspace results
+                        </p>
+                        {workspaceResults === null ? (
+                          <p className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" /> Loading...
+                          </p>
+                        ) : workspaceResults.length === 0 ? (
+                          <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                            No result tables yet. Build the report or run notebook cells first.
+                          </p>
+                        ) : (
+                          workspaceResults.map((result) => (
+                            <button
+                              key={result.path}
+                              type="button"
+                              onClick={() => insertWorkspaceResult(result.path)}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted"
+                              title={result.path}
+                            >
+                              <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{result.name}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  ) : null}
                   <div className="flex items-end gap-1.5">
                     <ComposerAddButton
                       open={composerMenuOpen}
@@ -600,6 +663,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                         setComposerMenuOpen(false);
                         exportReport.mutate();
                       }}
+                      onInsertResult={openResultPicker}
                       exportPending={exportReport.isPending}
                       exported={Boolean(exportReport.data)}
                       showExport={Boolean(workspaceId)}
@@ -907,8 +971,40 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                   }
                 }}
               />
-              <div className="rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
-                <div className="flex items-end gap-1.5">
+                <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+                  {resultPickerOpen ? (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setResultPickerOpen(false)} />
+                      <div className="absolute bottom-16 left-2 z-30 max-h-56 w-72 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-sm shadow-xl">
+                        <p className="px-2.5 py-1.5 text-xs font-medium text-muted-foreground">
+                          Workspace results
+                        </p>
+                        {workspaceResults === null ? (
+                          <p className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" /> Loading...
+                          </p>
+                        ) : workspaceResults.length === 0 ? (
+                          <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                            No result tables yet. Build the report or run notebook cells first.
+                          </p>
+                        ) : (
+                          workspaceResults.map((result) => (
+                            <button
+                              key={result.path}
+                              type="button"
+                              onClick={() => insertWorkspaceResult(result.path)}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted"
+                              title={result.path}
+                            >
+                              <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{result.name}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  ) : null}
+                  <div className="flex items-end gap-1.5">
                   <ComposerAddButton
                     open={composerMenuOpen}
                     onToggle={() => setComposerMenuOpen((value) => !value)}
@@ -929,6 +1025,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       setComposerMenuOpen(false);
                       exportReport.mutate();
                     }}
+                    onInsertResult={openResultPicker}
                     exportPending={exportReport.isPending}
                     exported={Boolean(exportReport.data)}
                     showExport={Boolean(workspaceId)}

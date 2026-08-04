@@ -109,6 +109,26 @@ def list_files(
     return db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
 
 
+@router.get("/{project_id}/note-results")
+def list_note_results(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Result tables from the workspace and from project-attached note executions."""
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    from app.services.workspace_agent import list_project_result_artifacts
+
+    return [
+        {
+            "path": path,
+            "name": Path(path).name,
+            "source": "note" if "note-executions" in path else "workspace",
+        }
+        for path in list_project_result_artifacts(project)
+    ]
+
+
 @router.get("/{project_id}/locks")
 def get_project_locks(
     project_id: str,

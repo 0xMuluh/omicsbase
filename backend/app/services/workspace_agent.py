@@ -1027,8 +1027,10 @@ def _read_results(project, relative_path: str) -> dict[str, Any]:
     else:
         candidates = [
             path
-            for path in sorted((base / "output" / "results").glob("*"))
-            if path.is_file() and path.suffix.lower() in {".csv", ".tsv", ".json", ".txt"}
+            for path in sorted(
+                base / path for path in list_project_result_artifacts(project)
+            )
+            if path.is_file()
         ]
         if not candidates:
             return {"status": "ok", "artifacts": [], "message": "No result tables are available yet."}
@@ -1095,15 +1097,26 @@ def _validate_report(project) -> dict[str, Any]:
 
 
 def _result_paths(project) -> list[str]:
+    return list_project_result_artifacts(project)
+
+
+def list_project_result_artifacts(project) -> list[str]:
+    """Workspace result tables plus tables from project-attached note executions."""
     base = _project_base(project)
-    result_dir = base / "output" / "results" if base else None
-    if not result_dir or not result_dir.exists():
+    if not base:
         return []
-    return [
-        path.relative_to(base).as_posix()
-        for path in sorted(result_dir.glob("*"))
-        if path.is_file()
-    ][:100]
+    found: list[str] = []
+    for pattern in (
+        "output/results/*",
+        ".omicsbase/note-executions/*/tables/*",
+        "output/derived/note-executions/*/tables/*",
+    ):
+        for path in sorted(base.glob(pattern)):
+            if path.is_file() and path.suffix.lower() in {".csv", ".tsv", ".json", ".txt"}:
+                relative = path.relative_to(base).as_posix()
+                if relative not in found:
+                    found.append(relative)
+    return found[:100]
 
 
 def _project_base(project) -> Path | None:
