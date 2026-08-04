@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-20250514"
     llm_input_cost_per_million: float = 0.0
     llm_output_cost_per_million: float = 0.0
+    # Per-task model targets: "provider:model" (empty provider = the global
+    # LLM_PROVIDER; empty value = fall back to the global LLM_MODEL).
+    llm_agent_target: str = ""    # agent tool loops (workspace + notes)
+    llm_fast_target: str = ""     # fast-intent path (no tools)
+    llm_planner_target: str = ""  # analysis planning
+    llm_title_target: str = ""    # project title generation
     # Fast-intent path: simple, tool-free questions answered directly with a
     # faster model (empty fast_path_model selects the provider's fast default).
     fast_path_enabled: bool = True

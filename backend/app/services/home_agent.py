@@ -18,10 +18,15 @@ async def generate_project_title(prompt: str) -> str:
         "Return ONLY the 2-4 word title. Do not add quotes, explanation, or punctuation."
     )
 
+    from app.services.llm import resolve_target
+
+    title_provider, title_model = resolve_target("title")
     raw = await call_llm(
         system_prompt=system_prompt,
         user_prompt=f'Summarize this query into a title: "{prompt[:300]}"',
         max_tokens=20,
+        model_override=title_model,
+        provider_override=title_provider,
     )
     cleaned = raw.strip().strip('"').strip("'").strip(".").strip()
     return cleaned

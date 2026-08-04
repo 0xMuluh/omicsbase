@@ -79,6 +79,8 @@ class AgentExecutor(Protocol):
     system_prompt: str
     tools: list[dict]
     use_retry_guard: bool
+    llm_provider_override: str | None = None
+    llm_model_override: str | None = None
     cancelled_message: str
     default_final_message: str
     max_steps_message: str
@@ -198,6 +200,8 @@ async def run_agent_loop(
                     tools=executor.tools,
                     max_tokens=executor.max_tokens,
                     live_context=live_context,
+                    model_override=executor.llm_model_override,
+                    provider_override=executor.llm_provider_override,
                 ):
                     if event["type"] == "usage":
                         yield {"type": "usage", "usage": event.get("usage") or {}}

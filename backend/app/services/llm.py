@@ -79,18 +79,34 @@ def _load_prompt(name: str) -> str:
     return path.read_text()
 
 
+def resolve_target(role: str) -> tuple[str | None, str | None]:
+    """Return (provider, model) for a task role, or (None, None) to use globals."""
+    targets = {
+        "agent": settings.llm_agent_target,
+        "fast": settings.llm_fast_target,
+        "planner": settings.llm_planner_target,
+        "title": settings.llm_title_target,
+    }
+    raw = (targets.get(role) or "").strip()
+    if not raw:
+        return None, None
+    provider, _, model = raw.partition(":")
+    return (provider.strip() or None), (model.strip() or None)
+
+
 async def call_llm(
     system_prompt: str,
     user_prompt: str,
     response_format: str = "text",
     max_tokens: int = 16000,
     model_override: str | None = None,
+    provider_override: str | None = None,
 ) -> str:
     """Call the configured LLM and return response text."""
     system_prompt = sanitize_text(system_prompt)
     user_prompt = sanitize_text(user_prompt)
 
-    provider = settings.llm_provider.lower()
+    provider = (provider_override or settings.llm_provider).lower()
 
     if provider == "anthropic":
         return await _call_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override)
@@ -108,12 +124,13 @@ async def stream_llm_text(
     user_prompt: str,
     max_tokens: int = 4000,
     model_override: str | None = None,
+    provider_override: str | None = None,
 ):
     """Yield text tokens from the configured LLM for conversational replies."""
     system_prompt = sanitize_text(system_prompt)
     user_prompt = sanitize_text(user_prompt)
 
-    provider = settings.llm_provider.lower()
+    provider = (provider_override or settings.llm_provider).lower()
     if provider == "anthropic":
         async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override):
             yield chunk
@@ -134,6 +151,7 @@ async def stream_llm_with_tools(
     max_tokens: int = 4000,
     live_context: str | None = None,
     model_override: str | None = None,
+    provider_override: str | None = None,
 ):
     """Yield streaming events with native function/tool calling.
 
@@ -145,7 +163,7 @@ async def stream_llm_with_tools(
     system_prompt = sanitize_text(system_prompt)
     live_context = sanitize_text(live_context) if live_context else None
 
-    provider = settings.llm_provider.lower()
+    provider = (provider_override or settings.llm_provider).lower()
     if provider == "anthropic":
         async for event in _stream_anthropic_with_tools(
             system_prompt, messages, tools, max_tokens, live_context=live_context, model_override=model_override,
@@ -406,49 +424,68 @@ async def _stream_openai_with_tools(
     # Accumulate tool calls across streamed chunks
     tool_calls_acc: dict[int, dict[str, Any]] = {}
 
-    async for chunk in stream:
-        usage = _usage_payload(getattr(chunk, "usage", None))
-        if usage:
-            yield {"type": "usage", "usage": usage}
-        if not getattr(chunk, "choices", None):
-            continue
-        delta = chunk.choices[0].delta
+    async def _run_stream():
+        stream = await client.chat.completions.create(**kwargs)
 
-        # Text content
-        if delta.content:
-            yield {"type": "text_delta", "content": delta.content}
+        # Accumulate tool calls across streamed chunks
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
 
-        # Tool call deltas
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {
-                        "id": tc_delta.id or f"call_{idx}",
-                        "name": "",
-                        "arguments_json": "",
-                    }
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tool_calls_acc[idx]["name"] = tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        tool_calls_acc[idx]["arguments_json"] += tc_delta.function.arguments
+        async for chunk in stream:
+            usage = _usage_payload(getattr(chunk, "usage", None))
+            if usage:
+                yield {"type": "usage", "usage": usage}
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
 
-        # Check for stop
-        if chunk.choices[0].finish_reason:
-            break
+            # Text content
+            if delta.content:
+                yield {"type": "text_delta", "content": delta.content}
 
-    # Emit accumulated tool calls
-    import json as _json
-    for _idx in sorted(tool_calls_acc):
-        tc = tool_calls_acc[_idx]
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {
+                            "id": tc_delta.id or f"call_{idx}",
+                            "name": "",
+                            "arguments_json": "",
+                        }
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_acc[idx]["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_acc[idx]["arguments_json"] += tc_delta.function.arguments
+
+            # Check for stop
+            if chunk.choices[0].finish_reason:
+                break
+
+        # Emit accumulated tool calls
+        import json as _json
+        for _idx in sorted(tool_calls_acc):
+            tc = tool_calls_acc[_idx]
+            try:
+                args = _json.loads(tc["arguments_json"]) if tc["arguments_json"] else {}
+            except _json.JSONDecodeError:
+                args = {}
+            yield {"type": "tool_call", "id": tc["id"], "name": tc["name"], "arguments": args}
+
+        yield {"type": "done"}
+
+    # Groq intermittently hard-fails on a malformed tool-call JSON sample
+    # ("Failed to call a function"); the next sample is usually valid.
+    for attempt in range(2):
         try:
-            args = _json.loads(tc["arguments_json"]) if tc["arguments_json"] else {}
-        except _json.JSONDecodeError:
-            args = {}
-        yield {"type": "tool_call", "id": tc["id"], "name": tc["name"], "arguments": args}
-
-    yield {"type": "done"}
+            async for event in _run_stream():
+                yield event
+            return
+        except Exception as exc:
+            if attempt == 0 and "failed to call a function" in str(exc).lower():
+                logger.warning("Provider tool-call error, retrying once: %s", exc)
+                continue
+            raise
 
 
 async def _stream_anthropic_with_tools(

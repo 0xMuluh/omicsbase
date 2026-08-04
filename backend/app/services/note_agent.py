@@ -274,6 +274,9 @@ class NoteAgentExecutor:
         self.use_retry_guard = False
         self.cancelled_message = "This NoteThread run was cancelled."
         self.default_final_message = "I could not produce a grounded notebook response."
+        from app.services.llm import resolve_target
+
+        self.llm_provider_override, self.llm_model_override = resolve_target("agent")
 
     def initial_events(self, message: str) -> tuple[list[dict], bool]:
         current_message = (message or "").strip()

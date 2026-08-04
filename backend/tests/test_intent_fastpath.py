@@ -108,3 +108,15 @@ def test_fast_path_short_circuits_the_loop():
     assert [e["type"] for e in events] == ["token", "final"]
     assert events[-1]["message"] == "hi there"
     assert events[-1]["fast"] is True
+
+
+def test_resolve_target(monkeypatch):
+    from app.config import settings
+    from app.services.llm import resolve_target
+
+    monkeypatch.setattr(settings, "llm_agent_target", "qwen:qwen3.7-max")
+    monkeypatch.setattr(settings, "llm_fast_target", "groq:llama-3.3-70b-versatile")
+    monkeypatch.setattr(settings, "llm_planner_target", "")
+    assert resolve_target("agent") == ("qwen", "qwen3.7-max")
+    assert resolve_target("fast") == ("groq", "llama-3.3-70b-versatile")
+    assert resolve_target("planner") == (None, None)

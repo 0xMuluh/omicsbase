@@ -91,7 +91,10 @@ def fast_path_model() -> str | None:
 
 async def stream_simple_answer(message: str) -> AsyncIterator[dict[str, Any]]:
     """Stream a direct answer for a simple question as agent events."""
-    model = fast_path_model()
+    from app.services.llm import resolve_target
+
+    provider_override, model_override = resolve_target("fast")
+    model = model_override or fast_path_model()
     yield {"type": "status", "status": "thinking", "message": "Answering directly", "fast": True}
     chunks: list[str] = []
     async for chunk in stream_llm_text(
@@ -99,6 +102,7 @@ async def stream_simple_answer(message: str) -> AsyncIterator[dict[str, Any]]:
         user_prompt=message,
         max_tokens=400,
         model_override=model,
+        provider_override=provider_override,
     ):
         chunks.append(chunk)
         yield {"type": "token", "token": chunk}

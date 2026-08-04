@@ -344,6 +344,9 @@ class WorkspaceAgentExecutor:
         self.use_retry_guard = True
         self.cancelled_message = "This Workspace run was cancelled."
         self.default_final_message = "I could not produce a grounded response."
+        from app.services.llm import resolve_target
+
+        self.llm_provider_override, self.llm_model_override = resolve_target("agent")
 
         self.inspect_tool_names = {t["function"]["name"] for t in WORKSPACE_TOOLS}
 

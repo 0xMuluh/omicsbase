@@ -206,11 +206,16 @@ Rules for needs_clarification:
 - Never use needs_clarification when the design is determinable — a usable plan is always preferred.
 """
 
+        from app.services.llm import resolve_target
+
+        planner_provider, planner_model = resolve_target("planner")
         response = await call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_format="json",
             max_tokens=4000,
+            model_override=planner_model,
+            provider_override=planner_provider,
         )
 
         clean = response.strip()
