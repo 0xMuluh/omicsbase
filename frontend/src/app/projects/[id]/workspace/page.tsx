@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import { api, AgentStreamEvent, ChatMessage, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
+import PlanReviewPanel from "@/components/PlanReviewPanel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -1621,7 +1622,9 @@ export default function WorkspacePage() {
             </div>
           </div>
 
-          {viewMode === "chat" ? (
+          {["planning", "planned", "needs_clarification"].includes(project?.status || "") ? (
+            <PlanReviewPanel projectId={projectId} />
+          ) : viewMode === "chat" ? (
             <div className="relative flex min-h-0 flex-1 flex-col items-center justify-between p-4 md:p-6 overflow-hidden">
               <div ref={workspaceChatScrollRef} data-thread-column className="w-full max-w-3xl flex-1 overflow-y-auto space-y-4 pr-1 no-scrollbar">
                 {displayChatMessages.map((message, index) => (

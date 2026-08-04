@@ -65,7 +65,7 @@ export function StartExperience() {
         </div>
       </section>
 
-      <ProjectsSidebar open={sidebar.open} onClose={() => sidebar.setOpen(false)} notesScope="recent" />
+      <ProjectsSidebar open={sidebar.open} onClose={() => sidebar.setOpen(false)} notesScope="standalone" />
     </div>
   );
 }

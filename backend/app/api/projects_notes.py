@@ -1344,27 +1344,6 @@ def list_standalone_note_threads(
     return [_thread_summary_payload(thread) for thread in threads]
 
 
-@standalone_router.get("/all", response_model=list[NoteThreadSummaryOut])
-def list_recent_note_threads(
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_current_tenant),
-    limit: int = 25,
-):
-    """List the most recently updated threads across all scopes for this tenant.
-
-    Used by the home sidebar to surface recent notes regardless of whether
-    they belong to a workspace or are standalone.
-    """
-    threads = (
-        db.query(NoteThread)
-        .filter(NoteThread.tenant_id == tenant_id, NoteThread.status == "active")
-        .order_by(NoteThread.updated_at.desc())
-        .limit(max(1, min(int(limit), 50)))
-        .all()
-    )
-    return [_thread_summary_payload(thread) for thread in threads]
-
-
 @standalone_router.post("", response_model=NoteThreadOut, status_code=status.HTTP_201_CREATED)
 def create_standalone_note_thread(
     data: NoteThreadCreate,

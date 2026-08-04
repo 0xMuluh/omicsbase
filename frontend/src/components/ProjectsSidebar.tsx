@@ -28,14 +28,13 @@ const STORAGE_KEY = "omicsbase.projects-sidebar.open";
 function projectHref(project: Project): string {
   if (project.status === "created") return `/projects/${project.id}/workspace`;
   if (project.status === "planning" && project.auto_build) return `/projects/${project.id}/workspace`;
-  if (project.status === "planned" || project.status === "approved") return `/projects/${project.id}/plan`;
   if (
     project.project_dir
-    || ["generating", "generated", "rendering", "completed", "failed"].includes(project.status)
+    || ["planned", "approved", "generating", "generated", "rendering", "completed", "failed"].includes(project.status)
   ) {
     return `/projects/${project.id}/workspace`;
   }
-  return `/projects/${project.id}/plan`;
+  return `/projects/${project.id}/workspace`;
 }
 
 export function useProjectsSidebar() {
@@ -104,7 +103,7 @@ export function ProjectsSidebarContent({
     queryFn: api.listProjects,
   });
 
-  const scope = notesScope || "standalone";
+  const scope = notesScope === "recent" ? "standalone" : notesScope || "standalone";
   const queryClient = useQueryClient();
   const router = useRouter();
   const [reuseCache, setReuseCache] = useReuseCache();
@@ -113,11 +112,9 @@ export function ProjectsSidebarContent({
   const notesQuery = useQuery({
     queryKey: ["note-threads", scope],
     queryFn: () =>
-      scope === "recent"
-        ? api.listRecentNoteThreads()
-        : scope === "standalone"
-          ? api.listStandaloneNoteThreads()
-          : api.listNoteThreads(scope),
+      scope === "standalone"
+        ? api.listStandaloneNoteThreads()
+        : api.listNoteThreads(scope),
     enabled: Boolean(scope),
   });
   const notes = (notesQuery.data || [])
@@ -521,6 +518,16 @@ export function SidebarProjectItem({ project }: { project: Project }) {
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-full z-30 mt-1 w-40 rounded-xl border border-border bg-popover p-1 text-xs shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      router.push(`/projects/${project.id}/notes`);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-muted"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" /> Notes
+                  </button>
                   <button
                     type="button"
                     onClick={() => {

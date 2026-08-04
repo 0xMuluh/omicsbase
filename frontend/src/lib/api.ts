@@ -564,8 +564,6 @@ export const api = {
   ) => streamNoteThreadTurn(threadId, data, onEvent, signal),
   listStandaloneNoteThreads: () =>
     request<NoteThreadSummary[]>("/notes"),
-  listRecentNoteThreads: () =>
-    request<NoteThreadSummary[]>("/notes/all"),
   createStandaloneNoteThread: (data: { title?: string; thread_type?: string } = {}) =>
     request<NoteThread>("/notes", {
       method: "POST",

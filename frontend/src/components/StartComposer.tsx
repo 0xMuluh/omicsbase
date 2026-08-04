@@ -177,17 +177,24 @@ export function StartComposer({
         onStep: setStep,
       });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
-      router.push(
-        mode === "plan"
-          ? `/projects/${projectId}/plan`
-          : `/projects/${projectId}/workspace`
-      );
+      router.push(`/projects/${projectId}/workspace`);
       return { kind: "project" as const, id: projectId };
     },
     onError: () => {
       setStep("idle");
     },
     onSettled: () => setStep("idle"),
+  });
+
+  const createNoteMutation = useMutation({
+    mutationFn: async () => {
+      const thread = await api.createStandaloneNoteThread({
+        title: prompt.trim().slice(0, 72) || "Untitled note",
+      });
+      queryClient.invalidateQueries({ queryKey: ["note-threads"] });
+      router.push(`/notes?thread=${thread.id}`);
+      return { kind: "note" as const, id: thread.id };
+    },
   });
 
   const canSubmit = Boolean(prompt.trim() || files.length) && !createMutation.isPending;
@@ -396,6 +403,21 @@ export function StartComposer({
           {(createMutation.error as Error).message}
         </p>
       ) : null}
+
+      <button
+        type="button"
+        onClick={() => createNoteMutation.mutate()}
+        disabled={createNoteMutation.isPending || createMutation.isPending}
+        className="mx-auto mt-5 flex items-center gap-1.5 rounded-full border border-border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+        title="Start a lightweight notebook without a project"
+      >
+        {createNoteMutation.isPending ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <FileText className="h-3.5 w-3.5" />
+        )}
+        Start a notebook instead — New note
+      </button>
     </div>
   );
 }
