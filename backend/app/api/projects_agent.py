@@ -310,6 +310,10 @@ async def workspace_agent_stream(
         tool_started_at = {}
         token_buffer: list[str] = []
         telemetry_written = False
+        agent_memory = dict(project.agent_memory or {})
+        if agent_memory.pop("pending_question", None) is not None:
+            project.agent_memory = agent_memory
+            db.commit()
         record_stream_event(db, run, {"type": "message", "message_id": str(user_message.id), "message": _message_payload(user_message)})
         db.commit()
         yield _ndjson_event({"type": "run", "run": serialize_agent_run(run)})
@@ -722,6 +726,12 @@ async def workspace_agent_stream(
                     metadata=metadata or None,
                 )
                 event["message_id"] = str(message.id)
+
+            if event["type"] == "final" and event.get("awaiting_answer"):
+                agent_memory = dict(project.agent_memory or {})
+                agent_memory["pending_question"] = event["awaiting_answer"]
+                project.agent_memory = agent_memory
+                db.commit()
 
             event_type = str(event.get("type") or event_type)
             if event_type in {"final", "action_queued", "cancelled"} and token_buffer:

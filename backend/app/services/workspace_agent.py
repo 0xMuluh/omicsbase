@@ -6,6 +6,7 @@ import asyncio
 import csv
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
@@ -149,6 +150,15 @@ WORKSPACE_TOOLS: list[dict[str, Any]] = [
             "purpose": {"type": "string", "description": "Brief description of what this inspection checks"},
         },
         "required": ["code"],
+    }),
+    _tool_def("ask_user", "Ask the user one blocking question with concrete options when a decision cannot be inferred (e.g. which groups to compare, whether to include covariates, which method to prefer). The turn pauses until the user answers. Use sparingly: prefer the available data and standard defaults whenever possible", {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The question, phrased so the options answer it directly"},
+            "options": {"type": "array", "items": {"type": "string"}, "description": "2-6 concrete options"},
+            "multiple": {"type": "boolean", "description": "Allow multiple selections", "default": False},
+        },
+        "required": ["question"],
     }),
 ]
 
@@ -532,6 +542,37 @@ async def stream_workspace_agent(
                     "content": json.dumps({"status": "error", "error": summary}),
                 })
                 continue
+
+            if tool_name == "ask_user":
+                question = str(arguments.get("question") or "").strip()[:500]
+                if not question:
+                    failed_tool_calls[signature] = "ask_user requires a non-empty question"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps({"status": "error", "error": "ask_user requires a non-empty question"}),
+                    })
+                    continue
+                options = [str(option).strip() for option in (arguments.get("options") or []) if str(option).strip()][:6]
+                multiple = bool(arguments.get("multiple"))
+                pending_question = {
+                    "id": f"question-{uuid.uuid4()}",
+                    "question": question,
+                    "options": options,
+                    "multiple": multiple,
+                }
+                yield {
+                    "type": "question",
+                    "question": pending_question,
+                    "step": step,
+                }
+                yield {
+                    "type": "final",
+                    "message": question,
+                    "awaiting_answer": pending_question,
+                    "memory_updates": [],
+                }
+                return
 
             if tool_name in inspect_tool_names:
                 # Workspace inspection tool

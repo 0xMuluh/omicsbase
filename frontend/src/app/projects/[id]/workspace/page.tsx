@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { api, AgentStreamEvent, ChatMessage, FilePreview, FileTreeNode, Job, ProjectMessage } from "@/lib/api";
+import { api, AgentStreamEvent, ChatMessage, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -369,6 +369,7 @@ export default function WorkspacePage() {
   const [promptText, setPromptText] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantPending, setAssistantPending] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const [agentActivity, setAgentActivity] = useState("Understanding the workspace...");
   const [chatMode, setChatMode] = useState<"build" | "discuss">("build");
   const [modeOpen, setModeOpen] = useState(false);
@@ -847,6 +848,7 @@ export default function WorkspacePage() {
     const mode = override?.mode ?? chatMode;
     if (!message || assistantPending) return;
 
+    setPendingQuestion(null);
     const optimisticId = `local-${Date.now()}`;
     const userMessage: ChatMessage = {
       id: optimisticId,
@@ -872,6 +874,12 @@ export default function WorkspacePage() {
           chat_mode: mode,
         },
         (streamEvent: AgentStreamEvent) => {
+          if (streamEvent.type === "question" && streamEvent.question) {
+            setPendingQuestion(streamEvent.question);
+          }
+          if (streamEvent.type === "final" && streamEvent.awaiting_answer) {
+            setPendingQuestion(streamEvent.awaiting_answer);
+          }
           if (streamEvent.type === "title_update" && typeof streamEvent.name === "string") {
             const updatedTitle = streamEvent.name;
             queryClient.setQueryData(["project", projectId], (old: any) =>
@@ -986,6 +994,18 @@ export default function WorkspacePage() {
     setChatMode(mode);
     void handleSendPrompt(undefined, { message: prompt, mode });
   };
+
+  const answerQuestion = (answer: string) => {
+    setPendingQuestion(null);
+    void handleSendPrompt(undefined, { message: answer, mode: chatMode });
+  };
+
+  useEffect(() => {
+    const pending = project?.agent_memory?.pending_question as PendingQuestion | undefined;
+    if (pending && !assistantPending) {
+      setPendingQuestion(pending);
+    }
+  }, [project?.agent_memory?.pending_question, assistantPending]);
 
   const handleFileSelect = (path: string) => {
     setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
@@ -1310,6 +1330,34 @@ export default function WorkspacePage() {
             onSubmit={(event) => void handleSendPrompt(event)}
             className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
           >
+            {pendingQuestion ? (
+              <div className="mb-2 rounded-2xl border border-teal-500/30 bg-teal-500/5 px-4 py-3">
+                <p className="text-sm font-medium leading-5 text-foreground">
+                  {pendingQuestion.question}
+                </p>
+                {pendingQuestion.options.length > 0 ? (
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {pendingQuestion.options.map((option) => (
+                      <Button
+                        key={option}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={assistantPending}
+                        onClick={() => answerQuestion(option)}
+                        className="border-teal-500/40 text-teal-800 hover:bg-teal-500/10 dark:text-teal-100"
+                      >
+                        {option}
+                      </Button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    The agent is waiting for your answer...
+                  </p>
+                )}
+              </div>
+            ) : null}
             <input
               ref={fileInputRef}
               type="file"

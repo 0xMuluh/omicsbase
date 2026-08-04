@@ -70,6 +70,13 @@ function splitPrompt(prompt: string): { question: string; customPlanText?: strin
   return { question: trimmed };
 }
 
+const DESIGN_SUGGESTIONS = [
+  "Compare two groups",
+  "More than two groups",
+  "Longitudinal samples",
+  "Include covariates",
+];
+
 async function launchStudy(options: {
   text: string;
   files: AttachedFile[];
@@ -249,6 +256,21 @@ export function StartComposer({
             </motion.div>
           ) : null}
         </AnimatePresence>
+
+        {prompt === "" && files.length === 0 && !createMutation.isPending ? (
+          <div className="mb-1.5 flex flex-wrap gap-1.5 px-1">
+            {DESIGN_SUGGESTIONS.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => setPrompt(suggestion)}
+                className="rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="flex items-end gap-1.5">
           <input

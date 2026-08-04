@@ -157,6 +157,13 @@ export interface ClarificationAnswer {
   values: string[];
 }
 
+export interface PendingQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  multiple: boolean;
+}
+
 
 
 export interface ChunkRunResult {
@@ -202,6 +209,8 @@ export interface AgentStreamEvent {
   chat_mode?: string;
   name?: string;
   project_id?: string;
+  question?: PendingQuestion;
+  awaiting_answer?: PendingQuestion | null;
   quick_actions?: { type: string; label: string; prompt: string }[];
   sequence?: number;
   run_id?: string;

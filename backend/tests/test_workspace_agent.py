@@ -185,6 +185,68 @@ async def test_agent_uses_run_r_before_answering_package_question(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_agent_asks_user_and_pauses_turn(tmp_path, monkeypatch):
+    async def fake_llm(**kwargs):
+        return (
+            '{"type":"tool","tool":"ask_user","arguments":'
+            '{"question":"Which groups should be compared?","options":["Control vs Disease","Male vs Female"]},'
+            '"reason":"Grouping cannot be inferred from the manifest"}'
+        )
+
+    monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    request = SimpleNamespace(
+        message="Compare the groups in my study",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+    )
+
+    events = [
+        event
+        async for event in workspace_agent.stream_workspace_agent(
+            _project(tmp_path),
+            request,
+            persisted_messages=[],
+        )
+    ]
+
+    question_events = [event for event in events if event["type"] == "question"]
+    assert len(question_events) == 1
+    pending = question_events[0]["question"]
+    assert pending["question"] == "Which groups should be compared?"
+    assert pending["options"] == ["Control vs Disease", "Male vs Female"]
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["awaiting_answer"]["id"] == pending["id"]
+    assert events[-1]["awaiting_answer"]["question"] == pending["question"]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_without_question_feeds_back_error(tmp_path, monkeypatch):
+    async def fake_llm(**kwargs):
+        return '{"type":"tool","tool":"ask_user","arguments":{},"reason":"oops"}'
+
+    monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    request = SimpleNamespace(
+        message="test",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+    )
+    events = [
+        event
+        async for event in workspace_agent.stream_workspace_agent(
+            _project(tmp_path),
+            request,
+            persisted_messages=[],
+        )
+    ]
+    assert not any(event["type"] == "question" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_discuss_mode_blocks_mutation_actions(tmp_path, monkeypatch):
     async def fake_llm(**kwargs):
         assert "Discuss mode" in kwargs["system_prompt"] or "discuss" in kwargs["system_prompt"].lower()
