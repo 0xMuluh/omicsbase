@@ -10,6 +10,13 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
+from app.services.agent_core import (
+    LegacyStepResult,
+    ToolCallResult,
+    persistable_tool_arguments,
+    run_agent_loop,
+    tool_signature,
+)
 from app.services.assistant import build_project_context, is_edit_prompt, GREETINGS
 from app.services.llm import call_llm as _legacy_call_llm, stream_llm_with_tools
 
@@ -22,21 +29,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_CHARS = 16000
-MAX_PERSISTED_TOOL_ARGUMENT_CHARS = 4000
 
-
-def _persistable_tool_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Keep tool-call audit metadata bounded without storing tool results."""
-    try:
-        encoded = json.dumps(arguments, default=str, sort_keys=True)
-    except (TypeError, ValueError):
-        return {"_unserializable": str(arguments)[:MAX_PERSISTED_TOOL_ARGUMENT_CHARS]}
-    if len(encoded) <= MAX_PERSISTED_TOOL_ARGUMENT_CHARS:
-        return arguments
-    return {
-        "_truncated": True,
-        "preview": encoded[:MAX_PERSISTED_TOOL_ARGUMENT_CHARS],
-    }
 
 INLINE_ACTIONS = {
     "import_package_data",
@@ -309,475 +302,426 @@ async def stream_workspace_agent(
     Text tokens stream directly to the client. Tool calls are executed
     and fed back to the model for the next iteration.
     """
-    chat_mode = str(getattr(request, "chat_mode", None) or "build").strip().lower()
-    if chat_mode not in {"build", "discuss"}:
-        chat_mode = "build"
-    discuss = chat_mode == "discuss"
-    max_steps = max(3, int(getattr(settings, "agent_max_steps", 6) or 6))
+    executor = WorkspaceAgentExecutor(
+        project=project,
+        request=request,
+        persisted_messages=persisted_messages,
+        inline_action_handler=inline_action_handler,
+        knowledge_search_handler=knowledge_search_handler,
+    )
+    async for event in run_agent_loop(executor, request.message, cancel_check=cancel_check):
+        yield event
 
-    # Fast-Path: greetings
-    normalized_msg = " ".join(request.message.lower().strip().split())
-    if normalized_msg in GREETINGS:
-        greeting = (
-            f"Hi! I'm ready to assist with {project.name or 'your project'}. "
-            "Ask me questions about the analysis workflow, or instruct me to edit recipes and re-run reports."
+
+class WorkspaceAgentExecutor:
+    """Workspace lens: build/discuss modes, ~26 tools, action/async dispatch."""
+
+    def __init__(
+        self,
+        *,
+        project,
+        request,
+        persisted_messages: list[Any],
+        inline_action_handler=None,
+        knowledge_search_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ):
+        self.project = project
+        self.request = request
+        self.persisted_messages = persisted_messages
+        self.inline_action_handler = inline_action_handler
+        self.knowledge_search_handler = knowledge_search_handler
+
+        chat_mode = str(getattr(request, "chat_mode", None) or "build").strip().lower()
+        if chat_mode not in {"build", "discuss"}:
+            chat_mode = "build"
+        self.chat_mode = chat_mode
+        self.discuss = chat_mode == "discuss"
+        self.max_steps = max(3, int(getattr(settings, "agent_max_steps", 6) or 6))
+        self.max_tokens = 4000
+        self.max_tool_chars = MAX_TOOL_CHARS
+        self.system_prompt = DISCUSS_SYSTEM_PROMPT if self.discuss else AGENT_SYSTEM_PROMPT
+        self.tools = list(WORKSPACE_TOOLS) + ([] if self.discuss else list(ACTION_TOOLS))
+        self.use_retry_guard = True
+        self.cancelled_message = "This Workspace run was cancelled."
+        self.default_final_message = "I could not produce a grounded response."
+
+        self.inspect_tool_names = {t["function"]["name"] for t in WORKSPACE_TOOLS}
+
+        # Build project context for system prompt
+        project_context = json.loads(build_project_context(project))
+        project_context["study_manifest"] = project.study_manifest
+        self.live_workspace = {
+            "selected_file": request.selected_file,
+            "selected_content_dirty": request.selected_content_dirty,
+            "selected_content": (request.selected_content or "")[:12000] or None,
+            "preview_path": request.preview_path,
+            "chat_mode": chat_mode,
+        }
+        project_context["live_workspace"] = self.live_workspace
+        from app.services.agent_runtime import durable_project_memory
+        from app.services.artifact_retrieval import search_workspace
+
+        project_context["durable_memory"] = durable_project_memory(project)
+        project_context["pending_guidance"] = (project.agent_memory or {}).get("pending_guidance") or []
+        project_context["acquisition_enabled"] = bool(settings.agent_allow_acquisition)
+        if project.project_dir:
+            project_context["retrieval_hints"] = search_workspace(
+                project.project_dir, request.message, limit=5,
+            )
+        self.project_context = project_context
+
+    def initial_events(self, message: str) -> tuple[list[dict], bool]:
+        # Fast-Path: greetings
+        normalized_msg = " ".join(message.lower().strip().split())
+        if normalized_msg in GREETINGS:
+            greeting = (
+                f"Hi! I'm ready to assist with {self.project.name or 'your project'}. "
+                "Ask me questions about the analysis workflow, or instruct me to edit recipes and re-run reports."
+            )
+            events = [{"type": "token", "token": word + " "} for word in greeting.split(" ")]
+            events.append({"type": "final", "message": greeting, "memory_updates": []})
+            return events, True
+
+        visible_plan = _visible_plan(message, discuss=self.discuss)
+        return [
+            {
+                "type": "status",
+                "status": "thinking",
+                "message": "Discussing the analysis" if self.discuss else "Understanding the workspace request",
+                "chat_mode": self.chat_mode,
+            },
+            {
+                "type": "status",
+                "status": "planning",
+                "message": "Plan: " + " → ".join(visible_plan),
+                "plan": visible_plan,
+                "chat_mode": self.chat_mode,
+            },
+        ], False
+
+    def build_messages(self, message: str) -> list[dict]:
+        messages: list[dict[str, Any]] = _conversation_messages(self.persisted_messages)
+        messages.append({"role": "user", "content": message})
+        return messages
+
+    def build_live_context(self) -> str:
+        return _workspace_live_context(self.project_context)
+
+    def refresh_live_context(self) -> None:
+        """Rebuild the project context after an inline acquisition action."""
+        project = self.project
+        project_context = json.loads(build_project_context(project))
+        project_context["study_manifest"] = project.study_manifest
+        project_context["live_workspace"] = self.live_workspace
+        from app.services.agent_runtime import durable_project_memory
+
+        project_context["durable_memory"] = durable_project_memory(project)
+        self.project_context = project_context
+
+    def fallback_events(self, exc: Exception) -> list[dict]:
+        fallback = _fallback_decision(self.project, self.request.message, discuss=self.discuss)
+        msg = str(fallback.get("message") or "The language model is currently unavailable.")
+        if fallback.get("type") == "action":
+            return [{
+                "type": "action",
+                "action": fallback.get("action"),
+                "arguments": fallback.get("arguments") or {},
+                "instruction": fallback.get("instruction") or self.request.message.strip(),
+                "message": msg,
+                "memory_updates": fallback.get("memory_updates") or [],
+            }]
+        return [
+            {"type": "token", "token": msg},
+            {"type": "final", "message": msg, "memory_updates": fallback.get("memory_updates") or []},
+        ]
+
+    def final_event(self, message: str) -> dict:
+        return {"type": "final", "message": message, "memory_updates": []}
+
+    def max_steps_events(self) -> list[dict]:
+        msg = (
+            "I inspected the workspace but reached the action limit before a safe conclusion. "
+            "Please narrow the request, or ask me to continue from the last observation."
         )
-        for word in greeting.split(" "):
-            yield {"type": "token", "token": word + " "}
-        yield {"type": "final", "message": greeting, "memory_updates": []}
-        return
+        return [
+            {"type": "token", "token": msg},
+            {"type": "final", "message": msg, "memory_updates": []},
+        ]
 
-    visible_plan = _visible_plan(request.message, discuss=discuss)
-    yield {
-        "type": "status",
-        "status": "thinking",
-        "message": "Discussing the analysis" if discuss else "Understanding the workspace request",
-        "chat_mode": chat_mode,
-    }
-    yield {
-        "type": "status",
-        "status": "planning",
-        "message": "Plan: " + " → ".join(visible_plan),
-        "plan": visible_plan,
-        "chat_mode": chat_mode,
-    }
+    def tool_completed_event(
+        self,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        status: str,
+        summary: str,
+        step: int,
+    ) -> dict:
+        return {
+            "type": "tool_completed",
+            "tool": tool_name,
+            "tool_call_id": tool_call_id,
+            "arguments": arguments,
+            "status": status,
+            "summary": summary,
+            "step": step,
+        }
 
-    # Build project context for system prompt
-    project_context = json.loads(build_project_context(project))
-    project_context["study_manifest"] = project.study_manifest
-    live_workspace = {
-        "selected_file": request.selected_file,
-        "selected_content_dirty": request.selected_content_dirty,
-        "selected_content": (request.selected_content or "")[:12000] or None,
-        "preview_path": request.preview_path,
-        "chat_mode": chat_mode,
-    }
-    project_context["live_workspace"] = live_workspace
-    from app.services.agent_runtime import durable_project_memory
-    from app.services.artifact_retrieval import search_workspace
+    def summary_for(self, tool_name: str, observation: dict) -> str:
+        return _tool_summary(tool_name, observation)
 
-    project_context["durable_memory"] = durable_project_memory(project)
-    project_context["pending_guidance"] = (project.agent_memory or {}).get("pending_guidance") or []
-    project_context["acquisition_enabled"] = bool(settings.agent_allow_acquisition)
-    if project.project_dir:
-        project_context["retrieval_hints"] = search_workspace(
-            project.project_dir, request.message, limit=5,
+    async def legacy_llm_step(self, messages: list[dict], *, step: int) -> LegacyStepResult | None:
+        if call_llm is _DEFAULT_LEGACY_CALL_LLM:
+            return None
+        legacy_prompt = _build_agent_prompt(
+            project_context=self.project_context,
+            conversation=messages,
+            current_message=self.request.message,
+            observations=[],
+            step=step,
+            chat_mode=self.chat_mode,
+            max_steps=self.max_steps,
+        )
+        response = await call_llm(
+            system_prompt=legacy_prompt,
+            user_prompt=self.request.message,
+            response_format="json",
+            max_tokens=4000,
+        )
+        decision = _enforce_chat_mode(
+            _parse_decision(response),
+            discuss=self.discuss,
+            user_message=self.request.message,
+        )
+        if decision.get("type") == "final":
+            msg = str(decision.get("message") or "I could not produce a grounded response.")
+            final_event = {
+                "type": "final",
+                "message": msg,
+                "memory_updates": decision.get("memory_updates") or [],
+            }
+            if decision.get("quick_actions"):
+                final_event["quick_actions"] = decision["quick_actions"]
+            return LegacyStepResult(
+                events=[{"type": "token", "token": msg}, final_event],
+                finished=True,
+            )
+        step_text = str(decision.get("message") or decision.get("reason") or "")
+        return LegacyStepResult(
+            step_text=step_text,
+            tool_calls=_legacy_decision_tool_calls(decision, step),
         )
 
-    system_prompt = DISCUSS_SYSTEM_PROMPT if discuss else AGENT_SYSTEM_PROMPT
-    live_context = _workspace_live_context(project_context)
-
-    # Build conversation messages for the LLM
-    messages: list[dict[str, Any]] = _conversation_messages(persisted_messages)
-    messages.append({"role": "user", "content": request.message})
-
-    # Select tools
-    tools = list(WORKSPACE_TOOLS)
-    if not discuss:
-        tools += ACTION_TOOLS
-
-    collected_text = ""
-    failed_tool_calls: dict[str, str] = {}
-
-    for step in range(1, max_steps + 1):
-        if cancel_check and cancel_check():
-            yield {"type": "cancelled", "message": "This Workspace run was cancelled."}
-            return
-        tool_calls_this_step: list[dict[str, Any]] = []
-        step_text = ""
-
-        try:
-            if call_llm is not _DEFAULT_LEGACY_CALL_LLM:
-                legacy_prompt = _build_agent_prompt(
-                    project_context=project_context,
-                    conversation=messages,
-                    current_message=request.message,
-                    observations=[],
-                    step=step,
-                    chat_mode=chat_mode,
-                    max_steps=max_steps,
-                )
-                response = await call_llm(
-                    system_prompt=legacy_prompt,
-                    user_prompt=request.message,
-                    response_format="json",
-                    max_tokens=4000,
-                )
-                decision = _enforce_chat_mode(
-                    _parse_decision(response),
-                    discuss=discuss,
-                    user_message=request.message,
-                )
-                if decision.get("type") == "final":
-                    msg = str(decision.get("message") or "I could not produce a grounded response.")
-                    yield {"type": "token", "token": msg}
-                    final_event = {
-                        "type": "final",
-                        "message": msg,
-                        "memory_updates": decision.get("memory_updates") or [],
-                    }
-                    if decision.get("quick_actions"):
-                        final_event["quick_actions"] = decision["quick_actions"]
-                    yield final_event
-                    return
-                step_text = str(decision.get("message") or decision.get("reason") or "")
-                tool_calls_this_step.extend(_legacy_decision_tool_calls(decision, step))
-            else:
-                async for event in stream_llm_with_tools(
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                    max_tokens=4000,
-                    live_context=live_context,
-                ):
-                    if event["type"] == "usage":
-                        yield {"type": "usage", "usage": event.get("usage") or {}}
-                    elif event["type"] == "text_delta":
-                        token = event["content"]
-                        step_text += token
-                        collected_text += token
-                        yield {"type": "token", "token": token}
-
-                    elif event["type"] == "tool_call":
-                        tool_calls_this_step.append(event)
-
-                    elif event["type"] == "done":
-                        pass
-        except Exception as exc:
-            logger.exception("Streaming agent LLM call failed: %s", exc)
-            fallback = _fallback_decision(project, request.message, discuss=discuss)
-            msg = str(fallback.get("message") or "The language model is currently unavailable.")
-            if fallback.get("type") == "action":
-                yield {
-                    "type": "action",
-                    "action": fallback.get("action"),
-                    "arguments": fallback.get("arguments") or {},
-                    "instruction": fallback.get("instruction") or request.message.strip(),
-                    "message": msg,
-                    "memory_updates": fallback.get("memory_updates") or [],
-                }
-            else:
-                yield {"type": "token", "token": msg}
-                yield {
-                    "type": "final",
-                    "message": msg,
-                    "memory_updates": fallback.get("memory_updates") or [],
-                }
-            return
-
-        # If model produced only text (no tool calls), it's the final answer
-        if not tool_calls_this_step:
-            final_text = collected_text.strip() or "I could not produce a grounded response."
-            yield {"type": "final", "message": final_text, "memory_updates": []}
-            return
-
-        # Process tool calls
-        # Build assistant message with tool_calls for conversation history
-        assistant_tool_calls = []
-        for tc in tool_calls_this_step:
-            assistant_tool_calls.append({
-                "id": tc["id"],
-                "type": "function",
-                "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
-            })
-        messages.append({
-            "role": "assistant",
-            "content": step_text or None,
-            "tool_calls": assistant_tool_calls,
-        })
-
-        # Execute each tool call
-        for tc in tool_calls_this_step:
-            tool_name = tc["name"]
-            arguments = tc["arguments"] if isinstance(tc["arguments"], dict) else {}
-            persisted_arguments = _persistable_tool_arguments(arguments)
-            signature = _tool_signature(tool_name, arguments)
-            if signature in failed_tool_calls:
-                blocker = failed_tool_calls[signature]
-                message = (
-                    f"I already tried {tool_name} with those arguments and it failed, so I stopped retrying. "
-                    f"The exact blocker was: {blocker}"
-                )
-                yield {"type": "token", "token": message}
-                yield {"type": "final", "message": message, "memory_updates": []}
-                return
-
-            # Check if this is an inspect tool or an action tool
-            inspect_tool_names = {t["function"]["name"] for t in WORKSPACE_TOOLS}
-
-            # The model cannot be trusted to obey the tool list. Keep Discuss
-            # mode read-only even if a provider emits an unadvertised action
-            # call.
-            if discuss and tool_name in ASYNC_ACTIONS:
-                summary = f"Blocked mutation tool {tool_name} in Discuss mode"
-                yield {
-                    "type": "tool_started",
-                    "tool": tool_name,
-                    "reason": summary,
-                    "step": step,
-                }
-                yield {
-                    "type": "action_event",
-                    "event": {
-                        "id": f"tool-{step}-{tc['id']}",
-                        "kind": "tool",
-                        "status": "error",
-                        "title": tool_name,
-                        "summary": summary,
-                        "target": {"tool": tool_name},
+    async def execute_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        step: int,
+        tool_call_id: str,
+        persisted_arguments: dict[str, Any],
+        step_text: str,
+    ) -> ToolCallResult:
+        # The model cannot be trusted to obey the tool list. Keep Discuss
+        # mode read-only even if a provider emits an unadvertised action call.
+        if self.discuss and tool_name in ASYNC_ACTIONS:
+            summary = f"Blocked mutation tool {tool_name} in Discuss mode"
+            return ToolCallResult(
+                observation={"status": "error", "error": summary},
+                events=[
+                    {"type": "tool_started", "tool": tool_name, "reason": summary, "step": step},
+                    {
+                        "type": "action_event",
+                        "event": {
+                            "id": f"tool-{step}-{tool_call_id}",
+                            "kind": "tool",
+                            "status": "error",
+                            "title": tool_name,
+                            "summary": summary,
+                            "target": {"tool": tool_name},
+                        },
                     },
-                }
-                yield {
-                    "type": "tool_completed",
-                    "tool": tool_name,
-                    "tool_call_id": tc['id'],
-                    "arguments": persisted_arguments,
-                    "status": "error",
-                    "summary": summary,
-                    "step": step,
-                }
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc['id'],
-                    "content": json.dumps({"status": "error", "error": summary}),
-                })
-                continue
+                ],
+                summary=summary,
+                record_failure=False,
+            )
 
-            if tool_name == "ask_user":
-                question = str(arguments.get("question") or "").strip()[:500]
-                if not question:
-                    failed_tool_calls[signature] = "ask_user requires a non-empty question"
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": json.dumps({"status": "error", "error": "ask_user requires a non-empty question"}),
-                    })
-                    continue
-                options = [str(option).strip() for option in (arguments.get("options") or []) if str(option).strip()][:6]
-                multiple = bool(arguments.get("multiple"))
-                pending_question = {
-                    "id": f"question-{uuid.uuid4()}",
-                    "question": question,
-                    "options": options,
-                    "multiple": multiple,
-                }
-                yield {
-                    "type": "question",
-                    "question": pending_question,
-                    "step": step,
-                }
-                yield {
+        if tool_name == "ask_user":
+            question = str(arguments.get("question") or "").strip()[:500]
+            if not question:
+                return ToolCallResult(
+                    observation={"status": "error", "error": "ask_user requires a non-empty question"},
+                    emit_completed=False,
+                )
+            options = [str(option).strip() for option in (arguments.get("options") or []) if str(option).strip()][:6]
+            multiple = bool(arguments.get("multiple"))
+            pending_question = {
+                "id": f"question-{uuid.uuid4()}",
+                "question": question,
+                "options": options,
+                "multiple": multiple,
+            }
+            return ToolCallResult(
+                observation={},
+                events=[{"type": "question", "question": pending_question, "step": step}],
+                end_turn=True,
+                final_event={
                     "type": "final",
                     "message": question,
                     "awaiting_answer": pending_question,
                     "memory_updates": [],
-                }
-                return
+                },
+            )
 
-            if tool_name in inspect_tool_names:
-                # Workspace inspection tool
-                yield {"type": "tool_started", "tool": tool_name, "reason": f"Inspecting with {tool_name}", "step": step}
-                if tool_name == "search_bioc_books":
-                    if knowledge_search_handler is None:
-                        observation = {"status": "error", "error": "BiocBooks search is unavailable in this agent context"}
-                    else:
-                        try:
-                            observation = knowledge_search_handler(arguments) or {}
-                            if not isinstance(observation, dict):
-                                observation = {"status": "ok", "result": observation}
-                        except Exception as exc:
-                            logger.exception("BiocBooks search failed: %s", exc)
-                            observation = {"status": "error", "error": str(exc)}
-                else:
-                    observation = _execute_tool(project, tool_name, arguments)
-                if observation.get("status") == "error":
-                    failed_tool_calls[signature] = str(observation.get("error") or "unknown error")[:2000]
-                summary = _tool_summary(tool_name, observation)
-                yield {
+        if tool_name in self.inspect_tool_names:
+            return self._inspect_tool(tool_name, arguments, step=step, tool_call_id=tool_call_id)
+
+        if tool_name in INLINE_ACTIONS:
+            return self._inline_action(tool_name, arguments, step=step, tool_call_id=tool_call_id)
+
+        if tool_name == "edit_project" and ("search" in arguments or "edits" in arguments):
+            return self._inline_edit(arguments, step=step, tool_call_id=tool_call_id)
+
+        if tool_name in ASYNC_ACTIONS:
+            return self._async_action(tool_name, arguments, step=step, tool_call_id=tool_call_id, step_text=step_text)
+
+        # Unknown tool — make the failure visible and feed it back.
+        summary = f"Unknown tool: {tool_name}"
+        return ToolCallResult(
+            observation={"status": "error", "error": summary},
+            events=[{"type": "tool_started", "tool": tool_name, "reason": summary, "step": step}],
+            record_failure=False,
+        )
+
+    def _inspect_tool(self, tool_name: str, arguments: dict[str, Any], *, step: int, tool_call_id: str) -> ToolCallResult:
+        if tool_name == "search_bioc_books":
+            if self.knowledge_search_handler is None:
+                observation = {"status": "error", "error": "BiocBooks search is unavailable in this agent context"}
+            else:
+                try:
+                    observation = self.knowledge_search_handler(arguments) or {}
+                    if not isinstance(observation, dict):
+                        observation = {"status": "ok", "result": observation}
+                except Exception as exc:
+                    logger.exception("BiocBooks search failed: %s", exc)
+                    observation = {"status": "error", "error": str(exc)}
+        else:
+            observation = _execute_tool(self.project, tool_name, arguments)
+        return ToolCallResult(
+            observation=observation,
+            events=[
+                {"type": "tool_started", "tool": tool_name, "reason": f"Inspecting with {tool_name}", "step": step},
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"tool-{step}-{tc['id']}",
+                        "id": f"tool-{step}-{tool_call_id}",
                         "kind": "tool",
                         "status": "ok" if observation.get("status") != "error" else "error",
                         "title": tool_name,
-                        "summary": summary,
+                        "summary": _tool_summary(tool_name, observation),
                         "target": {"tool": tool_name},
                         "log_excerpt": json.dumps(observation, default=str)[:1200],
                     },
-                }
-                yield {
-                    "type": "tool_completed",
-                    "tool": tool_name,
-                    "tool_call_id": tc["id"],
-                    "arguments": persisted_arguments,
-                    "status": "ok" if observation.get("status") != "error" else "error",
-                    "summary": summary,
-                    "step": step,
-                }
+                },
+            ],
+        )
 
-                # Feed tool result back to the model
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(observation, default=str)[:MAX_TOOL_CHARS],
-                })
-
-            elif tool_name in INLINE_ACTIONS:
-                # Inline action (import_package_data, fetch_url) — execute and continue loop
-                action_message = f"Running {tool_name}"
-                yield {
+    def _inline_action(self, tool_name: str, arguments: dict[str, Any], *, step: int, tool_call_id: str) -> ToolCallResult:
+        action_message = f"Running {tool_name}"
+        if self.inline_action_handler is None:
+            observation = {"status": "error", "error": f"Inline action {tool_name} unavailable"}
+        elif not settings.agent_allow_acquisition and tool_name in {"import_package_data", "fetch_url"}:
+            observation = {"status": "error", "error": "Data acquisition disabled"}
+        else:
+            try:
+                observation = self.inline_action_handler(tool_name, arguments) or {}
+                if not isinstance(observation, dict):
+                    observation = {"status": "ok", "result": observation}
+            except Exception as exc:
+                logger.exception("Inline action %s failed: %s", tool_name, exc)
+                observation = {"status": "error", "error": str(exc)}
+        summary = _inline_action_summary(tool_name, observation)
+        return ToolCallResult(
+            observation=observation,
+            events=[
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"inline-{step}-{tc['id']}-start", "kind": "action", "status": "running",
+                        "id": f"inline-{step}-{tool_call_id}-start", "kind": "action", "status": "running",
                         "title": tool_name, "summary": action_message, "target": {"action": tool_name},
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                     },
-                }
-                if inline_action_handler is None:
-                    observation = {"status": "error", "error": f"Inline action {tool_name} unavailable"}
-                elif not settings.agent_allow_acquisition and tool_name in {"import_package_data", "fetch_url"}:
-                    observation = {"status": "error", "error": "Data acquisition disabled"}
-                else:
-                    try:
-                        observation = inline_action_handler(tool_name, arguments) or {}
-                        if not isinstance(observation, dict):
-                            observation = {"status": "ok", "result": observation}
-                    except Exception as exc:
-                        logger.exception("Inline action %s failed: %s", tool_name, exc)
-                        observation = {"status": "error", "error": str(exc)}
-
-                if observation.get("status") == "error":
-                    failed_tool_calls[signature] = str(observation.get("error") or "unknown error")[:2000]
-                summary = _inline_action_summary(tool_name, observation)
-                yield {
+                },
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"inline-{step}-{tc['id']}", "kind": "action",
+                        "id": f"inline-{step}-{tool_call_id}", "kind": "action",
                         "status": "ok" if observation.get("status") != "error" else "error",
                         "title": tool_name, "summary": summary, "target": {"action": tool_name},
                         "log_excerpt": json.dumps(observation, default=str)[:1200],
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                     },
-                }
-                yield {
-                    "type": "tool_completed",
-                    "tool": tool_name,
-                    "tool_call_id": tc["id"],
-                    "arguments": persisted_arguments,
-                    "status": "ok" if observation.get("status") != "error" else "error",
-                    "summary": summary,
-                    "step": step,
-                }
+                },
+            ],
+            summary=summary,
+            refresh_context=True,
+        )
 
-                # Refresh context after acquisition
-                project_context = json.loads(build_project_context(project))
-                project_context["study_manifest"] = project.study_manifest
-                project_context["live_workspace"] = live_workspace
-                project_context["durable_memory"] = durable_project_memory(project)
-                live_context = _workspace_live_context(project_context)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(observation, default=str)[:MAX_TOOL_CHARS],
-                })
-
-            elif tool_name == "edit_project" and ("search" in arguments or "edits" in arguments):
-                # Inline edit — execute and continue
-                yield {
+    def _inline_edit(self, arguments: dict[str, Any], *, step: int, tool_call_id: str) -> ToolCallResult:
+        observation = _execute_inline_edit_project(self.project, arguments)
+        summary = observation.get("detail") if observation.get("status") == "ok" else str(observation.get("error", "edit failed"))
+        return ToolCallResult(
+            observation=observation,
+            events=[
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"inline-{step}-{tc['id']}-start", "kind": "action", "status": "running",
+                        "id": f"inline-{step}-{tool_call_id}-start", "kind": "action", "status": "running",
                         "title": "edit_project", "summary": "Applying inline edit", "target": {"action": "edit_project"},
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                     },
-                }
-                observation = _execute_inline_edit_project(project, arguments)
-                if observation.get("status") == "error":
-                    failed_tool_calls[signature] = str(observation.get("error") or "unknown error")[:2000]
-                summary = observation.get("detail") if observation.get("status") == "ok" else str(observation.get("error", "edit failed"))
-                yield {
+                },
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"inline-{step}-{tc['id']}", "kind": "action",
+                        "id": f"inline-{step}-{tool_call_id}", "kind": "action",
                         "status": "ok" if observation.get("status") != "error" else "error",
                         "title": "edit_project", "summary": summary, "target": {"action": "edit_project"},
                         "log_excerpt": json.dumps(observation, default=str)[:1200],
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                     },
-                }
-                yield {
-                    "type": "tool_completed",
-                    "tool": "edit_project",
-                    "tool_call_id": tc["id"],
-                    "arguments": persisted_arguments,
-                    "status": "ok" if observation.get("status") != "error" else "error",
-                    "summary": summary,
-                    "step": step,
-                }
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(observation, default=str)[:MAX_TOOL_CHARS],
-                })
+                },
+            ],
+            summary=summary,
+        )
 
-            elif tool_name in ASYNC_ACTIONS:
-                # Async action — yield for projects.py to dispatch, then end turn
-                action_message = step_text.strip() or f"I'll apply {tool_name} and verify the result."
-                yield {
+    def _async_action(self, tool_name: str, arguments: dict[str, Any], *, step: int, tool_call_id: str, step_text: str = "") -> ToolCallResult:
+        action_message = step_text.strip() or f"I'll apply {tool_name} and verify the result."
+        return ToolCallResult(
+            observation={},
+            events=[
+                {
                     "type": "action_event",
                     "event": {
-                        "id": f"action-{step}-{tc['id']}", "kind": "action", "status": "pending",
+                        "id": f"action-{step}-{tool_call_id}", "kind": "action", "status": "pending",
                         "title": tool_name, "summary": action_message,
                         "target": {"action": tool_name, "path": arguments.get("recipe_id")},
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                     },
-                }
-                yield {
-                    "type": "action",
-                    "action": tool_name,
-                    "tool_call_id": tc["id"],
-                    "tool_arguments": persisted_arguments,
-                    "arguments": arguments,
-                    "instruction": arguments.get("instruction") or request.message.strip(),
-                    "message": action_message,
-                    "memory_updates": [],
-                }
-                return
-            else:
-                # Unknown tool — make the failure visible and feed it back.
-                summary = f"Unknown tool: {tool_name}"
-                yield {
-                    "type": "tool_started",
-                    "tool": tool_name,
-                    "reason": summary,
-                    "step": step,
-                }
-                yield {
-                    "type": "tool_completed",
-                    "tool": tool_name,
-                    "tool_call_id": tc["id"],
-                    "arguments": persisted_arguments,
-                    "status": "error",
-                    "summary": summary,
-                    "step": step,
-                }
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps({"status": "error", "error": summary}),
-                })
-
-        # Continue to next step (model will see tool results)
-        collected_text = ""  # Reset for next streaming round
-
-    # Reached max steps
-    msg = (
-        "I inspected the workspace but reached the action limit before a safe conclusion. "
-        "Please narrow the request, or ask me to continue from the last observation."
-    )
-    yield {"type": "token", "token": msg}
-    yield {"type": "final", "message": msg, "memory_updates": []}
+                },
+            ],
+            end_turn=True,
+            final_event={
+                "type": "action",
+                "action": tool_name,
+                "tool_call_id": tool_call_id,
+                "tool_arguments": persistable_tool_arguments(arguments),
+                "arguments": arguments,
+                "instruction": arguments.get("instruction") or self.request.message.strip(),
+                "message": action_message,
+                "memory_updates": [],
+            },
+        )
 
 
 def _build_agent_prompt(
