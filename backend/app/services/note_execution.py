@@ -112,6 +112,12 @@ def _evaluate_driver(
     q = json.dumps
 
     parts: list[str] = []
+    parts.append(
+        ".note_t0 <- proc.time()\n"
+        ".note_t_load <- 0\n"
+        ".note_t_eval <- 0\n"
+        ".note_t_save <- 0\n"
+    )
     if shared_workspace:
         quiet_require = (
             "suppressPackageStartupMessages(suppressWarnings(require(.note_p, character.only = TRUE)))"
@@ -125,6 +131,7 @@ def _evaluate_driver(
             ".note_attached <- tryCatch(get('.note_attached_packages', envir = .GlobalEnv), "
             "error = function(e) character())\n"
             "for (.note_p in .note_attached) tryCatch(" + quiet_require + ", error = function(e) NULL)\n"
+            ".note_t_load <- (proc.time() - .note_t0)[['elapsed']]\n"
         )
     parts.append(
         "\n.note_console <- " + q(console_rel) + "\n"
@@ -223,6 +230,7 @@ def _evaluate_driver(
         "      )\n"
         "    )\n"
         "  }\n"
+        "  .note_t_eval <- (proc.time() - .note_t0)[['elapsed']]\n"
         "}, finally = {\n"
     )
     if shared_workspace:
@@ -235,6 +243,18 @@ def _evaluate_driver(
             "    writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), " + q(objects_rel) + ")\n"
             "  }, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\\n'))\n"
         )
+    parts.append(
+        ".note_t_save <- (proc.time() - .note_t0)[['elapsed']]\n"
+        "tryCatch({\n"
+        "  .note_timing <- list(\n"
+        "    total_seconds = (proc.time() - .note_t0)[['elapsed']],\n"
+        "    load_seconds = .note_t_load,\n"
+        "    eval_seconds = .note_t_eval - .note_t_load,\n"
+        "    save_seconds = .note_t_save - .note_t_eval)\n"
+        "  writeLines(jsonlite::toJSON(.note_timing, auto_unbox = TRUE, digits = 6),\n"
+        "    file.path(dirname(.note_console), 'timing.json'))\n"
+        "}, error = function(e) NULL)\n"
+    )
     parts.append("})\n")
     return "".join(parts)
 
@@ -501,6 +521,16 @@ async def execute_r_cell(
     had_errors = any(item.get("type") == "error" for item in events)
     output_artifacts = _discover_output_artifacts(run_dir, relative_dir)
     root_artifacts = _discover_root_outputs(Path(project_dir).resolve(), started_at)
+    timing: dict[str, Any] = {}
+    timing_path = run_dir / "timing.json"
+    if timing_path.exists():
+        try:
+            parsed_timing = json.loads(timing_path.read_text(errors="replace"))
+            if isinstance(parsed_timing, dict):
+                timing = parsed_timing
+        except (ValueError, OSError):
+            timing = {}
+    timing["r_total_seconds"] = max(0.0, time.time() - started_at)
     metadata = {
         "language": normalised_language,
         "script_path": relative_script,
@@ -510,6 +540,7 @@ async def execute_r_cell(
         "output_truncated": bool(preview_truncated or runner_truncated),
         "timeout_seconds": timeout_seconds,
         "runner_version": NOTE_RUNNER_VERSION,
+        "timing": timing,
         "events": events,
         "had_errors": had_errors,
         "artifacts": [output_artifact, *output_artifacts, *root_artifacts],

@@ -84,6 +84,7 @@ async def call_llm(
     user_prompt: str,
     response_format: str = "text",
     max_tokens: int = 16000,
+    model_override: str | None = None,
 ) -> str:
     """Call the configured LLM and return response text."""
     system_prompt = sanitize_text(system_prompt)
@@ -92,9 +93,12 @@ async def call_llm(
     provider = settings.llm_provider.lower()
 
     if provider == "anthropic":
-        return await _call_anthropic(system_prompt, user_prompt, max_tokens)
+        return await _call_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override)
     elif provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
-        return await _call_openai(system_prompt, user_prompt, response_format, max_tokens, provider=provider)
+        return await _call_openai(
+            system_prompt, user_prompt, response_format, max_tokens,
+            provider=provider, model_override=model_override,
+        )
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -103,6 +107,7 @@ async def stream_llm_text(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 4000,
+    model_override: str | None = None,
 ):
     """Yield text tokens from the configured LLM for conversational replies."""
     system_prompt = sanitize_text(system_prompt)
@@ -110,11 +115,13 @@ async def stream_llm_text(
 
     provider = settings.llm_provider.lower()
     if provider == "anthropic":
-        async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens):
+        async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override):
             yield chunk
         return
     if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
-        async for chunk in _stream_openai(system_prompt, user_prompt, max_tokens, provider=provider):
+        async for chunk in _stream_openai(
+            system_prompt, user_prompt, max_tokens, provider=provider, model_override=model_override,
+        ):
             yield chunk
         return
     raise ValueError(f"Unknown LLM provider: {provider}")
@@ -126,6 +133,7 @@ async def stream_llm_with_tools(
     tools: list[dict[str, Any]],
     max_tokens: int = 4000,
     live_context: str | None = None,
+    model_override: str | None = None,
 ):
     """Yield streaming events with native function/tool calling.
 
@@ -140,7 +148,7 @@ async def stream_llm_with_tools(
     provider = settings.llm_provider.lower()
     if provider == "anthropic":
         async for event in _stream_anthropic_with_tools(
-            system_prompt, messages, tools, max_tokens, live_context=live_context
+            system_prompt, messages, tools, max_tokens, live_context=live_context, model_override=model_override,
         ):
             yield event
         return
@@ -152,6 +160,7 @@ async def stream_llm_with_tools(
             max_tokens,
             provider=provider,
             live_context=live_context,
+            model_override=model_override,
         ):
             yield event
         return
@@ -162,6 +171,7 @@ async def _call_anthropic(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int,
+    model_override: str | None = None,
 ) -> str:
     """Call Anthropic Claude API with prompt caching."""
     client = _get_async_anthropic_client(settings.anthropic_api_key)
@@ -173,7 +183,7 @@ async def _call_anthropic(
         }
     ]
     message = await client.messages.create(
-        model=settings.llm_model,
+        model=model_override or settings.llm_model,
         max_tokens=max_tokens,
         system=system_blocks,
         messages=[{"role": "user", "content": user_prompt}],
@@ -181,7 +191,7 @@ async def _call_anthropic(
     return message.content[0].text
 
 
-async def _stream_anthropic(system_prompt: str, user_prompt: str, max_tokens: int):
+async def _stream_anthropic(system_prompt: str, user_prompt: str, max_tokens: int, model_override: str | None = None):
     client = _get_async_anthropic_client(settings.anthropic_api_key)
     system_blocks = [
         {
@@ -191,7 +201,7 @@ async def _stream_anthropic(system_prompt: str, user_prompt: str, max_tokens: in
         }
     ]
     async with client.messages.stream(
-        model=settings.llm_model,
+        model=model_override or settings.llm_model,
         max_tokens=max_tokens,
         system=system_blocks,
         messages=[{"role": "user", "content": user_prompt}],
@@ -207,33 +217,10 @@ async def _call_openai(
     response_format: str,
     max_tokens: int,
     provider: str = "openai",
+    model_override: str | None = None,
 ) -> str:
     """Call OpenAI or OpenAI-compatible API (Qwen, Gemini, OpenRouter, Groq, xAI Grok, DeepSeek, Ollama)."""
-    if provider == "qwen":
-        api_key = settings.dashscope_api_key or settings.qwen_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.qwen_base_url or settings.openai_base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model.lower() else "qwen-plus"
-    elif provider == "gemini":
-        api_key = settings.gemini_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "gemini-2.0-flash"
-    elif provider == "openrouter":
-        api_key = settings.openrouter_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://openrouter.ai/api/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "anthropic/claude-3.5-sonnet"
-    elif provider == "groq":
-        api_key = settings.groq_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.groq.com/openai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "llama-3.3-70b-versatile"
-    elif provider in {"grok", "xai"}:
-        api_key = settings.grok_api_key or settings.xai_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.x.ai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "grok-2-latest"
-    else:
-        api_key = settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url
-        model_name = settings.llm_model
-
+    api_key, base_url, model_name = _resolve_openai_provider(provider, model_override)
     client = _get_async_openai_client(api_key, base_url)
 
     kwargs: dict[str, Any] = {
@@ -261,32 +248,9 @@ async def _stream_openai(
     user_prompt: str,
     max_tokens: int,
     provider: str = "openai",
+    model_override: str | None = None,
 ):
-    if provider == "qwen":
-        api_key = settings.dashscope_api_key or settings.qwen_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.qwen_base_url or settings.openai_base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model.lower() else "qwen-plus"
-    elif provider == "gemini":
-        api_key = settings.gemini_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "gemini-2.0-flash"
-    elif provider == "openrouter":
-        api_key = settings.openrouter_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://openrouter.ai/api/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "anthropic/claude-3.5-sonnet"
-    elif provider == "groq":
-        api_key = settings.groq_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.groq.com/openai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "llama-3.3-70b-versatile"
-    elif provider in {"grok", "xai"}:
-        api_key = settings.grok_api_key or settings.xai_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.x.ai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "grok-2-latest"
-    else:
-        api_key = settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url
-        model_name = settings.llm_model
-
+    api_key, base_url, model_name = _resolve_openai_provider(provider, model_override)
     client = _get_async_openai_client(api_key, base_url)
     kwargs: dict[str, Any] = {
         "model": model_name,
@@ -304,7 +268,7 @@ async def _stream_openai(
             yield delta
 
 
-def _resolve_openai_provider(provider: str) -> tuple[str, str | None, str]:
+def _resolve_openai_provider(provider: str, model_override: str | None = None) -> tuple[str, str | None, str]:
     """Return (api_key, base_url, model_name) for an OpenAI-compatible provider."""
     if provider == "qwen":
         api_key = settings.dashscope_api_key or settings.qwen_api_key or settings.openai_api_key or "dummy-key"
@@ -330,6 +294,8 @@ def _resolve_openai_provider(provider: str) -> tuple[str, str | None, str]:
         api_key = settings.openai_api_key or "dummy-key"
         base_url = settings.openai_base_url
         model_name = settings.llm_model
+    if model_override:
+        model_name = model_override
     return api_key, base_url or None, model_name
 
 
@@ -412,9 +378,10 @@ async def _stream_openai_with_tools(
     max_tokens: int,
     provider: str = "openai",
     live_context: str | None = None,
+    model_override: str | None = None,
 ):
     """Stream an OpenAI-compatible completion with native function calling."""
-    api_key, base_url, model_name = _resolve_openai_provider(provider)
+    api_key, base_url, model_name = _resolve_openai_provider(provider, model_override)
     client = _get_async_openai_client(api_key, base_url)
 
     # Keep the stable system prompt as the first prefix so providers can cache it.
@@ -490,6 +457,7 @@ async def _stream_anthropic_with_tools(
     tools: list[dict[str, Any]],
     max_tokens: int,
     live_context: str | None = None,
+    model_override: str | None = None,
 ):
     """Stream an Anthropic completion with native tool use."""
     client = _get_async_anthropic_client(settings.anthropic_api_key)
@@ -546,7 +514,7 @@ async def _stream_anthropic_with_tools(
             anthropic_messages.append({"role": role, "content": msg.get("content") or ""})
 
     async with client.messages.stream(
-        model=settings.llm_model,
+        model=model_override or settings.llm_model,
         max_tokens=max_tokens,
         system=system_blocks,
         messages=anthropic_messages,

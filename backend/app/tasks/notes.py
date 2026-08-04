@@ -222,6 +222,12 @@ def run_note_cell_execution(*args):
         else:
             execution.status = status
         metadata = _persist_artifacts(db, execution, revision, metadata)
+        if isinstance(metadata, dict) and execution.created_at:
+            dispatch_seconds = (execution.started_at - execution.created_at).total_seconds()
+            if dispatch_seconds >= 0:
+                timing = dict(metadata.get("timing") or {})
+                timing["dispatch_seconds"] = round(dispatch_seconds, 3)
+                metadata["timing"] = timing
         execution.result_metadata = metadata
         execution.error = error
         execution.finished_at = _now()

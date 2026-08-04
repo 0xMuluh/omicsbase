@@ -155,6 +155,9 @@ def test_standalone_turn_receives_terminal_cell_result(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
 
     try:
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "fast_path_enabled", False)
         created = client.post(
             "/api/notes",
             headers=headers,

@@ -137,6 +137,16 @@ class AgentExecutor(Protocol):
         """Legacy JSON-decision path; return None to use native tool calling."""
         ...
 
+    def use_fast_path(self, message: str) -> bool:
+        """Whether this turn is a simple question answered without tools."""
+        return False
+
+    async def fast_path_events(self, message: str) -> AsyncIterator[dict]:
+        """Stream the direct answer events when use_fast_path returned True."""
+        if False:
+            yield {}
+        ...
+
 
 async def run_agent_loop(
     executor: AgentExecutor,
@@ -153,6 +163,11 @@ async def run_agent_loop(
     for event in initial_events:
         yield event
     if handled:
+        return
+
+    if executor.use_fast_path(message):
+        async for event in executor.fast_path_events(message):
+            yield event
         return
 
     messages = executor.build_messages(message)

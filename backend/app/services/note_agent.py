@@ -329,6 +329,15 @@ class NoteAgentExecutor:
     def summary_for(self, tool_name: str, observation: dict) -> str:
         return _tool_summary(tool_name, observation)
 
+    def use_fast_path(self, message: str) -> bool:
+        from app.services.intent_fastpath import is_simple_question
+        return is_simple_question(message)
+
+    async def fast_path_events(self, message: str) -> AsyncIterator[dict]:
+        from app.services.intent_fastpath import stream_simple_answer
+        async for event in stream_simple_answer(message):
+            yield event
+
     async def legacy_llm_step(self, messages: list[dict], *, step: int) -> None:
         return None
 

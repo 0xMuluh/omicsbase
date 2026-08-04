@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-20250514"
     llm_input_cost_per_million: float = 0.0
     llm_output_cost_per_million: float = 0.0
+    # Fast-intent path: simple, tool-free questions answered directly with a
+    # faster model (empty fast_path_model selects the provider's fast default).
+    fast_path_enabled: bool = True
+    fast_path_model: str = ""
 
     # Database
     database_url: str = "postgresql://omicsbase:omicsbase@localhost:5433/omicsbase"
