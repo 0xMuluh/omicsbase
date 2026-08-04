@@ -83,9 +83,8 @@ async function launchStudy(options: {
   mode: LaunchMode;
   name?: string;
   question?: string;
-  onStep: (step: "uploading" | "planning") => void;
+  onStep: (step: "uploading") => void;
 }): Promise<string> {
-  const hasDataFile = options.files.some((item) => item.role !== "analysis_plan");
   const { question, customPlanText } = splitPrompt(options.question || options.text);
   options.onStep("uploading");
 
@@ -112,10 +111,6 @@ async function launchStudy(options: {
     throw new Error(`Uploads failed: ${uploadFailures.join("; ")}`);
   }
 
-  if (hasDataFile) {
-    options.onStep("planning");
-    await api.startPlanning(projectId);
-  }
   return projectId;
 }
 
@@ -135,7 +130,7 @@ export function StartComposer({
   const [modeOpen, setModeOpen] = useState(false);
   const [files, setFiles] = useState<AttachedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const [step, setStep] = useState<"idle" | "uploading" | "planning">("idle");
+  const [step, setStep] = useState<"idle" | "uploading">("idle");
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const next = Array.from(incoming).map((file) => ({
@@ -198,14 +193,7 @@ export function StartComposer({
   });
 
   const canSubmit = Boolean(prompt.trim() || files.length) && !createMutation.isPending;
-  const statusLabel =
-    step === "uploading"
-        ? "Uploading study files..."
-        : step === "planning"
-          ? mode === "build"
-            ? "Agent is taking control and building..."
-            : "Drafting the analysis plan..."
-          : null;
+  const statusLabel = step === "uploading" ? "Uploading study files..." : null;
 
   return (
     <div className={variant === "hero" ? "w-full" : "mx-auto w-full max-w-3xl"}>
@@ -215,7 +203,7 @@ export function StartComposer({
             See beyond the counts.
           </h1>
           <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-            Describe the study, attach data with +, choose Build or Plan, and let the agent take control.
+            Describe the study, attach data with +, and talk it through in the project chat.
           </p>
         </div>
       ) : null}

@@ -4,11 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
 import { api, AgentStreamEvent, ChatMessage, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
 import PlanReviewPanel from "@/components/PlanReviewPanel";
+import { WorkspaceComposer } from "@/components/WorkspaceComposer";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -26,7 +25,6 @@ import { ThreadOverviewRail } from "@/components/ThreadOverviewRail";
 import { useTheme } from "next-themes";
 import {
   AlertCircle,
-  ArrowUp,
   Braces,
   Check,
   ChevronsDownUp,
@@ -48,13 +46,10 @@ import {
   Loader2,
   Lock,
   MessageSquare,
-  Mic,
   Play,
-  Plus,
   RefreshCw,
   Save,
   Search,
-  Send,
   Table2,
   Unlock,
   X,
@@ -367,15 +362,11 @@ export default function WorkspacePage() {
   const { resolvedTheme } = useTheme();
   const projectId = params.id as string;
 
-  const [promptText, setPromptText] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [assistantPending, setAssistantPending] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const [agentActivity, setAgentActivity] = useState("Understanding the workspace...");
   const [chatMode, setChatMode] = useState<"build" | "discuss">("build");
-  const [modeOpen, setModeOpen] = useState(false);
-  const modeMenuRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const workspaceChatScrollRef = useRef<HTMLDivElement>(null);
   const [actionEvents, setActionEvents] = useState<ActionEvent[]>([]);
   const [quickActions, setQuickActions] = useState<{ type: string; label: string; prompt: string }[]>([]);
@@ -395,16 +386,6 @@ export default function WorkspacePage() {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const treeExpandedInitRef = useRef(false);
   const completedJobSignatureRef = useRef("");
-
-  useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (!modeMenuRef.current?.contains(event.target as Node)) {
-        setModeOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, []);
 
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
@@ -430,6 +411,13 @@ export default function WorkspacePage() {
     queryKey: ["fileTree", projectId],
     queryFn: () => api.getFileTree(projectId),
   });
+
+  const { data: projectFiles } = useQuery({
+    queryKey: ["projectFiles", projectId],
+    queryFn: () => api.listFiles(projectId),
+    enabled: project?.status === "created",
+  });
+  const hasUploadedFiles = Boolean(projectFiles && projectFiles.length > 0);
 
   const { data: locksData } = useQuery({
     queryKey: ["locks", projectId],
@@ -845,7 +833,7 @@ export default function WorkspacePage() {
     override?: { message?: string; mode?: "build" | "discuss" },
   ) => {
     event?.preventDefault();
-    const message = (override?.message ?? promptText).trim();
+    const message = (override?.message ?? "").trim();
     const mode = override?.mode ?? chatMode;
     if (!message || assistantPending) return;
 
@@ -858,7 +846,6 @@ export default function WorkspacePage() {
       time: new Date().toISOString(),
     };
     setChatMessages((prev) => [...prev, userMessage]);
-    if (!override?.message) setPromptText("");
     setAssistantPending(true);
     setQuickActions([]);
     setActionEvents([]);
@@ -987,7 +974,7 @@ export default function WorkspacePage() {
       && !assistantPending
     ) {
       initialQuestionSentRef.current = true;
-      void handleSendPrompt(undefined, { message: project.question, mode: "discuss" });
+      void handleSendPrompt(undefined, { message: project.question, mode: "build" });
     }
   }, [project?.question, projectMessages, assistantPending]);
 
@@ -1001,12 +988,44 @@ export default function WorkspacePage() {
     void handleSendPrompt(undefined, { message: answer, mode: chatMode });
   };
 
+  const handleAddFiles = async (files: File[]) => {
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        await api.uploadFile(projectId, file, "auto");
+      } catch {
+        failures.push(file.name);
+      }
+    }
+    void handleSendPrompt(undefined, {
+      message: `[Attached: ${files.map((file) => file.name).join(", ")}]`
+        + (failures.length ? ` (failed to upload: ${failures.join(", ")})` : ""),
+      mode: chatMode,
+    });
+    void queryClient.invalidateQueries({ queryKey: ["projects"] });
+  };
+
   useEffect(() => {
     const pending = project?.agent_memory?.pending_question as PendingQuestion | undefined;
     if (pending && !assistantPending) {
       setPendingQuestion(pending);
     }
   }, [project?.agent_memory?.pending_question, assistantPending]);
+
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildPending, setBuildPending] = useState(false);
+  const buildNow = async () => {
+    setBuildError(null);
+    setBuildPending(true);
+    try {
+      await api.startPlanning(projectId);
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    } catch (error) {
+      setBuildError(error instanceof Error ? error.message : "Planning could not be started.");
+    } finally {
+      setBuildPending(false);
+    }
+  };
 
   const handleFileSelect = (path: string) => {
     setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
@@ -1327,159 +1346,18 @@ export default function WorkspacePage() {
 
         {viewMode === "workspace" ? (
         <div className="shrink-0 border-t border-border p-3">
-          <form
-            onSubmit={(event) => void handleSendPrompt(event)}
-            className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
-          >
-            {pendingQuestion ? (
-              <div className="mb-2 rounded-2xl border border-teal-500/30 bg-teal-500/5 px-4 py-3">
-                <p className="text-sm font-medium leading-5 text-foreground">
-                  {pendingQuestion.question}
-                </p>
-                {pendingQuestion.options.length > 0 ? (
-                  <div className="mt-2.5 flex flex-wrap gap-2">
-                    {pendingQuestion.options.map((option) => (
-                      <Button
-                        key={option}
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={assistantPending}
-                        onClick={() => answerQuestion(option)}
-                        className="border-teal-500/40 text-teal-800 hover:bg-teal-500/10 dark:text-teal-100"
-                      >
-                        {option}
-                      </Button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    The agent is waiting for your answer...
-                  </p>
-                )}
-              </div>
-            ) : null}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                const files = event.target.files;
-                if (files?.length && files[0]) {
-                  setPromptText((prev) => `${prev}\n[Attached: ${files[0].name}]`.trim());
-                }
-                event.target.value = "";
-              }}
-            />
-            <div className="flex items-end gap-1.5">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={assistantPending}
-                className="h-10 w-10 shrink-0 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="Add files"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-              <Textarea
-                placeholder={chatMode === "discuss" ? "Discuss methods or plan a change..." : "Ask OmicsBase..."}
-                value={promptText}
-                onChange={(event) => setPromptText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
-                  }
-                }}
-                disabled={assistantPending}
-                rows={1}
-                className="max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:opacity-60"
-              />
-
-              <div className="flex shrink-0 items-center gap-1.5">
-                <div ref={modeMenuRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setModeOpen((open) => !open)}
-                    disabled={assistantPending}
-                    className="inline-flex h-10 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium text-foreground transition hover:bg-muted"
-                  >
-                    {chatMode === "build" ? "Build" : "Discuss"}
-                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                  </button>
-                  <AnimatePresence>
-                    {modeOpen ? (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 6 }}
-                        className="absolute right-0 bottom-[calc(100%+8px)] z-30 w-64 overflow-hidden rounded-2xl border border-border bg-[var(--composer-elevated)] p-1 shadow-2xl"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setChatMode("build");
-                            setModeOpen(false);
-                          }}
-                          className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
-                            chatMode === "build"
-                              ? "bg-teal-500/10 text-teal-800 dark:bg-teal-400/15 dark:text-teal-100 font-medium"
-                              : "text-foreground hover:bg-muted"
-                          }`}
-                        >
-                          <div className="text-sm font-medium">Build</div>
-                          <div className="mt-0.5 text-xs leading-4 text-muted-foreground">The agent builds and repairs report code.</div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setChatMode("discuss");
-                            setModeOpen(false);
-                          }}
-                          className={`w-full rounded-xl px-3 py-2.5 text-left transition ${
-                            chatMode === "discuss"
-                              ? "bg-teal-500/10 text-teal-800 dark:bg-teal-400/15 dark:text-teal-100 font-medium"
-                              : "text-foreground hover:bg-muted"
-                          }`}
-                        >
-                          <div className="text-sm font-medium">Discuss</div>
-                          <div className="mt-0.5 text-xs leading-4 text-muted-foreground">Read-only scientific planning without edits.</div>
-                        </button>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </div>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled
-                  className="h-10 w-10 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground opacity-50"
-                  title="Voice input coming soon"
-                >
-                  <Mic className="h-4 w-4" />
-                </Button>
-
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={!promptText.trim() || assistantPending}
-                  className="h-10 w-10 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
-                  title="Send"
-                >
-                  {assistantPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-          </form>
+          <WorkspaceComposer
+            pendingQuestion={pendingQuestion}
+            chatMode={chatMode}
+            disabled={assistantPending}
+            onSend={(message, mode) => {
+              setChatMode(mode);
+              void handleSendPrompt(undefined, { message, mode });
+            }}
+            onAnswer={answerQuestion}
+            onModeChange={setChatMode}
+            onAddFiles={handleAddFiles}
+          />
         </div>
         ) : null}
           </>
@@ -1623,7 +1501,25 @@ export default function WorkspacePage() {
           </div>
 
           {["planning", "planned", "needs_clarification"].includes(project?.status || "") ? (
-            <PlanReviewPanel projectId={projectId} />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <PlanReviewPanel projectId={projectId} />
+              </div>
+              <div className="shrink-0 border-t border-border p-3">
+                <WorkspaceComposer
+                  pendingQuestion={pendingQuestion}
+                  chatMode={chatMode}
+                  disabled={assistantPending}
+                  onSend={(message, mode) => {
+                    setChatMode(mode);
+                    void handleSendPrompt(undefined, { message, mode });
+                  }}
+                  onAnswer={answerQuestion}
+                  onModeChange={setChatMode}
+                  onAddFiles={handleAddFiles}
+                />
+              </div>
+            </div>
           ) : viewMode === "chat" ? (
             <div className="relative flex min-h-0 flex-1 flex-col items-center justify-between p-4 md:p-6 overflow-hidden">
               <div ref={workspaceChatScrollRef} data-thread-column className="w-full max-w-3xl flex-1 overflow-y-auto space-y-4 pr-1 no-scrollbar">
@@ -1664,73 +1560,45 @@ export default function WorkspacePage() {
                 refreshKey={displayChatMessages.length + "-" + (assistantPending ? "busy" : "idle")}
               />
 
-              <div className="w-full max-w-3xl shrink-0 pt-4">
-                <form
-                  onSubmit={(event) => void handleSendPrompt(event)}
-                  className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(event) => {
-                      const files = event.target.files;
-                      if (files?.length && files[0]) {
-                        setPromptText((prev) => `${prev}\n[Attached: ${files[0].name}]`.trim());
-                      }
-                      event.target.value = "";
-                    }}
-                  />
-                  <div className="flex items-end gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="h-10 w-10 shrink-0 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      title="Add files"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                    <Textarea
-                      placeholder={chatMode === "discuss" ? "Discuss methods or plan a change..." : "Ask OmicsBase..."}
-                      value={promptText}
-                      onChange={(event) => setPromptText(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault();
-                          void handleSendPrompt(event);
-                        }
-                      }}
-                      rows={1}
-                      className="max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground"
-                    />
-
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <div ref={modeMenuRef} className="relative">
-                        <button
-                          type="button"
-                          onClick={() => setModeOpen((open) => !open)}
-                          className="inline-flex h-10 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium text-foreground transition hover:bg-muted"
-                        >
-                          {chatMode === "build" ? "Build" : "Discuss"}
-                          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                        </button>
-                      </div>
-
+              {project?.status === "created" ? (
+                <div className="w-full max-w-3xl shrink-0 pb-2">
+                  {hasUploadedFiles && !assistantPending ? (
+                    <div className="flex flex-col items-center gap-1.5">
                       <Button
-                        type="submit"
+                        type="button"
                         size="sm"
-                        disabled={!promptText.trim() || assistantPending}
-                        className="h-10 w-10 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950"
-                        title="Send"
+                        onClick={() => void buildNow()}
+                        disabled={buildPending}
+                        className="gap-2 rounded-full border border-teal-500/40 bg-teal-500/10 px-4 text-teal-800 hover:bg-teal-500/20 dark:text-teal-100"
                       >
-                        {assistantPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                        {buildPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        Build the report
                       </Button>
+                      {buildError ? (
+                        <p className="text-xs text-red-600 dark:text-red-300">{buildError}</p>
+                      ) : null}
                     </div>
-                  </div>
-                </form>
+                  ) : !hasUploadedFiles && !assistantPending ? (
+                    <p className="text-center text-xs leading-5 text-muted-foreground">
+                      Attach study files with +, or ask the agent to import an example dataset. Planning starts when you say go.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="w-full max-w-3xl shrink-0 pt-4">
+                <WorkspaceComposer
+                  pendingQuestion={pendingQuestion}
+                  chatMode={chatMode}
+                  disabled={assistantPending}
+                  onSend={(message, mode) => {
+                    setChatMode(mode);
+                    void handleSendPrompt(undefined, { message, mode });
+                  }}
+                  onAnswer={answerQuestion}
+                  onModeChange={setChatMode}
+                  onAddFiles={handleAddFiles}
+                />
               </div>
             </div>
           ) : workspaceMode === "preview" ? (
