@@ -32,7 +32,7 @@ services:
       retries: 20
 
   backend:
-    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    image: ghcr.io/${POC_IMAGE_OWNER:-0xmuluh}/omicsbase-backend:latest
     env_file:
       - .env
     environment:
@@ -64,7 +64,7 @@ services:
       start_period: 20s
 
   worker:
-    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    image: ghcr.io/${POC_IMAGE_OWNER:-0xmuluh}/omicsbase-backend:latest
     env_file:
       - .env
     environment:
@@ -86,7 +86,7 @@ services:
         condition: service_healthy
 
   beat:
-    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    image: ghcr.io/${POC_IMAGE_OWNER:-0xmuluh}/omicsbase-backend:latest
     env_file:
       - .env
     environment:
@@ -108,7 +108,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-frontend:latest
+    image: ghcr.io/${POC_IMAGE_OWNER:-0xmuluh}/omicsbase-frontend:latest
     ports:
       - "3000:3000"
     depends_on:
