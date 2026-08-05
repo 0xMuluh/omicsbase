@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # internal reasoning before emitting the JSON verdict; too small a cap
     # returns empty content and silently disables the fast path.
     fast_path_judge_max_tokens: int = 512
+    # Reasoning effort for judge calls on models that support it (gpt-5/o
+    # series): "low" cuts judge latency ~2.5x with no measured accuracy loss.
+    fast_path_judge_reasoning_effort: str = "low"
 
     # Database
     database_url: str = "postgresql://omicsbase:omicsbase@localhost:5433/omicsbase"

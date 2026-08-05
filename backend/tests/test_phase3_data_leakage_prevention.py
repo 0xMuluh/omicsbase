@@ -60,7 +60,7 @@ def test_biological_data_preserved():
 async def test_llm_gateway_sanitization(monkeypatch):
     recorded_prompts = []
 
-    async def mock_call_openai(system_prompt, user_prompt, response_format, max_tokens, provider="openai", model_override=None):
+    async def mock_call_openai(system_prompt, user_prompt, response_format, max_tokens, provider="openai", model_override=None, reasoning_effort=None):
         recorded_prompts.append((system_prompt, user_prompt))
         return "Sanitized response"
 

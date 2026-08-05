@@ -84,6 +84,7 @@ async def classify_intent(message: str) -> str:
             max_tokens=int(getattr(settings, "fast_path_judge_max_tokens", 512) or 512),
             model_override=model,
             provider_override=provider_override,
+            reasoning_effort=str(getattr(settings, "fast_path_judge_reasoning_effort", "") or "") or None,
         )
         match = re.search(r'"intent"\s*:\s*"([^"]+)"', response or "")
         intent = match.group(1).strip().lower() if match else ""

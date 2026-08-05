@@ -101,6 +101,7 @@ async def call_llm(
     max_tokens: int = 16000,
     model_override: str | None = None,
     provider_override: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Call the configured LLM and return response text."""
     system_prompt = sanitize_text(system_prompt)
@@ -113,7 +114,7 @@ async def call_llm(
     elif provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
         return await _call_openai(
             system_prompt, user_prompt, response_format, max_tokens,
-            provider=provider, model_override=model_override,
+            provider=provider, model_override=model_override, reasoning_effort=reasoning_effort,
         )
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
@@ -236,6 +237,7 @@ async def _call_openai(
     max_tokens: int,
     provider: str = "openai",
     model_override: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Call OpenAI or OpenAI-compatible API (Qwen, Gemini, OpenRouter, Groq, xAI Grok, DeepSeek, Ollama)."""
     api_key, base_url, model_name = _resolve_openai_provider(provider, model_override)
@@ -251,6 +253,8 @@ async def _call_openai(
     _set_token_limit(kwargs, provider, model_name, max_tokens)
     if response_format == "json":
         kwargs["response_format"] = {"type": "json_object"}
+    if reasoning_effort and _supports_reasoning_effort(provider, model_name):
+        kwargs["reasoning_effort"] = reasoning_effort
 
     try:
         response = await client.chat.completions.create(**kwargs)
@@ -403,6 +407,12 @@ async def _stream_openai_with_tools(
     client = _get_async_openai_client(api_key, base_url)
 
     # Keep the stable system prompt as the first prefix so providers can cache it.
+    # OpenAI-compat caching is automatic per provider (OpenAI auto prompt
+    # caching on gpt-5.x; DeepSeek auto context caching; Groq none) and keys
+    # on the input prefix — so the ordering invariant is: stable system
+    # prompt first, then the (usually unchanged) live_context, then history.
+    # The delta-context placeholder (UNCHANGED_CONTEXT) is a constant, so
+    # steps 2+ of a turn share one cached prefix.
     api_messages = [{"role": "system", "content": system_prompt}]
     if live_context:
         api_messages.append({"role": "system", "content": live_context})
@@ -488,6 +498,27 @@ async def _stream_openai_with_tools(
             raise
 
 
+def _convert_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI-format tool definitions to Anthropic format.
+
+    The tools block is constant within and across turns (~15-20k tokens for
+    the workspace lens), so the last tool carries a cache breakpoint to keep
+    the whole block cached after the first call.
+    """
+    anthropic_tools = []
+    for index, tool in enumerate(tools):
+        func = tool.get("function", {})
+        converted = {
+            "name": func.get("name", ""),
+            "description": func.get("description", ""),
+            "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+        }
+        if index == len(tools) - 1:
+            converted["cache_control"] = {"type": "ephemeral"}
+        anthropic_tools.append(converted)
+    return anthropic_tools
+
+
 async def _stream_anthropic_with_tools(
     system_prompt: str,
     messages: list[dict[str, Any]],
@@ -506,17 +537,17 @@ async def _stream_anthropic_with_tools(
         }
     ]
     if live_context:
-        system_blocks.append({"type": "text", "text": live_context})
+        # Stable within a turn (and small with delta context), so cache it
+        # too; caching is per-block, so a changed live_context keeps the
+        # system prompt as a cache hit.
+        system_blocks.append({
+            "type": "text",
+            "text": live_context,
+            "cache_control": {"type": "ephemeral"},
+        })
 
     # Convert OpenAI tool format to Anthropic format
-    anthropic_tools = []
-    for tool in tools:
-        func = tool.get("function", {})
-        anthropic_tools.append({
-            "name": func.get("name", ""),
-            "description": func.get("description", ""),
-            "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
-        })
+    anthropic_tools = _convert_anthropic_tools(tools)
 
     # Convert messages to Anthropic format
     anthropic_messages = []
@@ -607,6 +638,12 @@ def _set_token_limit(kwargs: dict[str, Any], provider: str, model_name: str, max
         kwargs["max_completion_tokens"] = max_tokens
     else:
         kwargs["max_tokens"] = max_tokens
+
+
+def _supports_reasoning_effort(provider: str, model_name: str) -> bool:
+    """Whether the resolved model accepts a reasoning_effort parameter."""
+    model = (model_name or "").lower()
+    return provider == "openai" and model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def _should_retry_with_alternate_token_param(exc: Exception, kwargs: dict[str, Any]) -> bool:

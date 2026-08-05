@@ -41,3 +41,67 @@ def test_client_reuse_singletons(monkeypatch):
     c3 = llm._get_openai_client("sk-test-key", "https://api.openai.com/v1")
     c4 = llm._get_openai_client("sk-test-key", "https://api.openai.com/v1")
     assert c3 is c4
+
+
+def test_anthropic_tools_block_is_cached():
+    tools = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read a file", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "list_files", "description": "List files", "parameters": {"type": "object"}}},
+    ]
+    converted = llm._convert_anthropic_tools(tools)
+    assert converted[0].get("cache_control") is None
+    assert converted[1]["cache_control"] == {"type": "ephemeral"}
+    assert converted[0]["name"] == "read_file"
+
+
+def test_anthropic_live_context_block_is_cached(monkeypatch):
+    captured = {}
+
+    def fake_stream(**kwargs):
+        captured.update(kwargs)
+
+        class FakeStream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            async def get_final_message(self):
+                return type("F", (), {"usage": None})()
+
+        return FakeStream()
+
+    class FakeClient:
+        messages = type("M", (), {"stream": staticmethod(fake_stream)})()
+
+    monkeypatch.setattr(llm, "_get_async_anthropic_client", lambda key: FakeClient())
+    monkeypatch.setattr(llm.settings, "anthropic_api_key", "test-key-123")
+
+    async def collect():
+        events = []
+        async for event in llm._stream_anthropic_with_tools(
+            "system", [{"role": "user", "content": "hi"}], [], 100, live_context="snapshot",
+        ):
+            events.append(event)
+        return events
+
+    import asyncio
+
+    asyncio.run(collect())
+    system_blocks = captured["system"]
+    assert len(system_blocks) == 2
+    assert system_blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert system_blocks[1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_reasoning_effort_gate():
+    assert llm._supports_reasoning_effort("openai", "gpt-5.6-luna") is True
+    assert llm._supports_reasoning_effort("openai", "gpt-4o") is False
+    assert llm._supports_reasoning_effort("groq", "llama-3.3-70b-versatile") is False

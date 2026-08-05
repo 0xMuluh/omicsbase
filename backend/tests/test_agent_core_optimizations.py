@@ -258,9 +258,11 @@ def test_classify_intent_uses_configured_token_budget(monkeypatch):
         return '{"intent": "conceptual"}'
 
     monkeypatch.setattr(settings, "fast_path_judge_max_tokens", 512)
+    monkeypatch.setattr(settings, "fast_path_judge_reasoning_effort", "low")
     monkeypatch.setattr("app.services.intent_fastpath.call_llm", fake_call_llm)
     assert asyncio.run(classify_intent("What is a p-value?")) == "conceptual"
     assert captured["max_tokens"] == 512
+    assert captured["reasoning_effort"] == "low"
 
 
 def test_classify_intent_parses_judge_response(monkeypatch):
