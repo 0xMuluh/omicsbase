@@ -46,6 +46,7 @@ import { ThreadOverviewRail } from "@/components/ThreadOverviewRail";
 import { ProjectsSidebarContent } from "@/components/ProjectsSidebar";
 import { useCodeTheme } from "@/lib/use-code-theme";
 import { useReuseCache } from "@/lib/use-note-settings";
+import { friendlyToolLabel } from "@/lib/toolLabels";
 
 const editableCellTypes = new Set<NoteCellType>(["markdown", "agent", "code"]);
 
@@ -583,11 +584,11 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
         threadId,
         { message, auto_execute: true },
         (event) => {
-          if (event.type === "token") {
+          if (event.type === "token" || event.type === "token_chunk") {
             setLiveTurnText((current) => current + (event.token || ""));
           }
           if (event.type === "status" || event.type === "tool_started") {
-            const raw = event.message || event.status || (event.tool === "run_r_cell" ? "Running R cell…" : event.tool ? "Using " + event.tool : "Working");
+            const raw = event.message || event.status || friendlyToolLabel(event.tool) || "Working";
             setTurnStatus(/^thinking about/i.test(raw) ? "Thinking" : raw);
           }
           if (event.type === "error") {
@@ -671,6 +672,20 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   };
 
+  // The assistant answer streams inline in the thread, styled like the
+  // persisted markdown cell it will become — plain text, no container.
+  const liveTurnBlock =
+    turnStreaming && liveTurnText ? (
+      <article
+        data-overview-block
+        data-overview-type="assistant"
+        data-overview-id={`${selectedThreadId}-live-turn`}
+        className="relative w-full py-1"
+      >
+        <MarkdownRenderer content={liveTurnText} className="text-base" />
+      </article>
+    ) : null;
+
   return (
     <main className="flex h-screen overflow-hidden bg-background">
       {sidebarOpen ? (
@@ -723,7 +738,9 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
           </div>
         </header>
           <div ref={threadScrollRef} className="min-h-0 flex-1 overflow-y-auto">
-          {!selectedSummary ? (
+          {threadsQuery.isLoading || (threads.length > 0 && !selectedSummary) ? (
+            <div className="flex min-h-full items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+          ) : !selectedSummary ? (
             <div className="flex min-h-full items-center justify-center p-8">
               <div className="w-full max-w-2xl">
                 <div className="mb-8 text-center">
@@ -788,7 +805,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
             </div>
           ) : threadQuery.isLoading || !currentThread ? (
             <div className="flex min-h-full items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
-          ) : currentThread.cells.length === 0 ? (
+          ) : currentThread.cells.length === 0 && !turnStreaming ? (
             <div className="flex min-h-full items-center justify-center p-8">
               <div className="w-full max-w-2xl">
                 <div className="mb-8 text-center">
@@ -885,6 +902,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                     </Button>
                   </div>
                 </div>
+                {liveTurnBlock}
               </div>
             </div>
           ) : (
@@ -1138,6 +1156,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                   );
                 })}
               </div>
+              {liveTurnBlock}
               <div ref={threadBottomRef} className="h-px" />
               {turnStreaming ? (
                 <div
@@ -1275,11 +1294,6 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       {turnStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                     </Button>
                 </div>
-                {turnStreaming && liveTurnText ? (
-                  <div className="mt-3 max-h-40 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2">
-                    <MarkdownRenderer content={liveTurnText} className="text-base" />
-                  </div>
-                ) : null}
               </div>
             </div>
           ) : null}

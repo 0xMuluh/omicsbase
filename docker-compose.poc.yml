@@ -1,0 +1,125 @@
+# Single-command POC stack for novices: Docker is the only prerequisite.
+# All services run from prebuilt images; nothing is built here.
+#
+#   ./run.sh            # configure, pull, start, print URLs
+#   ./run.sh down       # stop
+#
+# Uses two published ports: frontend http://localhost:3000, API http://localhost:8000.
+# Containers run as the host user (POC_UID/POC_GID) so project files are not
+# root-owned; ./data/{projects,knowledge} are created and owned by the user.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: omicsbase
+      POSTGRES_PASSWORD: omicsbase
+      POSTGRES_DB: omicsbase
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omicsbase -d omicsbase"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      # The backend image is itself the controlled Bioconductor runtime for
+      # the POC; R runs in-process inside this container.
+      USE_DOCKER_SANDBOX: "false"
+    user: "${POC_UID:-1000}:${POC_GID:-1000}"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/projects:/app/projects
+      - ./data/knowledge:/app/knowledge
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/docs', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      USE_DOCKER_SANDBOX: "false"
+    user: "${POC_UID:-1000}:${POC_GID:-1000}"
+    command: celery -A app.tasks.analysis worker --loglevel=info
+    volumes:
+      - ./data/projects:/app/projects
+      - ./data/knowledge:/app/knowledge
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-backend:latest
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://omicsbase:omicsbase@postgres:5432/omicsbase
+      REDIS_URL: redis://redis:6379/0
+      TASK_BACKEND: celery
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      USE_DOCKER_SANDBOX: "false"
+    user: "${POC_UID:-1000}:${POC_GID:-1000}"
+    command: celery -A app.tasks.analysis beat --loglevel=info
+    volumes:
+      - ./data/projects:/app/projects
+      - ./data/knowledge:/app/knowledge
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: ghcr.io/${POC_IMAGE_OWNER:-omicsbase}/omicsbase-frontend:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  pgdata:

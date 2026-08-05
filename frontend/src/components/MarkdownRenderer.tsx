@@ -3,6 +3,8 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { CodeBlock } from "@/components/CodeBlock";
 
 interface MarkdownRendererProps {
@@ -10,11 +12,21 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
+// Normalize LaTeX-style math delimiters to the $$ / $ forms remark-math
+// parses. Without this, "\[ ... \]" can be mangled by GFM link parsing and
+// the formula renders as raw text.
+function normalizeMath(content: string): string {
+  return content
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, inner: string) => `$$\n${inner.trim()}\n$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, inner: string) => `$${inner.trim()}$`);
+}
+
 export function MarkdownRenderer({ content, className = "" }: MarkdownRendererProps) {
   return (
     <div className={`markdown-body space-y-4 text-base leading-relaxed ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           h1: ({ children }) => <h1 className="mt-6 mb-3 text-2xl font-bold tracking-tight text-foreground">{children}</h1>,
           h2: ({ children }) => <h2 className="mt-5 mb-2.5 text-xl font-semibold tracking-tight text-foreground">{children}</h2>,
@@ -56,7 +68,7 @@ export function MarkdownRenderer({ content, className = "" }: MarkdownRendererPr
           hr: () => <hr className="my-5 border-border/60" />,
         }}
       >
-        {content}
+        {normalizeMath(content)}
       </ReactMarkdown>
     </div>
   );

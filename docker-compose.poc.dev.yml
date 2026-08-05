@@ -1,0 +1,22 @@
+# Developer overlay for the POC stack: mount live backend code so the
+# backend/worker/beat containers pick up edits without an image rebuild.
+#   docker compose -f docker-compose.poc.yml -f docker-compose.poc.dev.yml up -d --wait
+services:
+  backend:
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+
+  worker:
+    volumes:
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+
+  beat:
+    volumes:
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry

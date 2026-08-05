@@ -22,6 +22,7 @@ import { InlineAiWidget } from "@/components/InlineAiWidget";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { ProjectsSidebarContent } from "@/components/ProjectsSidebar";
 import { ThreadOverviewRail } from "@/components/ThreadOverviewRail";
+import { friendlyToolLabel } from "@/lib/toolLabels";
 import { useTheme } from "next-themes";
 import {
   AlertCircle,
@@ -890,12 +891,12 @@ export default function WorkspacePage() {
             });
           }
           if (streamEvent.type === "tool_started") {
-            setAgentActivity(streamEvent.reason || `Inspecting ${streamEvent.tool || "the workspace"}...`);
+            setAgentActivity(streamEvent.reason || friendlyToolLabel(streamEvent.tool) || "Inspecting the workspace...");
           }
           if (streamEvent.type === "tool_completed") {
             setAgentActivity(streamEvent.summary || "Workspace inspection completed");
           }
-          if (streamEvent.type === "token" && typeof streamEvent.token === "string") {
+          if ((streamEvent.type === "token" || streamEvent.type === "token_chunk") && typeof streamEvent.token === "string") {
             setChatMessages((prev) => {
               const existing = prev.find((item) => item.id === "streaming-assistant");
               if (existing) {

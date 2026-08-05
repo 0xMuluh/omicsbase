@@ -36,3 +36,6 @@ frontend/*.tsbuildinfo
 
 # SQLite databases
 *.db
+
+# POC runtime data (created by ./run.sh)
+/data/
