@@ -427,6 +427,11 @@ async def _stream_openai_with_tools(
         kwargs["tools"] = tools
     if provider == "openai":
         kwargs["stream_options"] = {"include_usage": True}
+    if tools and _supports_reasoning_effort(provider, model_name):
+        # gpt-5.x on /v1/chat/completions rejects function tools unless
+        # reasoning_effort is explicitly "none" (the API's own guidance);
+        # without it, tool-loop turns fail with HTTP 400.
+        kwargs["reasoning_effort"] = "none"
     _set_token_limit(kwargs, provider, model_name, max_tokens)
 
     stream = await client.chat.completions.create(**kwargs)

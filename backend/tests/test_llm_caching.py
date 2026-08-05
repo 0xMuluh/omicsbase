@@ -105,3 +105,105 @@ def test_reasoning_effort_gate():
     assert llm._supports_reasoning_effort("openai", "gpt-5.6-luna") is True
     assert llm._supports_reasoning_effort("openai", "gpt-4o") is False
     assert llm._supports_reasoning_effort("groq", "llama-3.3-70b-versatile") is False
+
+
+def test_tools_path_forces_reasoning_effort_none_on_gpt5(monkeypatch):
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        class FakeChoice:
+            message = type("M", (), {"model_dump": lambda self: {"content": ""}})()
+            finish_reason = "stop"
+        class FakeResp:
+            choices = [FakeChoice()]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        return FakeResp()
+
+    class FakeCompletions:
+        create = staticmethod(fake_create)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(llm, "_get_async_openai_client", lambda key, base: FakeClient())
+    monkeypatch.setattr(llm.settings, "openai_api_key", "sk-test")
+
+    async def collect():
+        events = []
+        async for event in llm._stream_openai_with_tools(
+            "system",
+            [{"role": "user", "content": "hi"}],
+            [{"type": "function", "function": {"name": "inspect_note", "description": "d", "parameters": {"type": "object"}}}],
+            100,
+            provider="openai",
+            model_override="gpt-5.6-luna",
+        ):
+            events.append(event)
+        return events
+
+    import asyncio
+
+    asyncio.run(collect())
+    assert captured["reasoning_effort"] == "none"
+    assert captured["max_completion_tokens"] == 100
+
+
+def test_tools_path_does_not_force_effort_on_other_models(monkeypatch):
+    captured = {}
+
+    async def fake_create(**kwargs):
+        captured.update(kwargs)
+        class FakeChoice:
+            message = type("M", (), {"model_dump": lambda self: {"content": ""}})()
+            finish_reason = "stop"
+        class FakeResp:
+            choices = [FakeChoice()]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        return FakeResp()
+
+    class FakeCompletions:
+        create = staticmethod(fake_create)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(llm, "_get_async_openai_client", lambda key, base: FakeClient())
+    monkeypatch.setattr(llm.settings, "groq_api_key", "sk-test")
+
+    async def collect():
+        events = []
+        async for event in llm._stream_openai_with_tools(
+            "system",
+            [{"role": "user", "content": "hi"}],
+            [{"type": "function", "function": {"name": "inspect_note", "description": "d", "parameters": {"type": "object"}}}],
+            100,
+            provider="groq",
+            model_override="llama-3.3-70b-versatile",
+        ):
+            events.append(event)
+        return events
+
+    import asyncio
+
+    asyncio.run(collect())
+    assert "reasoning_effort" not in captured
+    assert captured["max_tokens"] == 100
