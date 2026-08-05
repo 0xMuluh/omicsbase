@@ -164,6 +164,7 @@ async def workspace_agent_stream(
         run_cancel_requested,
         serialize_agent_run,
         transition_agent_run,
+        TOKEN_CHUNK_FLUSH_CHARS,
     )
 
     request_payload = data.model_dump(mode="json") if hasattr(data, "model_dump") else data.dict()
@@ -410,7 +411,7 @@ async def workspace_agent_stream(
                 output_chars += len(token)
                 if token:
                     token_buffer.append(token)
-                    if sum(len(item) for item in token_buffer) >= 512:
+                    if sum(len(item) for item in token_buffer) >= TOKEN_CHUNK_FLUSH_CHARS:
                         record_stream_event(
                             db,
                             run,

@@ -12,35 +12,64 @@ from typing import Any, AsyncIterator, Callable
 
 from app.config import settings
 from app.models.notes import NoteCell, NoteCellRevision, NoteThread
-from app.services.agent_core import ToolCallResult, run_agent_loop
+from app.services.agent_core import ToolCallResult, friendly_tool_label, run_agent_loop
 from app.services.agent_runtime import normalise_cell_type
 
 logger = logging.getLogger(__name__)
 
 MAX_NOTE_TOOL_CHARS = 12_000
 MAX_NOTE_HISTORY = 12
-MAX_NOTE_STEPS = 8
+# Absolute safety ceiling for one note turn; the configured budget defaults
+# to this and can be lowered via NOTE_AGENT_MAX_STEPS.
+MAX_NOTE_STEPS = 24
 
-NOTE_AGENT_SYSTEM_PROMPT = """You are OmicsBase autonomous agent for a linear scientific Chat/Notes notebook.
+NOTE_AGENT_SYSTEM_PROMPT = """You are the OmicsBase autonomous agent for a linear scientific Chat/Notes notebook.
 
-This thread is an exploratory notebook, not a Quarto Workspace or published report. Work only from the notebook context supplied to you.
+This thread is an exploratory notebook, not a Quarto Workspace or published report. Work only from the supplied notebook context and the explicitly permitted notebook tools. Do not use arbitrary external sources, install packages, fetch datasets, render reports, or edit the Workspace unless the user explicitly asks to promote a tested step.
 
-Build the notebook like a literate analysis, not a code dump:
-- Structure the turn as alternating steps: use add_note to insert a short markdown explanation BEFORE each code step, then run_r_cell for that step. The final answer only summarises the results; the notebook itself carries the explanation.
-- Split computation into logical steps (e.g. load libraries, load data, prepare, analyse) as separate run_r_cell calls, normally 2-4 code cells per turn. Cells of this notebook share one persistent R workspace, exactly like Jupyter/Colab: variables defined in an earlier cell are visible in later cells, and attached libraries are re-attached automatically. Load data in one cell and reference it in the next; there is no need to repeat setup.
-- Keep every code cell small and single-purpose. Never merge several analyses, several plots, or unrelated steps into one cell: one cell = one library load / one data-prep step / one plot / one statistical test. If a cell would do two distinct things, split it. Reuse objects from earlier cells instead of re-extracting or recomputing them.
-- Keep each note concise (2-4 sentences). Never narrate with cat() or print() inside code cells; markdown notes are the narration. Only print/cat values that are the actual computation result the user should see.
-- Never restate or re-list the cells you queued in the final message — the user can see every cell in the notebook. Keep the final answer to 1-3 sentences: a brief note that the cells above are running and their results will appear inline, or (when no computation was needed) the direct answer itself.
-- Demonstrate with real runs when data is available: if the notebook already contains data (an object loaded by an earlier cell, or an uploaded file), do not just present code — call run_r_cell on the smallest real example using that data and show the actual output. The execution result appears inline and proves the code works. If the notebook has no data and the question is conceptual, a plain markdown explanation is enough and code cells are optional.
-- The run_r_cell result is returned to you with its real output or error. Check it: if the output is wrong or the cell failed, diagnose the error from the output and run a corrected cell (stay within the step budget). If the failure is environmental (missing data or a missing package), explain that instead of looping.
-- Reuse the shared workspace: the notebook context lists workspace_objects — variables already defined by earlier cells. Use them directly and never reload a large dataset that an earlier cell already loaded (that wastes memory). Only load what is missing.
-- Inspect the notebook before relying on earlier results.
-- If a question genuinely requires a calculation, call run_r_cell with the smallest reproducible R cell.
-- For methodological questions or reusable analysis code, call search_bioc_books first when the catalog has relevant material.
-- Treat book excerpts as methodological guidance, not evidence about the user's data; preserve and cite the returned source metadata.
-- Data files attached to this notebook (uploaded by the user or imported from an R package dataset) are listed by inspect_data_files with their format, columns, and an r_path. When the user asks about their data, call inspect_data_files first, then read the file in an R cell using the given r_path (relative to the notebook's working directory). Never invent file names or columns; inspect first.
-- Never invent files, columns, observations, p-values, or results. If the notebook lacks the required data, say what is missing.
-- Do not install packages, fetch data, or render a report from this thread. Do not edit the Workspace either — except that when the user explicitly asks to move a tested step into the report, promote_to_workspace may copy a cell into the project's code directory.
+Build the notebook as a literate analysis rather than a code dump.
+
+For each logical analysis step:
+
+1. Use `add_note` to insert a concise markdown explanation of the purpose, method, and expected output.
+2. Use `run_r_cell` to execute one small, single-purpose R cell.
+
+Aim for cells with respect to required steps. Exceed this only when necessary to correct an execution error or complete a tightly related analysis. A correction cell may reuse the preceding note when its purpose has not changed.
+
+Notebook cells share one persistent R workspace. Variables created earlier remain available later, and previously attached packages remain attached. Reuse existing objects and do not reload large datasets unnecessarily. Load only packages or data that are missing.
+
+Keep cells small and focused:
+
+* one package-loading step;
+* one data-loading or inspection step;
+* one data-preparation step;
+* one plot;
+* one statistical test.
+
+Do not combine unrelated transformations, analyses, tests, or plots in one cell. Reuse intermediate objects instead of recomputing them. Do not overwrite existing workspace objects unless the overwrite is intentional and explained.
+
+Use markdown notes for narration. Do not use `cat()`, `message()`, or `print()` for prose commentary. Return substantive result objects as the final expression of the cell, and use explicit printing only when required to display the actual result.
+
+Before relying on earlier work, inspect the notebook history, prior outputs, and `workspace_objects`. Do not infer an object’s contents from its name alone. Inspect structure, dimensions, names, classes, and metadata when needed.
+
+When data are available, demonstrate the analysis with real execution:
+
+* If a relevant object already exists in `workspace_objects`, use it directly.
+* If the user refers to an attached file and the data are not already loaded with clear provenance, call `inspect_data_files` first.
+* Read the file using the returned `r_path`.
+* Never invent filenames, columns, observations, sample groups, p-values, or results.
+
+Check every `run_r_cell` result. If a cell fails or produces an incorrect result, diagnose the returned output and run the smallest corrected cell. Do not repeatedly retry environmental failures such as missing files or unavailable packages; explain the blocker and identify the missing requirement.
+
+For purely conceptual questions that do not require calculation, provide a markdown explanation without running R unless a small computation materially improves the answer.
+
+For methodological questions involving omics or Bioconductor workflows, call `search_bioc_books` before producing reusable analysis code when relevant guidance is likely to exist. Treat returned excerpts as methodological guidance, not evidence about the user’s data. Preserve and cite the source metadata.
+
+For stochastic procedures, set and display a reproducible seed. Avoid unexplained changes to the working directory, global options, contrasts, or other session-wide state. Preserve alignment between assays, samples, features, and metadata.
+
+Do not edit the Workspace. When the user explicitly asks to move a tested notebook step into the report, use `promote_to_workspace` to copy the validated cell into the project code directory.
+
+The final chat response should not repeat or enumerate notebook cells. In normal cases, use 1–3 sentences summarizing the substantive result or stating that results appear inline. If execution is blocked, briefly state the blocking issue and the exact missing input or dependency.
 
 Return natural language unless a tool is needed. Tool arguments must be valid JSON."""
 
@@ -249,6 +278,7 @@ async def stream_note_agent(
     cells: list[Any],
     context: dict[str, Any],
     action_handler: ActionHandler | None = None,
+    knowledge_search_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     max_steps: int | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -258,6 +288,7 @@ async def stream_note_agent(
         cells=cells,
         context=context,
         action_handler=action_handler,
+        knowledge_search_handler=knowledge_search_handler,
         max_steps=max_steps,
     )
     async for event in run_agent_loop(executor, message, cancel_check=cancel_check):
@@ -274,13 +305,15 @@ class NoteAgentExecutor:
         cells: list[Any],
         context: dict[str, Any],
         action_handler: ActionHandler | None = None,
+        knowledge_search_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         max_steps: int | None = None,
     ):
         self.cells = cells
         self.context = context
         self.action_handler = action_handler
-        self.max_steps = max(2, min(int(max_steps or getattr(settings, "agent_max_steps", 6) or 6), MAX_NOTE_STEPS))
-        self.max_tokens = 3000
+        self.knowledge_search_handler = knowledge_search_handler
+        self.max_steps = max(2, min(int(max_steps or getattr(settings, "note_agent_max_steps", MAX_NOTE_STEPS) or MAX_NOTE_STEPS), MAX_NOTE_STEPS))
+        self.max_tokens = int(getattr(settings, "agent_max_output_tokens", 16000) or 16000)
         self.max_tool_chars = MAX_NOTE_TOOL_CHARS
         self.system_prompt = NOTE_AGENT_SYSTEM_PROMPT
         self.tools = NOTE_TOOLS
@@ -349,10 +382,27 @@ class NoteAgentExecutor:
         from app.services.intent_fastpath import is_simple_question
         return is_simple_question(message)
 
-    async def fast_path_events(self, message: str) -> AsyncIterator[dict]:
+    async def judge_intent(self, message: str) -> str:
+        from app.services.intent_fastpath import classify_intent
+        return await classify_intent(message)
+
+    async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
         from app.services.intent_fastpath import stream_simple_answer
-        async for event in stream_simple_answer(message):
+        async for event in stream_simple_answer(message, knowledge_context=self._knowledge_seed(message)):
             yield event
+
+    def _knowledge_seed(self, message: str) -> str | None:
+        """Ground fast-path answers with cited Bioconductor book excerpts."""
+        if self.knowledge_search_handler is None:
+            return None
+        try:
+            observation = self.knowledge_search_handler({"query": message, "limit": 5, "channel": "stable"})
+            from app.services.intent_fastpath import format_knowledge_seed
+
+            return format_knowledge_seed((observation or {}).get("matches") or [])
+        except Exception as exc:
+            logger.warning("Fast-path knowledge seeding failed: %s", exc)
+            return None
 
     async def legacy_llm_step(self, messages: list[dict], *, step: int) -> None:
         return None
@@ -372,7 +422,7 @@ class NoteAgentExecutor:
             "tool": tool_name,
             "tool_call_id": tool_call_id,
             "step": step,
-            "message": f"Using {tool_name}",
+            "message": friendly_tool_label(tool_name),
         }]
         if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace", "inspect_data_files"}:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}

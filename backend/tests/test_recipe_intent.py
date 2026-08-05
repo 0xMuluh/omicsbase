@@ -97,6 +97,11 @@ async def test_agent_fallback_uses_recipe_action_not_edit(tmp_path, monkeypatch)
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(workspace_agent, "call_llm", unavailable_llm)
+
+    async def judge_returns_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_returns_needs_tools)
     project = _microbiome_project()
     project.project_dir = str(tmp_path)
     (tmp_path / "code").mkdir()

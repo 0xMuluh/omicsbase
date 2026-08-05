@@ -42,6 +42,11 @@ async def test_inline_import_continues_then_queues_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(workspace_agent.settings, "agent_max_steps", 8)
     monkeypatch.setattr(workspace_agent.settings, "agent_allow_acquisition", True)
 
+    async def judge_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
+
     calls = []
 
     def inline_handler(action, arguments):

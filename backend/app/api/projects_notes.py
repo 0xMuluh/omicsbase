@@ -879,6 +879,7 @@ async def note_thread_turn(
         run_cancel_requested,
         serialize_agent_run,
         transition_agent_run,
+        TOKEN_CHUNK_FLUSH_CHARS,
     )
 
     request_payload = data.model_dump(mode="json") if hasattr(data, "model_dump") else data.dict()
@@ -965,6 +966,28 @@ async def note_thread_turn(
     generated_code_cells = 0
     generated_note_cells = 0
     knowledge_sources: list[str] = []
+
+    def knowledge_search_handler(arguments: dict) -> dict:
+        from app.services.bioc_knowledge import search_bioc_knowledge
+
+        query = str(arguments.get("query") or message).strip()
+        channel = str(arguments.get("channel") or "stable").strip().lower()
+        try:
+            limit = int(arguments.get("limit") or 3)
+        except (TypeError, ValueError):
+            limit = 3
+        result = search_bioc_knowledge(
+            db,
+            query,
+            channel=channel,
+            limit=max(1, min(limit, 8)),
+            source_slug=str(arguments.get("book") or "").strip() or None,
+        )
+        for match in result.get("matches") or []:
+            citation = str(match.get("citation") or "").strip()
+            if citation and citation not in knowledge_sources:
+                knowledge_sources.append(citation)
+        return result
 
     async def action_handler(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         nonlocal generated_code_cells, generated_note_cells, knowledge_sources
@@ -1176,6 +1199,7 @@ async def note_thread_turn(
                 cells=prior_cells,
                 context=context,
                 action_handler=action_handler,
+                knowledge_search_handler=knowledge_search_handler,
                 cancel_check=lambda: run_cancel_requested(db, str(run.id)),
             ):
                 output_event = dict(event)
@@ -1195,7 +1219,7 @@ async def note_thread_turn(
                     output_chars += len(token)
                     if token:
                         token_buffer.append(token)
-                        if sum(len(item) for item in token_buffer) >= 512:
+                        if sum(len(item) for item in token_buffer) >= TOKEN_CHUNK_FLUSH_CHARS:
                             record_stream_event(
                                 db,
                                 run,

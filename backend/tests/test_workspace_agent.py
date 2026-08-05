@@ -9,6 +9,16 @@ import pytest
 from app.services import workspace_agent
 
 
+def _pin_judge_to_tools(monkeypatch):
+    """These legacy-path tests expect the tool loop; pin the semantic judge
+    so it never hits a live provider."""
+
+    async def judge_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
+
+
 def _project(tmp_path):
     project_dir = tmp_path / "project"
     results_dir = project_dir / "output" / "results"
@@ -54,6 +64,7 @@ async def test_agent_inspects_result_table_before_answering(tmp_path, monkeypatc
         return next(decisions)
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Which group has higher Shannon diversity?",
         selected_file=None,
@@ -87,6 +98,7 @@ async def test_agent_falls_back_to_verified_edit_action(tmp_path, monkeypatch):
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(workspace_agent, "call_llm", unavailable_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Add a caption to the alpha diversity figure",
         selected_file="code/index.qmd",
@@ -115,6 +127,7 @@ async def test_agent_streams_final_message_tokens(tmp_path, monkeypatch):
         return '{"type":"final","message":"Shannon is higher in treatment."}'
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Summarize Shannon",
         selected_file=None,
@@ -158,6 +171,7 @@ async def test_agent_uses_run_r_before_answering_package_question(tmp_path, monk
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
     monkeypatch.setattr("app.services.r_inspect.run_r_inspect", fake_run_r)
+    _pin_judge_to_tools(monkeypatch)
 
     request = SimpleNamespace(
         message="What colnames does that package dataset have?",
@@ -179,6 +193,7 @@ async def test_agent_uses_run_r_before_answering_package_question(tmp_path, monk
     tool_started = next(event for event in events if event["type"] == "tool_started")
     tool_completed = next(event for event in events if event["type"] == "tool_completed")
     assert tool_started["tool"] == "run_r"
+    assert tool_started["reason"] == "Running R inspection"
     assert "2×2" in tool_completed["summary"]
     assert events[-1]["type"] == "final"
     assert "a and b" in events[-1]["message"]
@@ -194,6 +209,7 @@ async def test_agent_asks_user_and_pauses_turn(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Compare the groups in my study",
         selected_file=None,
@@ -228,6 +244,7 @@ async def test_ask_user_without_question_feeds_back_error(tmp_path, monkeypatch)
         return '{"type":"tool","tool":"ask_user","arguments":{},"reason":"oops"}'
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="test",
         selected_file=None,
@@ -256,6 +273,7 @@ async def test_discuss_mode_blocks_mutation_actions(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Change the alpha caption",
         selected_file=None,
@@ -312,6 +330,7 @@ async def test_agent_multi_tool_batching(tmp_path, monkeypatch):
         return next(decisions)
 
     monkeypatch.setattr(workspace_agent, "call_llm", fake_llm)
+    _pin_judge_to_tools(monkeypatch)
     request = SimpleNamespace(
         message="Inspect report and results",
         selected_file=None,

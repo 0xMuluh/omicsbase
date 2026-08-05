@@ -20,6 +20,10 @@ from app.services.sanitizer import sanitize_text
 MAX_EVENT_PAYLOAD_CHARS = 16_000
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
+# Live token chunks are flushed to the client and to the event stream once
+# they accumulate this many characters, so streaming feels incremental.
+TOKEN_CHUNK_FLUSH_CHARS = 96
+
 # The database is the source of truth. This registry only prevents duplicate
 # in-process workers and lets a reconnect distinguish an active worker from a
 # stale run after a process restart.
@@ -317,11 +321,17 @@ def record_stream_event(
         run.resumable = False
     if event_type == "note_cell" and event.get("role") != "user":
         run.resumable = False
+    # token_chunk rows must keep their text so the durable-replay transport
+    # can stream them to clients; other events never carry raw tokens.
+    if event_type == "token_chunk":
+        payload: dict[str, Any] = dict(event)
+    else:
+        payload = {key: value for key, value in event.items() if key != "token"}
     return append_run_event(
         db,
         run,
         event_type,
-        {key: value for key, value in event.items() if event_type != "token_chunk" or key != "token"},
+        payload,
         idempotency_key=idempotency_key,
     )
 

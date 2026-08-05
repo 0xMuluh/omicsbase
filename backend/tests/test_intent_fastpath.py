@@ -17,24 +17,36 @@ def test_simple_questions_qualify():
     assert is_simple_question("What's a permutation test?")
 
 
-def test_tool_questions_do_not_qualify():
-    assert not is_simple_question("Which group has higher Shannon diversity?")
-    assert not is_simple_question("Calculate the mean of 1, 2, and 3")
-    assert not is_simple_question("How do I compute alpha diversity?")
-    assert not is_simple_question("Compare the two groups in my study")
-    assert not is_simple_question("Run a PERMANOVA on my samples")
-    assert not is_simple_question("Analyze my data")
-    assert not is_simple_question("What does this CSV contain?")
-    assert not is_simple_question("Can you build the report?")
-    assert not is_simple_question("How do I install the phyloseq package?")
-    assert not is_simple_question("Import the GlobalPatterns dataset and plot alpha diversity")
-    assert not is_simple_question("Why is my analysis taking so long?")
+def test_conceptual_questions_mentioning_data_still_qualify():
+    # No keyword filtering: words like "data" or "analysis" never reject —
+    # the LLM judge decides semantically.
+    assert is_simple_question("How does log normalization affect my data?")
+    assert is_simple_question("Why is my analysis taking so long?")
+    assert is_simple_question("How do I compute alpha diversity?")
+    assert is_simple_question("Which group has higher Shannon diversity?")
+    assert is_simple_question("What does this CSV contain?")
+    assert is_simple_question("Can you build the report?")
+    assert is_simple_question("How do I install the phyloseq package?")
+    assert is_simple_question("What is a p-value? " + "x" * 250)
 
 
-def test_non_questions_and_long_messages_do_not_qualify():
-    assert not is_simple_question("hello")
-    assert not is_simple_question("Continue")
-    assert not is_simple_question("What is a p-value? " + "x" * 250)
+def test_commands_and_file_references_also_qualify():
+    # Even unambiguous tool commands pass the sanity check; the judge routes
+    # them to the tool loop.
+    assert is_simple_question("Calculate the mean of 1, 2, and 3")
+    assert is_simple_question("Compare the two groups in my study")
+    assert is_simple_question("Run a PERMANOVA on my samples")
+    assert is_simple_question("Analyze my data")
+    assert is_simple_question("Import the GlobalPatterns dataset and plot alpha diversity")
+    assert is_simple_question("Summarize the results by group")
+    assert is_simple_question("Read data.csv")
+    assert is_simple_question("Render the report.qmd")
+    assert is_simple_question("Continue")
+
+
+def test_blank_and_absurdly_long_messages_do_not_qualify():
+    assert not is_simple_question("")
+    assert not is_simple_question("What is a p-value? " + "x" * 2000)
 
 
 def test_fast_path_model_resolution(monkeypatch):
@@ -94,7 +106,11 @@ def test_fast_path_short_circuits_the_loop():
         def use_fast_path(self, message):
             return True
 
-        async def fast_path_events(self, message):
+        async def judge_intent(self, message):
+            return "conceptual"
+
+        async def fast_path_events(self, message, *, intent="conceptual"):
+            assert intent == "conceptual"
             yield {"type": "token", "token": "hi "}
             yield {"type": "final", "message": "hi there", "fast": True}
 

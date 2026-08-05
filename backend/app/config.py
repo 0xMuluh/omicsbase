@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     # faster model (empty fast_path_model selects the provider's fast default).
     fast_path_enabled: bool = True
     fast_path_model: str = ""
+    # Semantic backstop for the fast path: when a message passes the regex
+    # gate, ask the fast model whether it is truly conceptual, needs tools,
+    # or would benefit from knowledge grounding before answering directly.
+    fast_path_judge_enabled: bool = True
+    # Output budget for the judge. Reasoning-class models burn tokens on
+    # internal reasoning before emitting the JSON verdict; too small a cap
+    # returns empty content and silently disables the fast path.
+    fast_path_judge_max_tokens: int = 512
 
     # Database
     database_url: str = "postgresql://omicsbase:omicsbase@localhost:5433/omicsbase"
@@ -95,6 +103,16 @@ class Settings(BaseSettings):
     agent_max_steps: int = 6
     agent_run_stale_after_seconds: int = 300
     agent_allow_acquisition: bool = True
+
+    # Note agent: generous per-turn step budget (each step is one LLM
+    # roundtrip, possibly with several tool calls). Lower with
+    # NOTE_AGENT_MAX_STEPS if runaway turns are a concern.
+    note_agent_max_steps: int = 24
+
+    # Output token ceilings per LLM call. High defaults so answers are never
+    # cut off mid-reply; the model stops naturally when finished.
+    agent_max_output_tokens: int = 16000
+    fast_path_max_output_tokens: int = 4000
 
     @classmethod
     def settings_customise_sources(

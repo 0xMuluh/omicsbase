@@ -32,6 +32,11 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
 
     monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
 
+    async def judge_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
+
     async def action_handler(_name, _arguments):
         return {
             "status": "ok",
@@ -56,6 +61,9 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
     assert "note_cell" in event_types
     assert "execution_queued" in event_types
     assert event_types[-1] == "final"
+    started = next(event for event in events if event["type"] == "tool_started")
+    assert started["message"] == "Running R cell"
+    assert "run_r_cell" not in str(started.get("message"))
     assert provider_calls[1][-2]["role"] == "assistant"
     assert provider_calls[1][-2]["tool_calls"][0]["function"]["name"] == "run_r_cell"
     assert provider_calls[1][-1]["role"] == "tool"
@@ -200,6 +208,10 @@ def test_standalone_turn_persists_user_code_execution_and_answer(monkeypatch, tm
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 
+    async def judge_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
     monkeypatch.setattr(settings, "note_execution_agent_wait_enabled", False)
 
@@ -268,6 +280,12 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 
+    # The judge must not hit a live provider in tests: this message needs the
+    # tool loop, so pin the judge decision.
+    async def judge_returns_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_returns_needs_tools)
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
     monkeypatch.setattr(settings, "note_execution_agent_wait_enabled", False)
 
@@ -296,6 +314,57 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
         assert cells[1].revisions[0].content == "First we load the required libraries."
         assert cells[1].revisions[0].revision_metadata["generated_by"] == "note_agent"
         verify_db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(bind=engine)
+
+
+def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
+    engine, testing_session = _setup_db()
+    client = TestClient(app)
+    headers = {"X-Tenant-ID": "tenant_a", "X-User-ID": "user_a"}
+    answer = (
+        "Streaming answer body with enough text to cross the chunk flush "
+        "threshold multiple times so the client receives incremental chunks "
+        "instead of one burst at the end of the turn. " * 2
+    )
+
+    async def fake_stream(**kwargs):
+        # A real provider emits many small deltas; each flushes a ~96-char
+        # token chunk to the durable stream.
+        for i in range(0, len(answer), 30):
+            yield {"type": "text_delta", "content": answer[i:i + 30]}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    from app.config import settings
+
+    async def judge_needs_tools(message):
+        return "needs_tools"
+
+    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
+    monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
+
+    try:
+        created = client.post(
+            "/api/notes",
+            headers=headers,
+            json={"title": "Untitled note"},
+        )
+        thread_id = created.json()["id"]
+        response = client.post(
+            f"/api/notes/{thread_id}/turn",
+            headers=headers,
+            json={"message": "Calculate the mean of 1, 2, and 3"},
+        )
+        assert response.status_code == 200
+        assert response.headers.get("x-agent-run-transport") == "durable-replay"
+        events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+        token_events = [event for event in events if event["type"] == "token"]
+        assert len(token_events) >= 2, "client should receive multiple incremental token events"
+        streamed = "".join(str(event.get("token") or "") for event in token_events)
+        assert streamed == answer
+        assert any(event["type"] == "final" for event in events)
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(bind=engine)

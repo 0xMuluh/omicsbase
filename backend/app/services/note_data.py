@@ -162,16 +162,17 @@ def import_dataset_into_thread(
         if not exported:
             raise ValueError("R export produced no CSV/TSV files")
 
-    registered: list[dict[str, Any]] = []
-    for path in exported:
-        destination = upload_dir / path.name
-        destination.write_bytes(path.read_bytes())
-        registered.append(
-            {
-                "name": destination.name,
-                "format": "csv",
-                "size_bytes": destination.stat().st_size,
-                "r_path": _r_path(thread, destination.name),
-            }
-        )
+        # Copy while the temp dir still exists (it is removed on exit).
+        registered: list[dict[str, Any]] = []
+        for path in exported:
+            destination = upload_dir / path.name
+            destination.write_bytes(path.read_bytes())
+            registered.append(
+                {
+                    "name": destination.name,
+                    "format": "csv",
+                    "size_bytes": destination.stat().st_size,
+                    "r_path": _r_path(thread, destination.name),
+                }
+            )
     return {"status": "ok", "package": package, "dataset": dataset, "files": registered}
