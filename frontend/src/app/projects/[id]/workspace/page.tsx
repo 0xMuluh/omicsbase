@@ -431,6 +431,11 @@ export default function WorkspacePage() {
     queryFn: () => api.getEditTransaction(projectId, selectedEditId as string),
     enabled: Boolean(project?.project_dir && selectedEditId),
   });
+  const { data: executionRuns } = useQuery({
+    queryKey: ["executionRuns", projectId],
+    queryFn: () => api.listExecutionRuns(projectId, 10),
+    enabled: Boolean(project?.project_dir),
+  });
 
   const { data: projectFiles } = useQuery({
     queryKey: ["projectFiles", projectId],
@@ -530,6 +535,7 @@ export default function WorkspacePage() {
         void queryClient.invalidateQueries({ queryKey: ["fileTree", projectId] });
         void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId] });
         void queryClient.invalidateQueries({ queryKey: ["filePreview", projectId] });
+        void queryClient.invalidateQueries({ queryKey: ["executionRuns", projectId] });
         setIframeKey((value) => value + 1);
       }
       completedJobSignatureRef.current = completedSignature;
@@ -1499,6 +1505,24 @@ export default function WorkspacePage() {
 
             {reviewChecks?.status === "warning" ? (
               <p className="px-1 text-[11px] text-amber-700 dark:text-amber-300">{reviewChecks.summary}</p>
+            ) : null}
+            {executionRuns?.runs?.[0]?.validators?.length ? (
+              <div className="rounded-2xl border border-border bg-muted/30 px-3 py-2 text-[11px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Scientific checks</span>
+                  <Badge variant="outline" className={statusTone(executionRuns.runs[0].status)}>{executionRuns.runs[0].status}</Badge>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {executionRuns.runs[0].validators.map((validator) => (
+                    <Badge key={validator.step_id} variant="outline" className={statusTone(validator.status)}>
+                      {validator.step_id}: {validator.status}
+                    </Badge>
+                  ))}
+                </div>
+                {executionRuns.runs[0].target_pages.length ? (
+                  <p className="mt-1 text-muted-foreground">Scoped page render; validators were not rerun.</p>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </ScrollArea>

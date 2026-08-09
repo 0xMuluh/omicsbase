@@ -391,6 +391,7 @@ def run_generation(*args, **kwargs):
     """Generate the Quarto project via LLM."""
     project_id, job_id = _parse_task_args(args)
     target_recipe_id = kwargs.get("target_recipe_id")
+    resume_from_checkpoint = bool(kwargs.get("resume_from_checkpoint", True))
 
     db = _get_db_session()
     try:
@@ -399,7 +400,16 @@ def run_generation(*args, **kwargs):
         from app.services.agent_runtime import record_agent_action, refresh_project_memory, set_agent_state
         from app.services.generator import generate_project
 
-        _update_job(db, job_id, status="running", progress=[{"step": "generation", "status": "running"}])
+        _update_job(
+            db,
+            job_id,
+            status="running",
+            progress=[{
+                "step": "generation",
+                "status": "running",
+                "resume_from_checkpoint": resume_from_checkpoint,
+            }],
+        )
 
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project or not project.analysis_plan:
@@ -456,6 +466,7 @@ def run_generation(*args, **kwargs):
             uploaded_file_paths=uploaded_paths,
             study_manifest=project.study_manifest,
             progress_callback=progress_callback,
+            resume_from_checkpoint=resume_from_checkpoint,
         ))
         loop.close()
 

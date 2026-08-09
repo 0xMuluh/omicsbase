@@ -30,3 +30,23 @@ def test_review_passes_minimal_project(tmp_path: Path):
     result = review_render_output(str(base))
     assert result["status"] in {"passed", "warning"}
     assert any(check["name"] == "qmd_pages" and check["status"] == "passed" for check in result["checks"])
+
+
+
+def test_review_fails_malformed_quarto_frontmatter(tmp_path: Path):
+    base = tmp_path
+    code_dir = base / "code"
+    code_dir.mkdir()
+    (code_dir / "data.R").write_text("x <- 1\n")
+    (code_dir / "funct.R").write_text("f <- function(x) x\n")
+    (code_dir / "main.R").write_text("source('data.R')\n")
+    (code_dir / "_quarto.yml").write_text("project:\n  type: website\n")
+    (code_dir / "index.qmd").write_text("---\ntitle: [broken\n---\n# Bad\n")
+    output_dir = base / "output"
+    output_dir.mkdir()
+    (output_dir / "index.html").write_text("<html><body><nav>menu</nav><main>sessionInfo</main></body></html>" * 20)
+
+    result = review_render_output(str(base))
+    assert result["status"] == "failed"
+    check = next(item for item in result["checks"] if item["name"] == "quarto_semantics")
+    assert check["status"] == "failed"

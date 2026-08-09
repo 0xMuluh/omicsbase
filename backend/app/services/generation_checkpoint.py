@@ -75,13 +75,14 @@ class GenerationCheckpoint:
         *,
         run_inputs: dict[str, Any],
         generator_version: str,
+        resume: bool = True,
     ) -> None:
         self.base = Path(project_dir).resolve()
         self.path = self.base / CHECKPOINT_RELATIVE_PATH
         self.generator_version = generator_version
         self.run_inputs = run_inputs
         self.run_fingerprint = canonical_sha256(run_inputs)
-        loaded = self._load()
+        loaded = self._load() if resume else {}
         units = loaded.get("units") if isinstance(loaded.get("units"), dict) else {}
         files = loaded.get("files") if isinstance(loaded.get("files"), dict) else {}
         self.state: dict[str, Any] = {

@@ -123,3 +123,38 @@ def test_browser_save_requires_and_checks_if_match(workspace):
     assert saved.status_code == 200
     assert file_path.read_text() == "value <- 2\n"
     assert saved.json()["transaction_id"]
+
+
+
+def test_edit_review_prepare_and_approve(workspace):
+    project, _root, file_path = workspace
+    client = TestClient(app)
+    prepared = client.post(
+        f"/api/projects/{project.id}/edit-reviews",
+        json={
+            "summary": "Review API edit",
+            "operations": [
+                {
+                    "path": "code/analysis.R",
+                    "kind": "replace",
+                    "search": "value <- 1",
+                    "replace": "value <- 3",
+                }
+            ],
+        },
+    )
+    assert prepared.status_code == 200, prepared.text
+    review = prepared.json()
+    assert review["status"] == "pending"
+    assert file_path.read_text() == "value <- 1\n"
+    approved = client.post(f"/api/projects/{project.id}/edit-reviews/{review['review_id']}/approve")
+    assert approved.status_code == 200, approved.text
+    assert file_path.read_text() == "value <- 3\n"
+
+
+def test_execution_provenance_endpoint_is_empty_before_a_run(workspace):
+    project, _root, _file_path = workspace
+    client = TestClient(app)
+    response = client.get(f"/api/projects/{project.id}/execution-runs")
+    assert response.status_code == 200
+    assert response.json() == {"runs": []}

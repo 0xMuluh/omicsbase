@@ -101,6 +101,7 @@ class AnalysisPlan(BaseModel):
     domain: str = "microbiome"
     report_pack_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] | None = None
     study_type: str
     question: str
     detected_inputs: list[dict] = Field(default_factory=list)
@@ -241,6 +242,7 @@ class NoteThreadTurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     auto_execute: bool = True
     idempotency_key: str | None = Field(default=None, max_length=255, description="Stable client key for safe turn retries")
+    attachments: list[MessageAttachment] = Field(default_factory=list, max_length=20)
 
 
 class NoteThreadReportExportRequest(BaseModel):
@@ -270,6 +272,12 @@ class NoteCellExecutionCreate(BaseModel):
     timeout_seconds: int | None = Field(default=None, ge=1, le=1800)
     cache_policy: Literal["off", "reuse"] = "off"
     upstream_execution_ids: list[uuid.UUID] = Field(default_factory=list, max_length=64)
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Stable client key; retries return the original execution",
+    )
 
 
 class NoteExecutionArtifactOut(BaseModel):
@@ -306,6 +314,7 @@ class NoteCellExecutionOut(BaseModel):
     cache_key: str | None
     dependency_fingerprint: str | None
     upstream_execution_ids: list[uuid.UUID] = Field(default_factory=list)
+    idempotency_key: str | None = None
     cache_hit: bool
     cache_source_execution_id: uuid.UUID | None
 

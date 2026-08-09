@@ -176,7 +176,7 @@ WORKSPACE_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("search_bioc_books", "Search the pinned stable Bioconductor books for methodological guidance and reusable QMD examples", _schema({"query": {"type": "string", "description": "Scientific or coding question"}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug"}}, required=["query"]), parallel=True),
     ToolSpec("recall_memory", "Recall durable project memories (preferences, decisions, constraints, findings)", parallel=True),
     ToolSpec("read_file", "Read a workspace file by relative path", _schema({"path": {"type": "string", "description": "Relative file path"}}, required=["path"]), parallel=True),
-    ToolSpec("read_results", "Read a result artifact (CSV/TSV/JSON) with row data", _schema({"path": {"type": "string", "description": "Relative path to result file (optional, reads first available if empty)"}}), parallel=True),
+    ToolSpec("read_results", "Read one explicitly named result artifact (CSV/TSV/JSON) with row data", _schema({"path": {"type": "string", "description": "Project-relative path to the exact result artifact"}}, required=["path"]), parallel=True),
     ToolSpec("compare_results", "Load multiple result artifacts for comparison", _schema({"paths": {"type": "array", "items": {"type": "string"}, "description": "List of result file paths"}}, required=["paths"]), parallel=True),
     ToolSpec("inspect_failures", "Inspect recent failed jobs with error details and logs", parallel=True),
     ToolSpec("validate_report", "Validate the current rendered report for issues", parallel=True),
@@ -196,6 +196,7 @@ _EDIT_SCHEMA = _schema(
         "allow_multiple": {"type": "boolean", "default": False},
         "reason": {"type": "string"},
         "instruction": {"type": "string", "description": "High-level edit instruction for complex changes; inspect first and make the concrete edit explicit"},
+        "approval": {"type": "string", "enum": ["auto", "preview", "require"], "default": "auto", "description": "Use preview/require to prepare a diff for explicit approval before committing."},
     }
 )
 
@@ -207,7 +208,8 @@ ACTION_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("update_recipe_parameters", "Update parameters for a recipe", _schema({"recipe_id": {"type": "string"}, "parameters": {"type": "object", "additionalProperties": True}}, required=["recipe_id", "parameters"]), kind="async", risk="write", capability="legacy_recipe", idempotency="idempotent"),
     ToolSpec("set_analysis_variables", "Set grouping variable, levels, and covariates", _schema({"grouping_variable": {"type": "string"}, "group_levels": {"type": "array", "items": {"type": "string"}}, "covariates": {"type": "array", "items": {"type": "string"}}}), kind="async", risk="write", idempotency="idempotent"),
     ToolSpec("run_recipe", "Run a specific recipe", _schema({"recipe_id": {"type": "string"}}, required=["recipe_id"]), kind="async", risk="execute", capability="legacy_recipe", idempotency="non_idempotent"),
-    ToolSpec("run_analysis", "Run the ReportPack analysis pipeline", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
+    ToolSpec("run_analysis", "Run the ReportPack analysis pipeline, optionally resuming completed generation units from its checkpoint", _schema({"resume_from_checkpoint": {"type": "boolean", "default": True, "description": "Reuse completed generator units and preserve divergent user edits when true."}}), kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
+    ToolSpec("undo_project_edit", "Undo one named committed project edit if its current bytes still match the journal", _schema({"transaction_id": {"type": "string", "pattern": "^[a-f0-9]{16,64}$", "description": "Edit transaction id from the workspace history"}}, required=["transaction_id"]), kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("render_report", "Render the report; if the last render failed, repair the smallest failing scope before retrying", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
     ToolSpec("repair_report", "Compatibility alias for render_report with repair-on-failure behavior", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent", advertised=False, alias_of="render_report"),
     ToolSpec("rollback_analysis_configuration", "Rollback analysis configuration to previous state", kind="async", risk="write", idempotency="non_idempotent"),

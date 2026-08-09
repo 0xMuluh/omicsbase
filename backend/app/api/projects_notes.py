@@ -165,6 +165,7 @@ def _execution_payload(execution: CellExecution) -> dict:
         "cache_key": execution.cache_key,
         "dependency_fingerprint": execution.dependency_fingerprint,
         "upstream_execution_ids": execution.upstream_execution_ids or [],
+        "idempotency_key": execution.idempotency_key,
         "cache_hit": bool(execution.cache_hit),
         "cache_source_execution_id": execution.cache_source_execution_id,
     }
@@ -1098,7 +1099,11 @@ async def note_thread_turn(
             thread,
             cell_type="agent",
             content=message,
-            metadata={"turn_id": turn_id, "role": "user"},
+            metadata={
+                "turn_id": turn_id,
+                "role": "user",
+                "attachments": [a.model_dump() for a in data.attachments] if data.attachments else [],
+            },
             created_by=user_id,
         )
         transition_agent_run(db, run, "running", event_type="run_started")
@@ -1117,6 +1122,42 @@ async def note_thread_turn(
     generated_code_cells = 0
     generated_note_cells = 0
     knowledge_sources: list[str] = []
+
+    async def _execution_observation(
+        execution_payload: dict,
+        cell_payload: dict,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        """Wait once and shape a durable execution result for the Note agent."""
+        if (
+            settings.note_execution_agent_wait_enabled
+            and str(execution_payload.get("status") or "")
+            in {"queued", "running", "cancel_requested"}
+        ):
+            execution_payload = await _wait_for_note_execution(
+                db,
+                str(execution_payload["id"]),
+                timeout_seconds,
+                cancel_check=lambda: run_cancel_requested(db, str(run.id)),
+            )
+        return {
+            "status": "ok",
+            "stdout": str(((execution_payload or {}).get("result_metadata") or {}).get("stdout_preview") or "")[:4000],
+            "stderr": (
+                str(execution_payload.get("error") or "")[:4000]
+                if str(execution_payload.get("status") or "") in {"failed", "timed_out", "cancelled"}
+                else ""
+            ),
+            "summary": {
+                "execution_status": str(execution_payload.get("status") or "queued"),
+                "output_chars": ((execution_payload or {}).get("result_metadata") or {}).get("output_chars", 0),
+                "output_truncated": bool(((execution_payload or {}).get("result_metadata") or {}).get("output_truncated")),
+                "had_errors": bool(((execution_payload or {}).get("result_metadata") or {}).get("had_errors")),
+            },
+            "cell": cell_payload,
+            "execution": execution_payload,
+            "turn_id": turn_id,
+        }
 
     def knowledge_search_handler(arguments: dict) -> dict:
         from app.services.bioc_knowledge import search_bioc_knowledge
@@ -1223,6 +1264,32 @@ async def note_thread_turn(
             except (TypeError, ValueError):
                 return {"status": "error", "error": "timeout_seconds must be an integer", "turn_id": turn_id}
         purpose = str(arguments.get("purpose") or "Notebook computation")[:1000]
+
+        # A resumed/replayed turn must not append the same generated cell and
+        # execute it again. The AgentRun id is the durable turn identity; the
+        # immutable revision content is the call identity.
+        for existing_cell in fresh_thread.cells:
+            for existing_revision in existing_cell.revisions:
+                metadata = existing_revision.revision_metadata or {}
+                if (
+                    str(metadata.get("turn_id") or "") == turn_id
+                    and existing_revision.cell_type == "code"
+                    and str(existing_revision.content or "").strip() == code
+                ):
+                    prior_executions = list(existing_revision.executions or [])
+                    if prior_executions:
+                        prior_execution = max(
+                            prior_executions,
+                            key=lambda item: item.created_at,
+                        )
+                        replay = await _execution_observation(
+                            _execution_payload(prior_execution),
+                            _cell_payload(existing_cell),
+                            timeout_seconds,
+                        )
+                        replay["duplicate_call"] = True
+                        return replay
+
         generated_code_cells += 1
         cell = append_note_cell(
             db,
@@ -1250,6 +1317,14 @@ async def note_thread_turn(
             parameters=parameters,
             timeout_seconds=timeout_seconds,
             cache_policy="off",
+            idempotency_key=(
+                "agent:"
+                + turn_id
+                + ":"
+                + hashlib.sha256(
+                    (code + json.dumps(parameters, sort_keys=True, default=str)).encode("utf-8")
+                ).hexdigest()[:48]
+            ),
         )
         if fresh_thread.project_id:
             execution_payload = execute_note_cell(
@@ -1270,34 +1345,7 @@ async def note_thread_turn(
                 db,
                 tenant_id,
             )
-        if (
-            settings.note_execution_agent_wait_enabled
-            and str(execution_payload.get("status") or "") in {"queued", "running", "cancel_requested"}
-        ):
-            execution_payload = await _wait_for_note_execution(
-                db,
-                str(execution_payload["id"]),
-                timeout_seconds,
-                cancel_check=lambda: run_cancel_requested(db, str(run.id)),
-            )
-        return {
-            "status": "ok",
-            "stdout": str(((execution_payload or {}).get("result_metadata") or {}).get("stdout_preview") or "")[:4000],
-            "stderr": (
-                str(execution_payload.get("error") or "")[:4000]
-                if str(execution_payload.get("status") or "") in {"failed", "timed_out", "cancelled"}
-                else ""
-            ),
-            "summary": {
-                "execution_status": str(execution_payload.get("status") or "queued"),
-                "output_chars": ((execution_payload or {}).get("result_metadata") or {}).get("output_chars", 0),
-                "output_truncated": bool(((execution_payload or {}).get("result_metadata") or {}).get("output_truncated")),
-                "had_errors": bool(((execution_payload or {}).get("result_metadata") or {}).get("had_errors")),
-            },
-            "cell": cell_payload,
-            "execution": execution_payload,
-            "turn_id": turn_id,
-        }
+        return await _execution_observation(execution_payload, cell_payload, timeout_seconds)
 
     request_db = db
     worker_session_factory = session_factory_for(request_db)
@@ -1934,6 +1982,7 @@ def _note_thread_planning_notes(thread: NoteThread) -> str:
 def create_workspace_from_note_thread(
     thread_id: str,
     data: NoteThreadWorkspaceCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
     user_id: str = Depends(get_current_user_id),
@@ -1998,6 +2047,59 @@ def create_workspace_from_note_thread(
             db.flush()
             project.study_manifest = build_study_manifest(imported_records)
 
+    # Persist an explicit, hash-addressed transfer manifest. The generated
+    # workspace may later be rebuilt, but this record keeps the notebook
+    # question, immutable revisions, successful executions, and copied inputs
+    # auditable as one transfer decision.
+    transfer_cells = []
+    for cell in sorted(thread.cells, key=lambda item: (int(item.position or 0), item.created_at)):
+        revisions = []
+        for revision in sorted(cell.revisions, key=lambda item: item.revision):
+            revisions.append({
+                "id": str(revision.id),
+                "revision": int(revision.revision),
+                "cell_type": revision.cell_type,
+                "language": revision.language,
+                "content_sha256": hashlib.sha256(str(revision.content or "").encode("utf-8")).hexdigest(),
+                "executions": [
+                    {
+                        "id": str(execution.id),
+                        "status": execution.status,
+                        "input_fingerprint": execution.input_fingerprint,
+                        "environment_fingerprint": execution.environment_fingerprint,
+                        "artifact_count": len(execution.artifacts or []),
+                    }
+                    for execution in sorted(revision.executions, key=lambda item: item.created_at)
+                ],
+            })
+        transfer_cells.append({"id": str(cell.id), "position": int(cell.position or 0), "revisions": revisions})
+    transfer_manifest = {
+        "schema_version": "1.0",
+        "source_thread_id": str(thread.id),
+        "source_thread_title": thread.title,
+        "question": question,
+        "auto_build_requested": bool(data.auto_build),
+        "copied_uploads": [str(file.original_name or "") for file in project.files],
+        "cells": transfer_cells,
+        "created_at": _now().isoformat(),
+    }
+    transfer_bytes = json.dumps(transfer_manifest, indent=2, sort_keys=True, default=str).encode("utf-8")
+    transfer_manifest["sha256"] = hashlib.sha256(transfer_bytes).hexdigest()
+    transfer_dir = project_dir / ".omicsbase"
+    transfer_dir.mkdir(parents=True, exist_ok=True)
+    transfer_path = transfer_dir / "note-transfer-manifest.json"
+    temporary_transfer = transfer_path.with_suffix(".json.tmp")
+    temporary_transfer.write_text(json.dumps(transfer_manifest, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    temporary_transfer.replace(transfer_path)
+    manifest_snapshot = dict(project.study_manifest or {})
+    manifest_snapshot["note_transfer"] = {
+        "source_thread_id": str(thread.id),
+        "manifest_path": ".omicsbase/note-transfer-manifest.json",
+        "sha256": transfer_manifest["sha256"],
+        "cell_count": len(transfer_cells),
+        "upload_count": len(project.files),
+    }
+    project.study_manifest = manifest_snapshot
     thread.project_id = str(project.id)
     thread.storage_path = str(project_dir)
     thread.updated_at = _now()
@@ -2020,6 +2122,52 @@ def create_workspace_from_note_thread(
             "question_carried_forward": bool(question),
         },
     )
+
+    # Auto-build is explicit in the review wizard. Do not silently claim that
+    # it happened: only queue planning when the transfer actually carried
+    # study inputs, and report a durable reason when it cannot start.
+    auto_build_job = None
+    auto_build_reason = None
+    if data.auto_build:
+        if not project.files:
+            auto_build_reason = "Auto-build was requested, but the NoteThread has no uploaded study data."
+        else:
+            try:
+                from app.api.projects_pipeline import _dispatch_task
+                from app.models.project import Job
+                from app.services.agent_runtime import record_agent_action, set_agent_state
+                from app.tasks.analysis import run_planning
+
+                auto_build_job = Job(project_id=str(project.id), job_type="plan", status="pending")
+                db.add(auto_build_job)
+                project.status = "planning"
+                db.commit()
+                db.refresh(auto_build_job)
+                set_agent_state(db, project, "planning", "Planning transferred NoteThread inputs")
+                record_agent_action(
+                    db,
+                    project,
+                    "plan",
+                    "started",
+                    "Planning transferred NoteThread inputs",
+                    {"note_thread_id": str(thread.id), "auto_build": True},
+                    job_id=str(auto_build_job.id),
+                )
+                _dispatch_task(
+                    run_planning,
+                    project,
+                    auto_build_job,
+                    db,
+                    background_tasks,
+                )
+            except Exception as exc:
+                auto_build_reason = f"Auto-build could not be queued: {str(exc)[:500]}"
+                if auto_build_job is not None:
+                    auto_build_job.status = "failed"
+                    auto_build_job.error = auto_build_reason
+                project.status = "failed"
+                db.commit()
+
     return {
         "project_id": str(project.id),
         "note_thread": _thread_payload(thread),
@@ -2028,5 +2176,17 @@ def create_workspace_from_note_thread(
             "cells": len(thread.cells),
             "question": question,
             "notes": bool(notes),
+            "manifest": {
+                "path": ".omicsbase/note-transfer-manifest.json",
+                "sha256": transfer_manifest["sha256"],
+                "cell_count": len(transfer_cells),
+                "upload_count": len(project.files),
+            },
+            "auto_build": {
+                "requested": bool(data.auto_build),
+                "queued": auto_build_job is not None and auto_build_reason is None,
+                "job_id": str(auto_build_job.id) if auto_build_job is not None else None,
+                "reason": auto_build_reason,
+            },
         },
     }

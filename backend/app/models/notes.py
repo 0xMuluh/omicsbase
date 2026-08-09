@@ -172,6 +172,10 @@ class CellExecution(Base):
     cache_key = Column(String(128), index=True)
     dependency_fingerprint = Column(String(128))
     upstream_execution_ids = Column(JSON)
+    # A caller-provided key makes retries of the same request return this
+    # durable execution instead of allocating and dispatching another attempt.
+    # NULL intentionally means "no idempotency contract" and remains repeatable.
+    idempotency_key = Column(String(255), nullable=True)
     cache_hit = Column(Boolean, nullable=False, default=False)
     cache_source_execution_id = Column(
         String(36),
@@ -195,6 +199,11 @@ class CellExecution(Base):
 
     __table_args__ = (
         UniqueConstraint("revision_id", "attempt", name="uq_note_cell_execution_attempt"),
+        UniqueConstraint(
+            "revision_id",
+            "idempotency_key",
+            name="uq_note_cell_execution_idempotency",
+        ),
         Index("ix_note_cell_executions_status_created", "status", "created_at"),
     )
 

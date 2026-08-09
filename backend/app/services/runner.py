@@ -8,6 +8,8 @@ import html
 import json
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from contextlib import asynccontextmanager
@@ -23,6 +25,10 @@ from app.services.execution_contract import (
 from app.services.capability_contract import (
     CapabilityContractError,
     load_capability_contract,
+)
+from app.services.execution_provenance import (
+    snapshot_execution_inputs,
+    write_execution_provenance,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,21 +85,58 @@ async def run_project(
             and not effective_resume
         ):
             effective_run_data = False
-        result = await _run_project_unlocked(
-            project_dir=str(project_path),
-            progress_callback=progress_callback,
-            start_page=start_page,
-            run_data=effective_run_data,
-            target_pages=effective_target_pages,
-            resume_from_step=effective_resume,
-        )
-        # A completed run has consumed the pending source invalidation. Keep it
-        # on failures so a later retry resumes from the same safe boundary.
-        pending_step = (pending or {}).get("resume_from_step") if pending is not None else None
-        consumed_pending = pending is not None and (not pending_step or run_data is not False)
-        if result.get("status") == "completed" and consumed_pending:
-            (project_path / ".omicsbase" / "invalidation.json").unlink(missing_ok=True)
-        return result
+
+        run_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc).isoformat()
+        input_snapshot = snapshot_execution_inputs(project_path)
+        events: list[dict[str, object]] = []
+
+        def _provenance_progress(step_id: str, status: str, line: str = "") -> None:
+            events.append({
+                "step": step_id,
+                "status": status,
+                "time": datetime.now(timezone.utc).isoformat(),
+                "detail": line,
+            })
+            if progress_callback:
+                progress_callback(step_id, status, line)
+
+        result: dict | None = None
+        try:
+            result = await _run_project_unlocked(
+                project_dir=str(project_path),
+                progress_callback=_provenance_progress,
+                start_page=start_page,
+                run_data=effective_run_data,
+                target_pages=effective_target_pages,
+                resume_from_step=effective_resume,
+            )
+            # A completed run has consumed the pending source invalidation. Keep
+            # it on failures so a later retry resumes from the same safe boundary.
+            pending_step = (pending or {}).get("resume_from_step") if pending is not None else None
+            consumed_pending = pending is not None and (not pending_step or run_data is not False)
+            if result.get("status") == "completed" and consumed_pending:
+                (project_path / ".omicsbase" / "invalidation.json").unlink(missing_ok=True)
+            return result
+        finally:
+            # Provenance is best-effort and must never turn a successful report
+            # into a failed job. The runner result still carries the record so
+            # task callers can surface validator evidence immediately.
+            try:
+                provenance = write_execution_provenance(
+                    project_path,
+                    run_id=run_id,
+                    started_at=started_at,
+                    result=result,
+                    events=events,
+                    input_snapshot=input_snapshot,
+                    resume_from_step=effective_resume,
+                    target_pages=effective_target_pages,
+                )
+                if result is not None:
+                    result["provenance"] = provenance
+            except Exception as exc:  # pragma: no cover - filesystem failure is non-fatal
+                logger.warning("Could not persist execution provenance for %s: %s", project_path, exc)
 
 
 def _read_pending_invalidation(project_path: Path) -> dict[str, object] | None:

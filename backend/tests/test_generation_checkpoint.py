@@ -43,6 +43,23 @@ def test_matching_checkpoint_reuses_only_matching_output_hashes(tmp_path: Path):
     assert not list((tmp_path / ".omicsbase").glob("*.tmp"))
 
 
+def test_resume_false_does_not_reuse_prior_unit_checkpoint(tmp_path: Path):
+    target = tmp_path / "code" / "page.qmd"
+    target.parent.mkdir(parents=True)
+    target.write_text("generated\n")
+    first = _checkpoint(tmp_path)
+    first.complete("qmd:code/page.qmd", ["code/page.qmd"])
+
+    fresh = GenerationCheckpoint(
+        tmp_path,
+        run_inputs=first.run_inputs,
+        generator_version="test-generator-v1",
+        resume=False,
+    )
+    assert fresh.decide("qmd:code/page.qmd", ["code/page.qmd"]).action == "preserve"
+    assert fresh.state["units"] == {}
+
+
 def test_divergent_completed_output_is_preserved_without_claiming_ownership(tmp_path: Path):
     target = tmp_path / "code" / "page.qmd"
     target.parent.mkdir(parents=True)

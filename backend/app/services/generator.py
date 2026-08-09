@@ -60,6 +60,7 @@ class NoChangeDecision:
     evidence: tuple[str, ...] = ()
     inspected_chunks: int = 1
     content_sha256: str = ""
+    adaptation: str = "preserve"
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class AdaptationEdits:
     edits: tuple[dict[str, str], ...]
     inspected_chunks: int
     content_sha256: str
+    adaptation: str = "replace"
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ class DeleteDecision:
     inspected_chunks: int
     content_sha256: str
 
+
+ADAPTATION_ACTIONS = {"preserve", "parameterize", "extend", "replace"}
 
 MAX_ADAPT_CHUNK_CHARS = 28_000
 MAX_CONTEXT_CHARS = 28_000
@@ -102,6 +106,7 @@ GENERATION_STEPS = [
 _ADAPT_EDIT_COMMON = """The file `{relative_path}` in the project is a complete, working template copied from templates/. The rest of the project depends on it: its structure, objects, helper functions, artifact names, and construction approach.
 
 Adapt it to the current study by returning ONLY targeted SEARCH/REPLACE edits:
+- First classify the adaptation as one of: `preserve` (template is already correct), `parameterize` (substitute study-specific values or paths), `extend` (add a bounded study-specific section while retaining the template), or `replace` (only when the template structure cannot express the requested analysis; still return targeted edits).
 - Identify what this study changes in this file: input paths, column names, factor levels, grouping variables, comparisons, and study-specific narrative. Never change anything else.
 - Each edit has an exact `search` block — verbatim lines from the current file — and its `replace`.
 - Never rewrite the file: anything you do not edit stays exactly as the template has it.
@@ -111,8 +116,10 @@ Adapt it to the current study by returning ONLY targeted SEARCH/REPLACE edits:
 - Keep sections whose source artifacts do not exist yet, saying what artifact is missing.
 
 Return ONLY one of:
-- JSON edits: [{{"search": "...", "replace": "..."}}]
-- If inspection proves no change is needed: {{"decision":"no_change","reason":"specific conclusion","evidence":["concrete file/plan/manifest fact"]}}
+- Classified edits: {{"adaptation":"parameterize|extend|replace","edits":[{{"search":"...","replace":"..."}}],"reason":"..."}}
+- Classified preservation: {{"adaptation":"preserve","decision":"no_change","reason":"specific conclusion","evidence":["concrete file/plan/manifest fact"]}}
+- Backwards-compatible JSON edits: [{{"search": "...", "replace": "..."}}]
+- Exactly DELETE when an irrelevant report page should be removed.
 """
 
 _ADAPT_PAGE_INSTRUCTION = _ADAPT_EDIT_COMMON
@@ -145,10 +152,10 @@ async def _request_file_edits_chunk(
     target_file: str,
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
-) -> tuple[dict[str, str], ...] | str | NoChangeDecision:
+) -> AdaptationEdits | str | NoChangeDecision:
     """Ask the model for edits to one fully visible source chunk.
 
-    Returns edits, DELETE, or an explicit evidence-bearing no-change
+    Returns classified edits, DELETE, or an explicit evidence-bearing no-change
     decision. An empty edit array is rejected because it cannot distinguish
     inspection from provider/parser failure.
     """
@@ -157,6 +164,10 @@ async def _request_file_edits_chunk(
 The current file `{target_file}` is below. Adapt it with targeted SEARCH/REPLACE edits.
 
 {instruction}
+
+## Adaptation classification
+
+Before editing, classify this file as exactly one of `preserve`, `parameterize`, `extend`, or `replace`. Use `preserve` only when the template is already correct and return an evidence-bearing `no_change` decision. Use `parameterize` for study-specific values or paths, `extend` for a bounded addition that retains the template structure, and `replace` only when the structure cannot express the requested analysis. Classified edits must include the chosen `adaptation` value.
 
 ## Current file: {target_file}
 
@@ -213,10 +224,34 @@ Never return an empty array. No markdown fences, no explanation.
         raise AdaptationResponseError(
             f"Adapt edit response for {target_file} was not valid JSON"
         ) from exc
+    adaptation_action = "replace"
+    if isinstance(data, dict) and "adaptation" in data:
+        adaptation_action = str(data.get("adaptation") or "").strip().lower()
+        if adaptation_action not in ADAPTATION_ACTIONS:
+            raise AdaptationResponseError(
+                f"Adapt edit response for {target_file} used unknown adaptation classification"
+            )
+        if adaptation_action == "preserve":
+            if data.get("edits"):
+                raise AdaptationResponseError(
+                    f"Adapt edit response for {target_file} classified preserve but returned edits"
+                )
+            data = {
+                "decision": "no_change",
+                "reason": data.get("reason"),
+                "evidence": data.get("evidence"),
+            }
+        else:
+            raw_edits = data.get("edits")
+            if not isinstance(raw_edits, list):
+                raise AdaptationResponseError(
+                    f"Adapt edit response for {target_file} classification requires an edits list"
+                )
+            data = raw_edits
     if isinstance(data, dict):
         if (
-            set(data) == {"decision", "reason", "evidence"}
-            and data.get("decision") == "no_change"
+            data.get("decision") == "no_change"
+            and set(data).issubset({"decision", "reason", "evidence"})
         ):
             reason = str(data.get("reason") or "").strip()
             raw_evidence = data.get("evidence")
@@ -231,7 +266,11 @@ Never return an empty array. No markdown fences, no explanation.
             ):
                 evidence = tuple(item.strip() for item in raw_evidence)
                 if len(evidence) == len(set(evidence)):
-                    return NoChangeDecision(reason=reason, evidence=evidence)
+                    return NoChangeDecision(
+                        reason=reason,
+                        evidence=evidence,
+                        adaptation="preserve",
+                    )
         raise AdaptationResponseError(
             f"Adapt edit response for {target_file} contained an invalid decision object"
         )
@@ -256,7 +295,12 @@ Never return an empty array. No markdown fences, no explanation.
         raise AdaptationResponseError(
             f"Adapt edit response for {target_file} was empty; return an explicit no_change decision"
         )
-    return tuple(edits)
+    return AdaptationEdits(
+        edits=tuple(edits),
+        inspected_chunks=1,
+        content_sha256=_content_hash(file_content),
+        adaptation=adaptation_action,
+    )
 
 
 def _split_source_chunks(
@@ -296,7 +340,7 @@ async def _request_file_edits(
     """Inspect the complete file, requiring a valid decision for every chunk."""
     chunks = _split_source_chunks(file_content)
     content_sha256 = _content_hash(file_content)
-    decisions: list[tuple[tuple[dict[str, str], ...] | str | NoChangeDecision, str]] = []
+    decisions: list[tuple[AdaptationEdits | str | NoChangeDecision, str]] = []
     for chunk_index, (start, end, chunk) in enumerate(chunks, start=1):
         chunk_instruction = (
             instruction
@@ -317,8 +361,8 @@ async def _request_file_edits(
             generated_context=generated_context,
             study_manifest_json=study_manifest_json,
         )
-        if isinstance(decision, tuple):
-            for edit in decision:
+        if isinstance(decision, AdaptationEdits):
+            for edit in decision.edits:
                 if edit["search"] not in chunk:
                     raise AdaptationResponseError(
                         f"Adapt edit response for {target_file} chunk {chunk_index} "
@@ -337,17 +381,23 @@ async def _request_file_edits(
             content_sha256=content_sha256,
         )
 
-    edits = tuple(
-        edit
+    edit_decisions = [
+        decision
         for decision, _ in decisions
-        if isinstance(decision, tuple)
-        for edit in decision
-    )
+        if isinstance(decision, AdaptationEdits)
+    ]
+    edits = tuple(edit for decision in edit_decisions for edit in decision.edits)
     if edits:
+        classifications = {decision.adaptation for decision in edit_decisions}
+        if len(classifications) > 1:
+            raise AdaptationResponseError(
+                f"Adapt edit response for {target_file} used conflicting adaptation classifications across chunks"
+            )
         return AdaptationEdits(
             edits=edits,
             inspected_chunks=len(chunks),
             content_sha256=content_sha256,
+            adaptation=next(iter(classifications), "replace"),
         )
 
     no_changes = [
@@ -369,6 +419,7 @@ async def _request_file_edits(
             ),
             inspected_chunks=len(chunks),
             content_sha256=content_sha256,
+            adaptation="preserve",
         )
     raise AdaptationResponseError(
         f"Adapt edit response for {target_file} did not cover every source chunk"
@@ -694,17 +745,6 @@ def _finalize_adaptation_outcomes(
         outcome["finalized"] = True
 
 
-# An adaptation of a template may change only part of the file; below this
-# similarity the result is a rewrite, not an adaptation, and is rejected.
-TEMPLATE_ADAPT_MIN_SIMILARITY = 0.5
-
-
-def _template_similarity(original: str, adapted: str) -> float:
-    import difflib
-
-    return difflib.SequenceMatcher(None, original, adapted).ratio()
-
-
 async def generate_project(
     project_dir: str,
     plan: AnalysisPlan,
@@ -712,6 +752,7 @@ async def generate_project(
     uploaded_file_paths: dict[str, list[str]],
     study_manifest: dict[str, Any] | None = None,
     progress_callback: Callable[[str, str, dict[str, Any] | None], None] | None = None,
+    resume_from_checkpoint: bool = True,
 ) -> list[str]:
     """Generate the entire Quarto project from an approved analysis plan.
 
@@ -774,6 +815,7 @@ async def generate_project(
             system_prompt=system_prompt,
         ),
         generator_version=GENERATOR_CHECKPOINT_VERSION,
+        resume=resume_from_checkpoint,
     )
 
     _report("scaffold", "running", {"detail": "Creating project folders and starter files"})
@@ -1262,6 +1304,7 @@ async def generate_project(
                 outcome["reason"] = str(exc)
                 return _finish_adaptation()
             if isinstance(edits, NoChangeDecision):
+                outcome["adaptation"] = edits.adaptation
                 outcome["inspection_chunks"] = edits.inspected_chunks
                 outcome["inspection_sha256"] = edits.content_sha256
                 outcome["decision_reason"] = edits.reason
@@ -1323,6 +1366,7 @@ async def generate_project(
                 return _finish_adaptation()
             outcome["inspection_chunks"] = edits.inspected_chunks
             outcome["inspection_sha256"] = edits.content_sha256
+            outcome["adaptation"] = edits.adaptation
             requested_edits = list(edits.edits)
             outcome["requested_edits"] = len(requested_edits)
 
@@ -1350,29 +1394,13 @@ async def generate_project(
                         "study-bearing code or content must change materially"
                     )
                     return _finish_adaptation()
-                similarity = _template_similarity(original, updated)
-                outcome["similarity"] = round(similarity, 6)
                 logger.info(
-                    "Adapt %s: %d edit(s), original=%dB updated=%dB similarity=%.2f",
+                    "Adapt %s: %d edit(s), original=%dB updated=%dB",
                     relative_path,
                     len(requested_edits),
                     len(original),
                     len(updated),
-                    similarity,
                 )
-                if similarity < TEMPLATE_ADAPT_MIN_SIMILARITY:
-                    logger.warning(
-                        "Adapt rejected for %s: similarity to template %.0f%% < %.0f%% — keeping template verbatim",
-                        relative_path,
-                        similarity * 100,
-                        TEMPLATE_ADAPT_MIN_SIMILARITY * 100,
-                    )
-                    outcome["status"] = "failed"
-                    outcome["reason"] = (
-                        f"Adaptation similarity {similarity:.3f} was below "
-                        f"{TEMPLATE_ADAPT_MIN_SIMILARITY:.3f}"
-                    )
-                    return _finish_adaptation()
                 abs_path = base / relative_path
                 try:
                     from app.services.edit_engine import EditOperation, EditPolicy, apply_transaction, sha256_bytes

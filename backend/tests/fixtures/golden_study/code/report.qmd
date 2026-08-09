@@ -1,0 +1,10 @@
+---
+title: "Golden Study Report"
+format: html
+---
+
+# Golden Study
+
+This report is rendered from a four-sample base-R fixture. The declared
+analysis writes `output/results.csv`; the validator checks the group means and
+row counts before this report is assembled.

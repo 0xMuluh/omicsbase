@@ -61,6 +61,37 @@ def _resolve_revision(cell, requested_revision: int | None) -> NoteCellRevision:
     return revision
 
 
+def _validate_idempotent_execution(
+    existing: CellExecution,
+    *,
+    input_hash: str,
+    environment: str,
+    cache_policy: str,
+    cache_key: str,
+    dependency_hash: str,
+    parameters: dict,
+    upstream_execution_ids: list[str],
+) -> None:
+    """Reject reuse of a key for a materially different execution request."""
+    same_request = (
+        existing.input_fingerprint == input_hash
+        and existing.environment_fingerprint == environment
+        and existing.cache_policy == cache_policy
+        and existing.cache_key == cache_key
+        and existing.dependency_fingerprint == dependency_hash
+        and (existing.parameters or {}) == (parameters or {})
+        and (existing.upstream_execution_ids or []) == (upstream_execution_ids or [])
+    )
+    if not same_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "idempotency_key was already used for a different execution request",
+                "execution_id": str(existing.id),
+            },
+        )
+
+
 def _create_execution(
     db: Session,
     *,
@@ -73,7 +104,35 @@ def _create_execution(
     cache_key: str,
     dependency_hash: str,
     upstream_execution_ids: list[str],
-) -> CellExecution:
+    idempotency_key: str | None = None,
+) -> tuple[CellExecution, bool]:
+    """Allocate one execution, returning ``(execution, created)``.
+
+    The unique revision/key constraint is the durable boundary for retries.
+    A replay therefore returns before emitting a second queue event or dispatch.
+    """
+    if idempotency_key:
+        existing = (
+            db.query(CellExecution)
+            .filter(
+                CellExecution.revision_id == revision_id,
+                CellExecution.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if existing is not None:
+            _validate_idempotent_execution(
+                existing,
+                input_hash=input_hash,
+                environment=environment,
+                cache_policy=cache_policy,
+                cache_key=cache_key,
+                dependency_hash=dependency_hash,
+                parameters=parameters,
+                upstream_execution_ids=upstream_execution_ids,
+            )
+            return existing, False
+
     for _ in range(3):
         latest_attempt = (
             db.query(func.max(CellExecution.attempt))
@@ -94,6 +153,7 @@ def _create_execution(
             cache_key=cache_key,
             dependency_fingerprint=dependency_hash,
             upstream_execution_ids=upstream_execution_ids,
+            idempotency_key=idempotency_key,
         )
         db.add(execution)
         try:
@@ -110,9 +170,30 @@ def _create_execution(
             )
             db.commit()
             db.refresh(execution)
-            return execution
+            return execution, True
         except IntegrityError:
             db.rollback()
+            if idempotency_key:
+                existing = (
+                    db.query(CellExecution)
+                    .filter(
+                        CellExecution.revision_id == revision_id,
+                        CellExecution.idempotency_key == idempotency_key,
+                    )
+                    .first()
+                )
+                if existing is not None:
+                    _validate_idempotent_execution(
+                        existing,
+                        input_hash=input_hash,
+                        environment=environment,
+                        cache_policy=cache_policy,
+                        cache_key=cache_key,
+                        dependency_hash=dependency_hash,
+                        parameters=parameters,
+                        upstream_execution_ids=upstream_execution_ids,
+                    )
+                    return existing, False
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail="Concurrent execution attempt allocation failed; retry the request",
@@ -203,7 +284,7 @@ def execute_note_cell(
         dependency_fingerprint=dependency_hash,
         timeout_seconds=timeout_seconds,
     )
-    execution = _create_execution(
+    execution, created = _create_execution(
         db,
         revision_id=str(revision.id),
         timeout_seconds=timeout_seconds,
@@ -214,7 +295,10 @@ def execute_note_cell(
         cache_key=cache_key,
         dependency_hash=dependency_hash,
         upstream_execution_ids=upstream_execution_ids,
+        idempotency_key=data.idempotency_key,
     )
+    if not created:
+        return _execution_payload(execution)
     _publish_execution_event(project_id, thread_id, execution, "note_execution_queued")
 
     if execution.cache_policy == "reuse":
@@ -506,7 +590,7 @@ def execute_standalone_note_cell(
         dependency_fingerprint=dependency_hash,
         timeout_seconds=timeout_seconds,
     )
-    execution = _create_execution(
+    execution, created = _create_execution(
         db,
         revision_id=str(revision.id),
         timeout_seconds=timeout_seconds,
@@ -517,7 +601,10 @@ def execute_standalone_note_cell(
         cache_key=cache_key,
         dependency_hash=dependency_hash,
         upstream_execution_ids=upstream_execution_ids,
+        idempotency_key=data.idempotency_key,
     )
+    if not created:
+        return _execution_payload(execution)
     root = thread_storage_path(thread)
 
     if execution.cache_policy == "reuse":

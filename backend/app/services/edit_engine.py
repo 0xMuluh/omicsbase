@@ -441,8 +441,14 @@ def prepare_transaction(
                 raise EditMatchError("Patch target does not exist.", path=relative)
             if not operation.patch:
                 raise EditPatchError("Patch hunk operation is missing encoded hunks.", path=relative)
-            hunks, require_eof = _decode_hunks(operation.patch)
-            updated = _apply_hunks(before_current, hunks, path=relative, require_eof=require_eof)
+            hunks, require_eof, no_final_newline = _decode_hunks(operation.patch)
+            updated = _apply_hunks(
+                before_current,
+                hunks,
+                path=relative,
+                require_eof=require_eof,
+                no_final_newline=no_final_newline,
+            )
             if updated == before_current:
                 raise EditMatchError("The patch operation is a no-op.", path=relative)
             working[relative] = updated
@@ -645,6 +651,7 @@ class _PatchSpec:
     lines: tuple[str, ...] = ()
     hunks: tuple[tuple[str, ...], ...] = ()
     eof: bool = False
+    no_final_newline: bool = False
 
 
 def parse_apply_patch(patch: str) -> list[EditOperation]:
@@ -681,6 +688,7 @@ def parse_apply_patch(patch: str) -> list[EditOperation]:
             hunks: list[tuple[str, ...]] = []
             current: list[str] = []
             eof = False
+            no_final_newline = False
             while i < end and not lines[i].startswith("*** "):
                 if lines[i].startswith("@@"):
                     if current:
@@ -689,6 +697,7 @@ def parse_apply_patch(patch: str) -> list[EditOperation]:
                     i += 1
                     continue
                 if lines[i] == "\\ No newline at end of file":
+                    no_final_newline = True
                     i += 1
                     continue
                 if not lines[i] or lines[i][0] not in {" ", "+", "-"}:
@@ -702,7 +711,15 @@ def parse_apply_patch(patch: str) -> list[EditOperation]:
                 i += 1
             if not hunks:
                 raise EditPatchError("Update patch has no hunks.", path=path)
-            specs.append(_PatchSpec("update", path, hunks=tuple(hunks), eof=eof))
+            specs.append(
+                _PatchSpec(
+                    "update",
+                    path,
+                    hunks=tuple(hunks),
+                    eof=eof,
+                    no_final_newline=no_final_newline,
+                )
+            )
             continue
         raise EditPatchError(f"Unexpected patch line: {line}")
 
@@ -718,10 +735,17 @@ def parse_apply_patch(patch: str) -> list[EditOperation]:
 
 
 def _encode_update_patch(spec: _PatchSpec) -> str:
-    return json.dumps({"path": spec.path, "hunks": [list(hunk) for hunk in spec.hunks], "eof": spec.eof})
+    return json.dumps(
+        {
+            "path": spec.path,
+            "hunks": [list(hunk) for hunk in spec.hunks],
+            "eof": spec.eof,
+            "no_final_newline": spec.no_final_newline,
+        }
+    )
 
 
-def _decode_hunks(value: str) -> tuple[tuple[tuple[str, ...], ...], bool]:
+def _decode_hunks(value: str) -> tuple[tuple[tuple[str, ...], ...], bool, bool]:
     try:
         payload = json.loads(value)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -729,10 +753,21 @@ def _decode_hunks(value: str) -> tuple[tuple[tuple[str, ...], ...], bool]:
     hunks = payload.get("hunks") if isinstance(payload, dict) else None
     if not isinstance(hunks, list) or not hunks or any(not isinstance(hunk, list) or any(not isinstance(line, str) for line in hunk) for hunk in hunks):
         raise EditPatchError("Encoded patch hunks are invalid.")
-    return tuple(tuple(hunk) for hunk in hunks), bool(payload.get("eof", False))
+    return (
+        tuple(tuple(hunk) for hunk in hunks),
+        bool(payload.get("eof", False)),
+        bool(payload.get("no_final_newline", False)),
+    )
 
 
-def _apply_hunks(whole: bytes, hunks: tuple[tuple[str, ...], ...], *, path: str, require_eof: bool = False) -> bytes:
+def _apply_hunks(
+    whole: bytes,
+    hunks: tuple[tuple[str, ...], ...],
+    *,
+    path: str,
+    require_eof: bool = False,
+    no_final_newline: bool = False,
+) -> bytes:
     try:
         text = whole.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -755,6 +790,8 @@ def _apply_hunks(whole: bytes, hunks: tuple[tuple[str, ...], ...], *, path: str,
     updated = "\n".join(lines)
     if had_final_newline:
         updated += "\n"
+    if no_final_newline:
+        updated = updated.rstrip("\n")
     return updated.encode("utf-8")
 
 

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from app.services.capability_contract import CapabilityContractError, resolve_plan_capabilities, validate_capability_bindings
+from app.services.capability_contract import (
+    CapabilityContractError,
+    resolve_plan_capabilities,
+    validate_capability_bindings,
+    validate_plan_parameter_bindings,
+)
 from app.services.edit_validation import validate_text
 from app.services.incremental_invalidation import plan_invalidation
 from app.services.report_pack import ReportPack, ReportPackCapability, ReportPackExecution, ReportPackExecutionStep, load_report_pack
@@ -92,3 +97,26 @@ def test_invalidation_resumes_from_earliest_affected_step(tmp_path):
     assert plan.resume_from_step == "fit"
     assert plan.invalidated_steps == ("fit", "validate")
     assert plan.targeted_pages == ("page.qmd",)
+
+
+
+def test_required_capability_parameters_are_checked_when_plan_opts_in(tmp_path):
+    pack = ReportPack(
+        root=tmp_path,
+        pack_id="x",
+        version="1",
+        domain="x",
+        name="x",
+        capabilities=(ReportPackCapability("known", parameters={"grouping_variable": "required", "distance": "optional"}),),
+    )
+    # Legacy plans remain diagnosable without becoming invalid by default.
+    assert validate_plan_parameter_bindings(pack, {"capabilities": ["known"]}) == {"known": ["grouping_variable"]}
+    with pytest.raises(CapabilityContractError, match="grouping_variable"):
+        validate_plan_parameter_bindings(
+            pack,
+            {"capabilities": ["known"], "parameters": {"distance": "bray"}},
+        )
+    assert validate_plan_parameter_bindings(
+        pack,
+        {"capabilities": ["known"], "grouping_variable": "condition", "parameters": {"distance": "bray"}},
+    ) == {}

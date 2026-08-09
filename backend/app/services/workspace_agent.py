@@ -47,6 +47,7 @@ ASYNC_ACTIONS = {
     "set_analysis_variables",
     "run_recipe",
     "run_analysis",
+    "undo_project_edit",
     "render_report",
     "repair_report",
     "rollback_analysis_configuration",
@@ -941,7 +942,11 @@ class WorkspaceAgentExecutor:
                     "event": {
                         "id": f"action-{step}-{tool_call_id}", "kind": "action", "status": "pending",
                         "title": tool_name, "summary": action_message,
-                        "target": {"action": tool_name, "path": arguments.get("recipe_id")},
+                        "target": {
+                            "action": tool_name,
+                            "path": arguments.get("recipe_id"),
+                            "transaction_id": arguments.get("transaction_id"),
+                        },
                         "tool_call_id": tool_call_id,
                     },
                 },
@@ -1273,19 +1278,13 @@ def _read_results(project, relative_path: str) -> dict[str, Any]:
     base = _project_base(project)
     if not base:
         return {"status": "error", "error": "The project has no generated workspace yet."}
-    if relative_path:
-        path = _safe_path(base, relative_path)
-    else:
-        candidates = [
-            path
-            for path in sorted(
-                base / path for path in list_project_result_artifacts(project)
-            )
-            if path.is_file()
-        ]
-        if not candidates:
-            return {"status": "ok", "artifacts": [], "message": "No result tables are available yet."}
-        path = candidates[0]
+    if not relative_path:
+        return {
+            "status": "error",
+            "error": "read_results requires an explicit project-relative result path.",
+            "available_artifacts": _result_paths(project),
+        }
+    path = _safe_path(base, relative_path)
     if not path or not path.is_file():
         return {"status": "error", "error": f"Result artifact does not exist: {relative_path}"}
 
@@ -1547,6 +1546,31 @@ def _execute_inline_edit_project(project: Any, arguments: dict[str, Any]) -> dic
         else:
             return {"status": "error", "error": f"Edit {canonical_path} is missing search/replace, patch, or content"}
         paths.append(canonical_path)
+
+    approval = str(arguments.get("approval") or "auto").strip().lower()
+    if approval in {"preview", "require"}:
+        from app.services.edit_review import prepare_edit_review
+        try:
+            proposal = prepare_edit_review(
+                base,
+                operations,
+                origin="workspace_inline_review",
+                summary="Workspace agent edit awaiting approval",
+                policy=EditPolicy(
+                    allowed_extensions=frozenset({".r", ".qmd", ".yml", ".yaml", ".md", ".txt", ".csv", ".tsv", ".json", ".html", ".css", ".js", ".ts", ".tsx"}),
+                    allow_create=False,
+                    allow_delete=False,
+                ),
+            )
+        except EditEngineError as exc:
+            return {"status": "error", "error": str(exc), "code": exc.code, "details": exc.details, "path": exc.path}
+        return {
+            "status": "review_required",
+            "detail": "Prepared an edit diff; explicit approval is required before files change.",
+            "review_id": proposal["review_id"],
+            "review": proposal.get("prepared") or {},
+            "paths": paths,
+        }
 
     try:
         result = apply_transaction(

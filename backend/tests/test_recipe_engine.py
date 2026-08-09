@@ -301,7 +301,7 @@ def test_identifier_overlap_beats_id_name_heuristic(tmp_path: Path):
     assert config["identifiers"]["subject_id"] == "sample"
 
 
-def test_apply_edits_bounded_and_similarity_gate():
+def test_apply_edits_bounded_and_material_change_gate():
     from app.services import generator as gen
 
     template = "\n".join(f"machinery line {i}" for i in range(50))
@@ -321,6 +321,7 @@ def test_apply_edits_bounded_and_similarity_gate():
     assert "machinery line five" in updated
     assert "machinery line 5" not in updated
 
-    # Similarity is a real measure: identical -> 1.0; rewrite -> below threshold.
-    assert gen._template_similarity(template, template) == 1.0
-    assert gen._template_similarity(template, "totally different content\n" * 10) < gen.TEMPLATE_ADAPT_MIN_SIMILARITY
+    # Adaptation no longer rejects a valid targeted change merely because its
+    # byte-level similarity to the template is low. Rewrite-sized edit blocks
+    # remain bounded and required files use the material-change gate.
+    assert updated != template

@@ -11,6 +11,7 @@ from app.services.edit_engine import (
     EditMatchError,
     EditPolicyError,
     EditOperation,
+    EditPolicy,
     apply_transaction,
     commit_transaction,
     parse_apply_patch,
@@ -283,3 +284,63 @@ def test_report_pack_page_edit_is_targeted_without_data_rerun(tmp_path):
     assert payload["resume_from_step"] is None
     assert payload["invalidated_steps"] == []
     assert payload["targeted_pages"] == ["page.qmd"]
+
+
+
+def test_patch_golden_multi_hunk_update_preserves_unrelated_lines(tmp_path):
+    project = tmp_path / "project"
+    (project / "code").mkdir(parents=True)
+    target = project / "code" / "analysis.R"
+    target.write_text("one <- 1\ntwo <- 2\nthree <- 3\nfour <- 4\nfive <- 5\n")
+    patch = """*** Begin Patch
+*** Update File: code/analysis.R
+@@
+-one <- 1
++one <- 10
+@@
+-four <- 4
++four <- 40
+*** End Patch"""
+
+    result = apply_transaction(project, [{"kind": "patch", "patch": patch}], origin="golden")
+    assert result.status == "committed"
+    assert target.read_text() == "one <- 10\ntwo <- 2\nthree <- 3\nfour <- 40\nfive <- 5\n"
+
+
+def test_patch_golden_add_and_delete_are_atomic(tmp_path):
+    project = tmp_path / "project"
+    (project / "code").mkdir(parents=True)
+    old = project / "code" / "old.R"
+    old.write_text("old <- TRUE\n")
+    patch = """*** Begin Patch
+*** Add File: code/new.R
++new <- TRUE
+*** Delete File: code/old.R
+*** End Patch"""
+
+    result = apply_transaction(
+        project,
+        [{"kind": "patch", "patch": patch}],
+        origin="golden",
+        policy=EditPolicy(allow_create=True, allow_delete=True),
+    )
+    assert result.status == "committed"
+    assert (project / "code" / "new.R").read_text() == "new <- TRUE\n"
+    assert not old.exists()
+
+
+def test_patch_golden_no_final_newline_marker_is_honored(tmp_path):
+    project = tmp_path / "project"
+    (project / "code").mkdir(parents=True)
+    target = project / "code" / "analysis.R"
+    target.write_bytes(b"alpha <- 1\n")
+    patch = """*** Begin Patch
+*** Update File: code/analysis.R
+@@
+-alpha <- 1
++alpha <- 2
+\\ No newline at end of file
+*** End Patch"""
+
+    apply_transaction(project, [{"kind": "patch", "patch": patch}], origin="golden")
+    assert target.read_bytes() == b"alpha <- 2"

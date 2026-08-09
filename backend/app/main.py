@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.project_edits import router as project_edits_router
+from app.api.execution_runs import router as execution_runs_router
+from app.api.edit_reviews import router as edit_reviews_router
 from app.api.files import router as files_router
 from app.api.inline_edit import router as inline_edit_router
 from app.api.projects_notes import note_agent_router, standalone_router as standalone_notes_router
@@ -102,6 +104,8 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(files_router)
 app.include_router(project_edits_router)
+app.include_router(execution_runs_router)
+app.include_router(edit_reviews_router)
 app.include_router(inline_edit_router)
 app.include_router(standalone_notes_router)
 app.include_router(note_agent_router)

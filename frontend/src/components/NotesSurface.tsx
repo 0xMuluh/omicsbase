@@ -46,7 +46,7 @@ function isImageFile(file: File): boolean {
   return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
 }
 
-import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteDataFile, NoteExecutionArtifact, WorkspaceResult, type ImportableDataset } from "@/lib/api";
+import { api, FileAttachment, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteDataFile, NoteExecutionArtifact, WorkspaceResult, type ImportableDataset } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -348,7 +348,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     workspaceId ? api.createNoteCell(workspaceId, threadId, data) : api.createStandaloneNoteCell(threadId, data);
   const appendScopedRevision = (threadId: string, cellId: string, data: { cell_type: NoteCellType; language?: string | null; content?: string; metadata?: Record<string, any> | null }) =>
     workspaceId ? api.appendNoteCellRevision(workspaceId, threadId, cellId, data) : api.appendStandaloneNoteCellRevision(threadId, cellId, data);
-  const executeScopedCell = (threadId: string, cellId: string, data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[] }) =>
+  const executeScopedCell = (threadId: string, cellId: string, data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[]; idempotency_key?: string }) =>
     workspaceId ? api.executeNoteCell(workspaceId, threadId, cellId, data) : api.executeStandaloneNoteCell(threadId, cellId, data);
   const getScopedExecution = (threadId: string, cellId: string, executionId: string) =>
     workspaceId ? api.getNoteCellExecution(workspaceId, threadId, cellId, executionId) : api.getStandaloneNoteCellExecution(threadId, cellId, executionId);
@@ -441,13 +441,20 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   }, [searchParams]);
   useEffect(() => {
-    if (!selectedThreadId || turnStreaming) return;
+    if (!selectedThreadId || turnStreaming || threadFilesQuery.isLoading) return;
     const message = autoRunPromptRef.current;
     if (!message) return;
     autoRunPromptRef.current = null;
     router.replace(`${pathname}?thread=${selectedThreadId}`, { scroll: false });
-    void runTurn(selectedThreadId, message);
-  }, [selectedThreadId, turnStreaming, pathname, router]);
+    const initialAttachments: FileAttachment[] = (threadFilesQuery.data || []).map((file) => ({
+      name: file.name,
+      format: file.format,
+      size_bytes: file.size_bytes,
+      r_path: file.r_path,
+      source: "note",
+    }));
+    void runTurn(selectedThreadId, message, initialAttachments.length ? initialAttachments : undefined);
+  }, [selectedThreadId, turnStreaming, threadFilesQuery.isLoading, threadFilesQuery.data, pathname, router]);
 
   useEffect(() => {
     // Only write the URL when it does not already name a thread — never fight
@@ -471,7 +478,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     mutationFn: (cell: NoteCell) => {
       const revision = latestRevision(cell);
       if (!revision) throw new Error("Cannot execute a cell without an existing revision.");
-      return executeScopedCell(selectedThreadId as string, cell.id, { revision: revision.revision, cache_policy: reuseCache ? "reuse" : "off" });
+      const idempotencyKey = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `note-${cell.id}-${revision.revision}-${Date.now()}`;
+      return executeScopedCell(selectedThreadId as string, cell.id, {
+        revision: revision.revision,
+        cache_policy: reuseCache ? "reuse" : "off",
+        idempotency_key: idempotencyKey,
+      });
     },
     onSuccess: (execution, cell) => {
       setActiveExecution({ cellId: cell.id, executionId: execution.id });
@@ -618,7 +632,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     if (!selectedThreadId || saveRevision.isPending) return;
     saveRevision.mutate({ cell, content: drafts[cell.id] ?? latestRevision(cell)?.content ?? "" });
   };
-  const runTurn = async (threadId: string, message: string) => {
+  const runTurn = async (threadId: string, message: string, attachments?: FileAttachment[]) => {
     if (!message || !threadId || turnStreaming) return;
     setTurnDraft("");
     setTurnStreaming(true);
@@ -628,7 +642,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     try {
       await api.streamNoteThreadTurn(
         threadId,
-        { message, auto_execute: true },
+        { message, auto_execute: true, attachments },
         (event) => {
           if (event.type === "token" || event.type === "token_chunk") {
             setLiveTurnText((current) => current + (event.token || ""));
@@ -667,15 +681,21 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     if (!selectedThreadId || !currentThread || currentThread.status !== "active") return;
     const filesToUpload = [...stagedFiles];
     setStagedFiles([]);
+    const uploadedAttachments: FileAttachment[] = [];
     if (filesToUpload.length > 0) {
       setTurnStatus("Uploading attached files...");
       for (const file of filesToUpload) {
         try {
-          if (workspaceId) {
-            await api.uploadProjectNoteFile(workspaceId, selectedThreadId, file);
-          } else {
-            await api.uploadStandaloneNoteFile(selectedThreadId, file);
-          }
+          const uploaded = workspaceId
+            ? await api.uploadProjectNoteFile(workspaceId, selectedThreadId, file)
+            : await api.uploadStandaloneNoteFile(selectedThreadId, file);
+          uploadedAttachments.push({
+            name: uploaded.name,
+            format: uploaded.format,
+            size_bytes: uploaded.size_bytes,
+            r_path: uploaded.r_path,
+            source: "note",
+          });
         } catch (error) {
           console.error("Failed to upload note attachment:", file.name, error);
         }
@@ -684,7 +704,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
     const message = turnDraft.trim() || (filesToUpload.length ? "I attached study files to this note." : "");
     if (!message) return;
-    void runTurn(selectedThreadId, message);
+    void runTurn(selectedThreadId, message, uploadedAttachments.length ? uploadedAttachments : undefined);
   };
 
   const handleEmptySubmit = async () => {
@@ -1112,7 +1132,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                               placeholder={revision.cell_type === "agent" ? "Describe what OmicsBase should investigate." : "Write a note..."}
                             />
                           ) : (
-                            <MarkdownRenderer content={revision.content || "(empty note)"} className="text-base" />
+                            <>
+                              {revision.metadata?.attachments?.length ? (
+                                <MessageAttachments attachments={revision.metadata.attachments as any} className="mb-2" />
+                              ) : index === 0 && threadFiles.length ? (
+                                <MessageAttachments attachments={threadFiles as any} className="mb-2" />
+                              ) : null}
+                              <MarkdownRenderer content={revision.content || "(empty note)"} className="text-base" />
+                            </>
                           )
                         ) : revision.cell_type === "code" ? (
                           isEditing ? (
@@ -1256,14 +1283,6 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                   );
                 })}
               </div>
-              {threadFiles.length ? (
-                <article data-overview-block data-overview-type="user" data-overview-id={`${selectedThreadId}-files`} className="flex justify-end pt-2">
-                  <div className="max-w-[85%] rounded-3xl bg-muted/80 px-4 py-3 text-foreground shadow-sm">
-                    <p className="mb-2 text-xs font-medium text-muted-foreground">Attached files</p>
-                    <MessageAttachments attachments={threadFiles} />
-                  </div>
-                </article>
-              ) : null}
               {liveTurnBlock}
               <div ref={threadBottomRef} className="h-px" />
               {turnStreaming ? (

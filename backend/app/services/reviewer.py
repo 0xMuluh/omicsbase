@@ -10,6 +10,8 @@ from app.services.execution_contract import (
     ExecutionContractError,
     load_execution_contract,
 )
+from app.services.execution_provenance import list_execution_provenance
+from app.services.edit_validation import validate_text
 
 REQUIRED_CODE_FILES = ("data.R", "funct.R", "_quarto.yml", "main.R")
 ERROR_MARKERS = ("error in", "execution halted", "quitting from lines")
@@ -128,6 +130,46 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
             )
         )
 
+    if execution_contract is not None:
+        validator_steps = [step for step in execution_contract.steps if step.role == "validator"]
+        if validator_steps:
+            latest = list_execution_provenance(base, limit=1)
+            if not latest:
+                checks.append(
+                    _check(
+                        "validator_provenance",
+                        False,
+                        "No execution provenance record is available for declared validator steps.",
+                        severity="warning",
+                    )
+                )
+            else:
+                evidence = {item.get("step_id"): item for item in latest[0].get("validators") or []}
+                missing = [step.step_id for step in validator_steps if step.step_id not in evidence]
+                not_run = [step.step_id for step in validator_steps if evidence.get(step.step_id, {}).get("status") != "completed"]
+                targeted = bool(latest[0].get("target_pages")) and not latest[0].get("resume_from_step")
+                if targeted and not_run:
+                    checks.append(
+                        _check(
+                            "validator_provenance",
+                            False,
+                            "Validator steps were intentionally skipped for a targeted page render: "
+                            + ", ".join(not_run),
+                            severity="warning",
+                        )
+                    )
+                else:
+                    checks.append(
+                        _check(
+                            "validator_provenance",
+                            not missing and not not_run,
+                            "All declared validator steps completed with recorded input hashes."
+                            if not missing and not not_run
+                            else "Validator evidence is incomplete or a declared validator did not complete: "
+                            + ", ".join(missing + not_run),
+                        )
+                    )
+
     qmd_files = sorted(source_dir.glob("**/*.qmd")) if source_dir.exists() else []
     checks.append(
         _check(
@@ -136,6 +178,24 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
             f"Found {len(qmd_files)} Quarto page(s) under {source_root}/",
         )
     )
+
+    if qmd_files:
+        quarto_issues = []
+        for page in qmd_files:
+            relative = page.relative_to(base).as_posix()
+            validation = validate_text(relative, page.read_bytes())
+            quarto_issues.extend(issue for issue in validation.issues if issue.severity == "error")
+        checks.append(
+            _check(
+                "quarto_semantics",
+                not quarto_issues,
+                "Quarto page front matter and UTF-8 semantics are valid."
+                if not quarto_issues
+                else "Quarto semantic validation failed: " + "; ".join(
+                    f"{issue.path}: {issue.message}" for issue in quarto_issues[:4]
+                ),
+            )
+        )
 
     if qmd_files:
         checks.append(

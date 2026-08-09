@@ -31,6 +31,7 @@ const TOOL_LABELS: Record<string, string> = {
   set_analysis_variables: "Updating analysis variables",
   run_recipe: "Running recipe",
   run_analysis: "Running the analysis",
+  undo_project_edit: "Undoing project edit",
   render_report: "Rendering the report",
   repair_report: "Repairing the report",
   rollback_analysis_configuration: "Rolling back configuration",

@@ -87,6 +87,24 @@ def list_edit_transactions(
     return {"transactions": transactions[:200]}
 
 
+@router.post("/recover")
+def recover_edit_journals_endpoint(
+    project_id: str,
+    transaction_id: str | None = None,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    from app.services.edit_recovery import recover_edit_journals
+    try:
+        recovered = recover_edit_journals(project.project_dir, transaction_id=transaction_id)
+    except EditEngineError as exc:
+        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+    from app.services.project_edit_index import sync_project_edits
+    sync_project_edits(db, project)
+    return {"recovered": recovered}
+
+
 @router.get("/{transaction_id}")
 def get_edit_transaction(
     project_id: str,

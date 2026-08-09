@@ -5,6 +5,7 @@ import asyncio
 from app.services import agent_core
 from app.services.agent_core import ToolCallResult
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
+from app.services.workspace_agent import _read_results
 
 
 def test_registry_has_strict_edit_schema_and_hidden_render_alias():
@@ -16,6 +17,16 @@ def test_registry_has_strict_edit_schema_and_hidden_render_alias():
     assert "repair_report" not in {item.name for item in TOOL_REGISTRY.advertised(lens="workspace", capabilities={"report_execution"})}
 
 
+def test_registry_exposes_explicit_result_resume_and_undo_contracts():
+    read_results = TOOL_REGISTRY.require("read_results", lens="workspace")
+    assert read_results.parameters["required"] == ["path"]
+    run_analysis = TOOL_REGISTRY.require("run_analysis", lens="workspace")
+    assert run_analysis.parameters["properties"]["resume_from_checkpoint"]["default"] is True
+    undo = TOOL_REGISTRY.require("undo_project_edit", lens="workspace")
+    assert undo.parameters["required"] == ["transaction_id"]
+    assert undo.idempotency == "non_idempotent"
+
+
 def test_registry_tracks_note_lens_and_capability_metadata():
     assert {item.name for item in NOTE_TOOL_SPECS} >= {"run_r_cell", "promote_to_workspace"}
     assert TOOL_REGISTRY.require("run_r_cell", lens="note").idempotency == "non_idempotent"
@@ -23,6 +34,20 @@ def test_registry_tracks_note_lens_and_capability_metadata():
     promote = TOOL_REGISTRY.require("promote_to_workspace", lens="note")
     assert promote.parameters["properties"]["strategy"]["default"] == "create_only"
     assert "base_sha256" in promote.parameters["properties"]
+
+
+def test_read_results_requires_named_artifact_and_reports_available_paths(tmp_path):
+    project = type("Project", (), {"project_dir": str(tmp_path)})()
+    result = tmp_path / "output" / "results" / "answer.csv"
+    result.parent.mkdir(parents=True)
+    result.write_text("group,value\nA,2\n")
+
+    missing = _read_results(project, "")
+    assert missing["status"] == "error"
+    assert missing["available_artifacts"] == ["output/results/answer.csv"]
+    named = _read_results(project, "output/results/answer.csv")
+    assert named["status"] == "ok"
+    assert named["rows"] == [{"group": "A", "value": "2"}]
 
 
 class _DuplicateExecutor:

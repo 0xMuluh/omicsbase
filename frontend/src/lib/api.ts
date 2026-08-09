@@ -125,6 +125,9 @@ export interface WorkflowStep {
 export interface AnalysisPlan {
   project_name: string;
   domain: "microbiome" | "metabolomics";
+  report_pack_id?: string | null;
+  capabilities?: string[];
+  parameters?: Record<string, any> | null;
   study_type: string;
   question: string;
   detected_inputs: { file: string; role: string; format: string; details: string }[];
@@ -157,6 +160,35 @@ export interface EditTransaction {
   created_at?: string | null;
   committed_at?: string | null;
   reverted_by?: string | null;
+}
+
+export interface ExecutionValidatorEvidence {
+  step_id: string;
+  path: string;
+  status: string;
+  input_sha256?: string | null;
+  evidence?: { step?: string; status?: string; time?: string; detail?: string }[];
+}
+
+export interface ExecutionProvenanceSummary {
+  run_id: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: string;
+  resume_from_step?: string | null;
+  target_pages: string[];
+  validators: ExecutionValidatorEvidence[];
+  artifacts: { path: string; exists: boolean; sha256?: string | null; size_bytes?: number | null }[];
+}
+
+export interface EditReview {
+  review_id: string;
+  status: string;
+  created_at?: string | null;
+  origin?: string;
+  summary?: string;
+  files?: EditTransactionFile[];
+  prepared?: EditTransaction;
 }
 
 export interface Job {
@@ -365,6 +397,7 @@ export interface NoteCellExecution {
   upstream_execution_ids: string[];
   cache_hit: boolean;
   cache_source_execution_id: string | null;
+  idempotency_key: string | null;
 }
 
 export interface NoteExecutionEvent {
@@ -587,7 +620,7 @@ export const api = {
     projectId: string,
     threadId: string,
     cellId: string,
-    data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[] },
+    data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[]; idempotency_key?: string },
   ) =>
     request<NoteCellExecution>(
       "/projects/" + projectId + "/notes/" + threadId + "/cells/" + cellId + "/execute",
@@ -613,13 +646,24 @@ export const api = {
       "/projects/" + projectId + "/notes/" + threadId + "/cells/" + cellId + "/executions/" + executionId + "/events?after_sequence=" + String(afterSequence) + "&limit=500",
     ),
   createWorkspaceFromStandaloneNoteThread: (threadId: string, data: { name?: string; question?: string; notes?: string; auto_build?: boolean } = {}) =>
-    request<{ project_id: string; note_thread: NoteThread }>("/notes/" + threadId + "/workspace", {
+    request<{
+      project_id: string;
+      note_thread: NoteThread;
+      carried_forward?: {
+        files: number;
+        cells: number;
+        question: string | null;
+        notes: boolean;
+        manifest: { path: string; sha256: string; cell_count: number; upload_count: number };
+        auto_build: { requested: boolean; queued: boolean; job_id: string | null; reason: string | null };
+      };
+    }>("/notes/" + threadId + "/workspace", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   streamNoteThreadTurn: (
     threadId: string,
-    data: { message: string; auto_execute?: boolean; idempotency_key?: string },
+    data: { message: string; auto_execute?: boolean; idempotency_key?: string; attachments?: FileAttachment[] },
     onEvent: (event: NoteTurnStreamEvent) => void,
     signal?: AbortSignal,
   ) => streamNoteThreadTurn(threadId, data, onEvent, signal),
@@ -714,7 +758,7 @@ export const api = {
   executeStandaloneNoteCell: (
     threadId: string,
     cellId: string,
-    data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[] },
+    data: { revision?: number; parameters?: Record<string, any>; timeout_seconds?: number; cache_policy?: "off" | "reuse"; upstream_execution_ids?: string[]; idempotency_key?: string },
   ) =>
     request<NoteCellExecution>(
       "/notes/" + threadId + "/cells/" + cellId + "/execute",
@@ -897,11 +941,31 @@ export const api = {
     request<{ transactions: EditTransaction[] }>(`/projects/${projectId}/edits`),
   getEditTransaction: (projectId: string, transactionId: string) =>
     request<EditTransaction>(`/projects/${projectId}/edits/${transactionId}`),
+  listExecutionRuns: (projectId: string, limit = 20) =>
+    request<{ runs: ExecutionProvenanceSummary[] }>(`/projects/${projectId}/execution-runs?limit=${Math.max(1, Math.min(limit, 50))}`),
+  getExecutionRun: (projectId: string, runId: string) =>
+    request<Record<string, any>>(`/projects/${projectId}/execution-runs/${runId}`),
   revertEditTransaction: (projectId: string, transactionId: string) =>
     request<{ transaction_id: string; status: string; modified_files?: string[] }>(
       `/projects/${projectId}/edits/${transactionId}/revert`,
       { method: "POST" },
     ),
+  recoverEditJournals: (projectId: string, transactionId?: string) =>
+    request<{ recovered: Record<string, any>[] }>(
+      `/projects/${projectId}/edits/recover${transactionId ? `?transaction_id=${encodeURIComponent(transactionId)}` : ""}`,
+      { method: "POST" },
+    ),
+  listEditReviews: (projectId: string, limit = 20) =>
+    request<{ reviews: EditReview[] }>(`/projects/${projectId}/edit-reviews?limit=${Math.max(1, Math.min(limit, 100))}`),
+  getEditReview: (projectId: string, reviewId: string) =>
+    request<EditReview>(`/projects/${projectId}/edit-reviews/${reviewId}`),
+  approveEditReview: (projectId: string, reviewId: string) =>
+    request<{ transaction_id: string; status: string; modified_files?: string[] }>(
+      `/projects/${projectId}/edit-reviews/${reviewId}/approve`,
+      { method: "POST" },
+    ),
+  rejectEditReview: (projectId: string, reviewId: string) =>
+    request<EditReview>(`/projects/${projectId}/edit-reviews/${reviewId}/reject`, { method: "POST" }),
 
   // Health
   health: () => request<{ status: string }>("/health"),
@@ -1034,7 +1098,7 @@ async function streamAgentMessage(
 
 async function streamNoteThreadTurn(
   threadId: string,
-  data: { message: string; auto_execute?: boolean; idempotency_key?: string },
+  data: { message: string; auto_execute?: boolean; idempotency_key?: string; attachments?: FileAttachment[] },
   onEvent: (event: NoteTurnStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

@@ -1,0 +1,6 @@
+study <- readRDS("../output/study.rds")
+results <- read.csv("../output/results.csv", stringsAsFactors = FALSE)
+stopifnot(nrow(study) == 4L)
+stopifnot(identical(sort(unique(study$group)), c("control", "treatment")))
+stopifnot(nrow(results) == 2L)
+stopifnot(all.equal(as.numeric(results$value), c(11, 21)) == TRUE)

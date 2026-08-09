@@ -128,6 +128,60 @@ def resolve_plan_capabilities(pack: ReportPack, plan: Any = None) -> CapabilityC
     )
 
 
+
+
+def _parameter_values(plan: Any) -> dict[str, Any]:
+    mapping = _plan_mapping(plan)
+    values: dict[str, Any] = {}
+    explicit = mapping.get("parameters")
+    if isinstance(explicit, dict):
+        values.update(explicit)
+    for key, value in mapping.items():
+        if key not in {"parameters", "workflow", "capabilities", "capability_id"} and value not in (None, "", [], {}):
+            values.setdefault(str(key), value)
+    workflow = mapping.get("workflow")
+    if isinstance(workflow, list):
+        for step in workflow:
+            if isinstance(step, dict) and isinstance(step.get("parameters"), dict):
+                for key, value in step["parameters"].items():
+                    if value not in (None, "", [], {}):
+                        values.setdefault(str(key), value)
+    return values
+
+
+def validate_plan_parameter_bindings(
+    pack: ReportPack,
+    plan: Any = None,
+    *,
+    capability_ids: Iterable[str] | None = None,
+    strict: bool = False,
+) -> dict[str, list[str]]:
+    """Validate ReportPack ``required`` parameter declarations against a plan.
+
+    ``strict=False`` preserves older plans that predate capability parameters;
+    an explicitly supplied ``parameters`` object opts into hard validation.
+    """
+    mapping = _plan_mapping(plan)
+    explicit_parameters = isinstance(mapping.get("parameters"), dict) and mapping.get("parameters") is not None
+    selected_ids = {str(value).strip().lower() for value in (capability_ids or mapping.get("capabilities") or []) if str(value).strip()}
+    selected = [item for item in pack.capabilities if not selected_ids or item.capability_id in selected_ids]
+    values = _parameter_values(plan)
+    missing: dict[str, list[str]] = {}
+    for capability in selected:
+        required = [
+            str(key)
+            for key, requirement in capability.parameters.items()
+            if str(requirement).strip().lower() in {"required", "mandatory"}
+            and key not in values
+        ]
+        if required:
+            missing[capability.capability_id] = sorted(required)
+    if missing and (strict or explicit_parameters):
+        detail = "; ".join(f"{capability}: {', '.join(keys)}" for capability, keys in sorted(missing.items()))
+        raise CapabilityContractError("Missing required capability parameter binding(s): " + detail)
+    return missing
+
+
 def write_capability_contract(
     project_root: str | Path,
     pack: ReportPack,
@@ -240,6 +294,7 @@ __all__ = [
     "CapabilityContractError",
     "load_capability_contract",
     "validate_capability_bindings",
+    "validate_plan_parameter_bindings",
     "resolve_plan_capabilities",
     "write_capability_contract",
 ]

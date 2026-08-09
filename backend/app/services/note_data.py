@@ -110,10 +110,13 @@ def save_thread_upload(
     destination.write_bytes(content)
     summary = inspect_file(str(destination))
     detected = summary.get("format")
-    if detected in {"unknown", "error"}:
+    if detected == "error":
         destination.unlink(missing_ok=True)
-        detail = summary.get("error", "unsupported format") if detected == "error" else "unsupported format"
-        raise ValueError(f"Unsupported file format for {name}: {detail}")
+        detail = summary.get("error", "unsupported format")
+        raise ValueError(f"Failed to inspect file {name}: {detail}")
+    if not detected or detected == "unknown":
+        ext = Path(name).suffix.lstrip(".").lower()
+        summary["format"] = ext or "file"
     return {
         **summary,
         "name": name,

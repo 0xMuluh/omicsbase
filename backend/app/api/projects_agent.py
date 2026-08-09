@@ -480,7 +480,7 @@ async def workspace_agent_stream(
                             "because no explicit workspace mutation was authorized."
                         ),
                     }
-                elif project.status in {"planning", "generating", "rendering"}:
+                elif project.status in {"planning", "generating", "rendering", "repairing", "reviewing", "editing"}:
                     from app.services.agent_runtime import queue_pending_guidance
 
                     guidance = instruction or data.message.strip()
@@ -631,12 +631,45 @@ async def workspace_agent_stream(
                         }
                     except ValueError as exc:
                         event = {"type": "final", "message": str(exc)}
+                elif action == "undo_project_edit":
+                    transaction_id = str(arguments.get("transaction_id") or "").strip()
+                    if not project.project_dir:
+                        event = {"type": "final", "message": "There is no generated workspace whose edit history can be undone."}
+                    elif not transaction_id:
+                        event = {"type": "final", "message": "Undo requires a transaction_id from the workspace edit history."}
+                    else:
+                        try:
+                            from app.services.edit_engine import EditBusy, EditEngineError, revert_transaction
+                            result = revert_transaction(project.project_dir, transaction_id, lock_timeout=0)
+                            from app.services.agent_runtime import refresh_project_memory, record_agent_action
+                            from app.services.project_edit_index import record_project_edit
+                            record_project_edit(db, project, result)
+                            refresh_project_memory(db, project)
+                            record_agent_action(
+                                db,
+                                project,
+                                "file_edit",
+                                "completed",
+                                f"Undid edit transaction {transaction_id}",
+                                {"transaction_id": transaction_id, "revert_transaction_id": result.transaction_id},
+                                files=[item.path for item in result.files],
+                            )
+                            event = {
+                                "type": "final",
+                                "message": f"Undid edit transaction {transaction_id} with a new hash-checked transaction.",
+                                "details": result.to_dict(),
+                            }
+                        except EditBusy as exc:
+                            event = {"type": "final", "message": f"Undo is temporarily blocked because the workspace is busy: {exc}"}
+                        except EditEngineError as exc:
+                            event = {"type": "final", "message": f"Undo was not applied: {exc}"}
                 elif action == "run_analysis":
                     try:
                         job = _queue_agent_generation(
                             db,
                             project,
                             background_tasks,
+                            resume_from_checkpoint=bool(arguments.get("resume_from_checkpoint", True)),
                         )
                         message = record_run_message(
                             db,
@@ -1091,6 +1124,7 @@ def _queue_agent_generation(
     project: Project,
     background_tasks: BackgroundTasks,
     target_recipe_id: str | None = None,
+    resume_from_checkpoint: bool = True,
 ) -> Job:
     if not project.analysis_plan:
         raise ValueError("The project has no analysis plan to execute.")
@@ -1117,6 +1151,7 @@ def _queue_agent_generation(
             str(project.id),
             str(job.id),
             target_recipe_id=target_recipe_id,
+            resume_from_checkpoint=resume_from_checkpoint,
         )
     elif settings.task_backend.lower() == "background":
         background_tasks.add_task(
@@ -1124,6 +1159,7 @@ def _queue_agent_generation(
             str(project.id),
             str(job.id),
             target_recipe_id=target_recipe_id,
+            resume_from_checkpoint=resume_from_checkpoint,
         )
     else:
         raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")

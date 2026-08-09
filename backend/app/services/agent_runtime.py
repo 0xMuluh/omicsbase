@@ -18,6 +18,8 @@ AGENT_STATES = {
     "completed",
     "failed",
 }
+BUSY_PROJECT_STATUSES = frozenset({"planning", "generating", "rendering", "repairing", "reviewing", "editing"})
+
 MAX_ACTIONS = 200
 MAX_FILES = 300
 MAX_DURABLE_ITEMS = 40
@@ -197,6 +199,8 @@ def queue_pending_guidance(
     """
     if not mutation_authorized:
         raise ValueError("Pending guidance requires explicit mutation authorization.")
+    if str(getattr(project, "status", "")).strip().lower() not in BUSY_PROJECT_STATUSES:
+        raise ValueError("Pending guidance can only be queued while the workspace is busy with a job.")
     content = " ".join(guidance.split()).strip()
     if len(content) < 3:
         raise ValueError("Guidance is empty.")

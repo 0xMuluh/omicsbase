@@ -296,6 +296,59 @@ async def test_reasoned_no_change_is_a_first_class_decision(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_classified_adaptation_response_is_preserved(monkeypatch):
+    async def classified_response(**kwargs):
+        return json.dumps(
+            {
+                "adaptation": "parameterize",
+                "edits": [{"search": "INPUT_PATH", "replace": "../data/study.csv"}],
+                "reason": "Bind the template input to the validated study manifest.",
+            }
+        )
+
+    monkeypatch.setattr(generator, "call_llm", classified_response)
+    decision = await generator._request_file_edits(
+        "Return edits.",
+        "path <- INPUT_PATH\n",
+        system_prompt="system",
+        plan_json="{}",
+        file_descriptions="study.csv is the validated input",
+        uploaded_file_paths={},
+        target_file="code/data.R",
+        generated_context={},
+    )
+
+    assert isinstance(decision, generator.AdaptationEdits)
+    assert decision.adaptation == "parameterize"
+    assert decision.edits == ({"search": "INPUT_PATH", "replace": "../data/study.csv"},)
+
+
+@pytest.mark.asyncio
+async def test_preserve_classification_cannot_smuggle_edits(monkeypatch):
+    async def invalid_response(**kwargs):
+        return json.dumps(
+            {
+                "adaptation": "preserve",
+                "edits": [{"search": "old", "replace": "new"}],
+                "reason": "The template is already correct.",
+            }
+        )
+
+    monkeypatch.setattr(generator, "call_llm", invalid_response)
+    with pytest.raises(generator.AdaptationResponseError, match="classified preserve but returned edits"):
+        await generator._request_file_edits(
+            "Return edits.",
+            "old",
+            system_prompt="system",
+            plan_json="{}",
+            file_descriptions="none",
+            uploaded_file_paths={},
+            target_file="code/data.R",
+            generated_context={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_no_change_without_inspection_evidence_is_rejected(monkeypatch):
     async def unsupported_no_change(**kwargs):
         return json.dumps(
@@ -366,6 +419,8 @@ async def test_adaptation_prompt_contains_manifest_and_safe_project_bindings(mon
     assert '"columns": ["sample_id", "condition"]' in prompt
     assert "feature_table[1]: ../data/counts.csv" in prompt
     assert "/private/uploads" not in prompt
+    for action in ("preserve", "parameterize", "extend", "replace"):
+        assert action in prompt
 
 
 @pytest.mark.asyncio

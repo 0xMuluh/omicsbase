@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from app.services.capability_contract import (
+    resolve_plan_capabilities,
+    validate_capability_bindings,
+)
 from app.services.report_pack import ReportPackError, load_report_pack
 from app.services.spawner import EXEMPLAR_ROOTS, exemplar_project_files
 
@@ -117,6 +121,38 @@ def test_metabolomics_exemplar_artifact_paths_are_consistent():
     all_source = "\n".join([loader, analysis, validator, *qmd_sources])
     for legacy_name in ("MAE2", "data_v2", "targeted_v2", "study2_results_v2"):
         assert legacy_name not in all_source
+
+
+def test_builtin_packs_have_executable_capability_contracts():
+    """Keep the shipped scientific packs honest as their manifests evolve."""
+    templates_root = Path(__file__).parents[2] / "templates"
+    manifest_paths = sorted(templates_root.glob("*/**/omicsbase-pack.yaml"))
+    assert manifest_paths, "at least one built-in ReportPack is required"
+
+    for manifest_path in manifest_paths:
+        pack = load_report_pack(manifest_path.parent)
+        assert pack.execution is not None
+        assert pack.capabilities
+
+        step_ids = {step.step_id for step in pack.execution.steps}
+        for capability in pack.capabilities:
+            assert capability.execution_steps
+            assert set(capability.execution_steps) <= step_ids
+            for relative in (*capability.sources, *capability.validators):
+                assert (pack.root / relative).is_file(), (
+                    f"{pack.pack_id}: missing capability file {relative}"
+                )
+            for relative in capability.outputs:
+                assert not Path(relative).is_absolute()
+
+        contract = resolve_plan_capabilities(
+            pack, {"capabilities": [item.capability_id for item in pack.capabilities]}
+        )
+        validation = validate_capability_bindings(pack.root, contract)
+        assert validation.valid, (
+            f"{pack.pack_id}: capability validators are invalid: "
+            f"{[issue.as_dict() for issue in validation.issues]}"
+        )
 
 
 def test_arbitrary_directory_fallback_is_conservative(tmp_path: Path):

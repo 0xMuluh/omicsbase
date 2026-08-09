@@ -40,7 +40,7 @@ async def test_local_project_event_push_reaches_subscriber(monkeypatch):
 
 
 def test_pending_guidance_queues_and_consumes():
-    project = SimpleNamespace(id="p1", agent_memory={"state": "rendering", "summary": "Rendering"})
+    project = SimpleNamespace(id="p1", status="rendering", agent_memory={"state": "rendering", "summary": "Rendering"})
     db = _Db()
 
     queued = queue_pending_guidance(
@@ -56,6 +56,19 @@ def test_pending_guidance_queues_and_consumes():
     pending = consume_pending_guidance(db, project)
     assert len(pending) == 1
     assert project.agent_memory["pending_guidance"] == []
+
+
+def test_pending_guidance_rejects_idle_workspace_even_when_authorized():
+    project = SimpleNamespace(id="p1", status="completed", agent_memory={})
+    db = _Db()
+
+    with pytest.raises(ValueError, match="only be queued while the workspace is busy"):
+        queue_pending_guidance(
+            db,
+            project,
+            "Run the updated report",
+            mutation_authorized=True,
+        )
 
 
 def test_pending_guidance_rejects_and_discards_unauthorized_entries():

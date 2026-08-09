@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 
 from fastapi.testclient import TestClient
@@ -137,6 +139,11 @@ def test_standalone_thread_can_create_a_workspace(monkeypatch, tmp_path):
             headers=headers,
             json={"title": "Promote this analysis"},
         ).json()
+        cell = client.post(
+            f"/api/notes/{thread['id']}/cells",
+            headers=headers,
+            json={"cell_type": "code", "language": "r", "content": "1 + 1"},
+        ).json()
 
         promoted = client.post(
             f"/api/notes/{thread['id']}/workspace",
@@ -155,6 +162,23 @@ def test_standalone_thread_can_create_a_workspace(monkeypatch, tmp_path):
         )
         assert project_response.status_code == 200
         assert project_response.json()["name_source"] == "user"
+        transfer_path = tmp_path / payload["project_id"] / ".omicsbase" / "note-transfer-manifest.json"
+        transfer = json.loads(transfer_path.read_text())
+        assert transfer["source_thread_id"] == thread["id"]
+        assert transfer["cells"][0]["id"] == cell["id"]
+        assert payload["carried_forward"]["manifest"]["sha256"] == transfer["sha256"]
+        assert payload["carried_forward"]["auto_build"] == {
+            "requested": False,
+            "queued": False,
+            "job_id": None,
+            "reason": None,
+        }
+        unsigned = dict(transfer)
+        unsigned.pop("sha256")
+        expected_hash = hashlib.sha256(
+            json.dumps(unsigned, indent=2, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        assert transfer["sha256"] == expected_hash
 
         workspace_thread = client.get(
             f"/api/projects/{payload['project_id']}/notes/{thread['id']}",

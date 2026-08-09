@@ -1,0 +1,5 @@
+sample_id,group,value
+S1,control,10
+S2,control,12
+S3,treatment,20
+S4,treatment,22

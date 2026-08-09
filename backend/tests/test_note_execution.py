@@ -134,6 +134,62 @@ def test_execute_queues_only_persisted_code_revision(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
+def test_execution_idempotency_key_replays_without_dispatch(monkeypatch):
+    engine, testing_session, project_id = _setup_db()
+    client = TestClient(app)
+    headers = {"X-Tenant-ID": "tenant_a", "X-User-ID": "user_a"}
+    dispatched = []
+
+    def fake_dispatch(execution_id, requested_project_id, background_tasks):
+        dispatched.append((execution_id, requested_project_id))
+
+    monkeypatch.setattr("app.api.projects_note_executions._dispatch", fake_dispatch)
+
+    try:
+        thread = client.post(
+            f"/api/projects/{project_id}/notes",
+            headers=headers,
+            json={"title": "Idempotent note"},
+        ).json()
+        cell = client.post(
+            f"/api/projects/{project_id}/notes/{thread['id']}/cells",
+            headers=headers,
+            json={"cell_type": "code", "language": "r", "content": "1 + 1"},
+        ).json()
+        execute_url = (
+            f"/api/projects/{project_id}/notes/{thread['id']}/cells/"
+            f"{cell['id']}/execute"
+        )
+        request = {"idempotency_key": "turn-42-cell-1", "parameters": {"seed": 7}}
+
+        first = client.post(execute_url, headers=headers, json=request)
+        replay = client.post(execute_url, headers=headers, json=request)
+        assert first.status_code == replay.status_code == 202
+        assert first.json()["id"] == replay.json()["id"]
+        assert replay.json()["idempotency_key"] == request["idempotency_key"]
+        assert len(dispatched) == 1
+
+        mismatch = client.post(
+            execute_url,
+            headers=headers,
+            json={"idempotency_key": request["idempotency_key"], "parameters": {"seed": 8}},
+        )
+        assert mismatch.status_code == 409
+        assert "idempotency_key" in mismatch.json()["detail"]["message"]
+        verify_db = testing_session()
+        try:
+            executions = verify_db.query(CellExecution).all()
+            assert len(executions) == 1
+            assert verify_db.query(NoteExecutionEvent).filter(
+                NoteExecutionEvent.execution_id == executions[0].id
+            ).count() == 1
+        finally:
+            verify_db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(bind=engine)
+
+
 def test_workspace_note_queues_before_report_generation(monkeypatch, tmp_path):
     engine, _testing_session, project_id = _setup_db(project_dir=None)
     client = TestClient(app)

@@ -165,6 +165,7 @@ If the study design CAN be determined, return an analysis plan matching this str
   "domain": "microbiome | metabolomics",
   "report_pack_id": "exact ID from Available ReportPacks or null",
   "capabilities": ["exact capability id(s) from the selected ReportPack"],
+  "parameters": {{"capability_parameter": "observed value or explicit choice"}} | null,
   "study_type": "two_group_comparison | multi_group | longitudinal | other",
   "question": "the research question restated concisely",
   "detected_inputs": [
@@ -538,7 +539,14 @@ def _bind_recipes(plan: AnalysisPlan) -> AnalysisPlan:
         # selected capability set explicit in the persisted plan.
         plan.capabilities = [item.capability_id for item in pack.capabilities]
     if pack is not None and plan.capabilities:
-        from app.services.capability_contract import resolve_plan_capabilities
+        from app.services.capability_contract import (
+            resolve_plan_capabilities,
+            validate_plan_parameter_bindings,
+        )
 
         resolve_plan_capabilities(pack, plan)
+        # Explicit capability parameters opt into strict required-binding
+        # validation; pre-capability plans continue through the compatibility
+        # path and can be upgraded during plan review.
+        validate_plan_parameter_bindings(pack, plan)
     return plan

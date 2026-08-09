@@ -1,0 +1,68 @@
+schema_version: "1.0"
+id: golden-study
+version: "1.0.0"
+domain: test
+name: Golden base-R study
+entrypoint: code/main.R
+default_adaptation: inspect
+execution:
+  working_directory: code
+  render: entrypoint
+  steps:
+    - id: load-study
+      path: code/load.R
+      role: data_loader
+    - id: summarize-study
+      path: code/analysis.R
+      role: analysis
+    - id: validate-study
+      path: code/validate.R
+      role: validator
+  artifacts:
+    - output/report.html
+capabilities:
+  golden-study:
+    sources:
+      - code/load.R
+      - code/analysis.R
+    execution_steps:
+      - load-study
+      - summarize-study
+      - validate-study
+    parameters:
+      grouping_variable: group
+    outputs:
+      - output/results.csv
+      - output/report.html
+    validators:
+      - code/validate.R
+prompt_references: []
+file_rules:
+  - id: loader
+    match: code/load.R
+    role: data_loader
+    adaptation: required
+  - id: analysis
+    match: code/analysis.R
+    role: analysis
+    adaptation: required
+  - id: validator
+    match: code/validate.R
+    role: validator
+    adaptation: none
+  - id: report
+    match: code/report.qmd
+    role: page
+    adaptation: inspect
+  - id: assembly
+    match: code/_quarto.yml
+    role: assembly
+    adaptation: inspect
+  - id: main
+    match: code/main.R
+    role: orchestrator
+    adaptation: inspect
+  - id: static
+    match: README.md
+    role: static
+    adaptation: none
