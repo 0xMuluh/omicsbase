@@ -19,7 +19,7 @@ const fraunces = Fraunces({
 export const metadata: Metadata = {
   title: "OmicsBase",
   description:
-    "AI-powered microbiome analysis with transparent, reproducible Quarto reports.",
+    "OmicsBase-powered omics analysis with transparent, reproducible Quarto reports.",
 };
 
 export default function RootLayout({

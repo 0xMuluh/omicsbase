@@ -1,0 +1,218 @@
+---
+title: "DAA Metabolic Pathways"
+---
+
+# Interaction Model
+
+```{r setup}
+library(maaslin3)
+
+source("../funct.R")
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+pa_tse <- altExp(tse, "pathabundance")
+
+variable <- "diet" 
+formula_used <- "~ diet * timepoint + (1 | id)"
+```
+
+-   Group variable: **`r variable`**
+-   Formula used: **`r formula_used`**
+
+```{r data_prep}
+# Create output directory for results
+output_base_dir <- "../../output/daa/daa_pa"
+dir.create(output_base_dir, showWarnings = FALSE)
+# Keep paired cases that have both time points
+paired.cases <- names(which(table(colData(pa_tse)$id) == 2))
+pa_tse <- pa_tse[, pa_tse$id %in% paired.cases]
+```
+
+```{r maaslin all}
+# Run Maaslin3
+run_maaslin3 <- function(taxa_tse, formula_used, dir) {
+  # Keep only paired cases (individuals with both timepoint points)
+  # paired.cases <- names(which(table(taxa_tse$subject) == 2))
+  # taxa_tse <- taxa_tse[, taxa_tse$subject %in% paired.cases]
+  # taxa_tse$treat <- taxa_tse$group
+
+  # Run MaAsLin3
+  fit <- maaslin3(
+    taxa_tse, 
+    output = dir,
+    formula = formula_used,
+    normalization = 'TSS',
+    transform = 'LOG',
+    augment = TRUE,
+    standardize = TRUE,
+    max_significance = 0.25,
+    plot_associations = FALSE,
+    median_comparison_abundance = TRUE,
+    median_comparison_prevalence = FALSE,
+    verbosity = "WARN"
+  )
+  
+  return(fit)
+}
+```
+
+```{r}
+file_path <- file.path("../../output/daa/daa_pa/interaction/significant_results.tsv")
+ if (!file.exists(file_path)) {
+    formula_used_int <- '~ diet * duration + (1 | id)'
+    # Create output directory for this fxnomic level
+    output_dir <- file.path(output_base_dir, "interaction")
+    dir.create(output_dir, showWarnings = FALSE)
+    fit <- run_maaslin3(pa_tse, formula_used_int, output_dir)
+}
+```
+
+```{r}
+#| label: table-of-significant-results
+file_path <- file.path("../../output/daa/daa_pa/interaction/all_results.tsv")
+total_features <- nrow(pa_tse)
+
+daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+    filter(!is.na(feature)) %>%
+    select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+
+table_caption <- paste("Table of Metabolic Pathways- Total features analyzed:", total_features)
+  
+# Split the results by model
+daa_tab_split <- split(daa_tab, daa_tab$model)
+daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+    rename(metadata = "variable", value = "term") %>%
+      select(-model)
+
+# Format output for HTML or LaTeX
+datatable(
+  daa_tab_split$abundance,
+  options = list(pageLength = 50, dom = 'Bfrtip'),
+  caption = table_caption,
+  rownames = FALSE
+) %>%
+ formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+
+```
+
+# Post-Hoc Analysis
+
+## Within-Group Comparisons
+
+```{r run_maaslin_o}
+tse_O <- pa_tse[, pa_tse$diet == "oat"]
+tse_R <- pa_tse[, pa_tse$diet == "rice"]
+
+formula_used_int <- '~ duration + (1 | id)'
+file_path <- file.path("../../output/daa/daa_pa/oat/significant_results.tsv")
+tse_list = list(tse_O, tse_R)
+if (!file.exists(file_path)) {
+  lapply(tse_list, function(tse){
+    diet_dir <- file.path(output_base_dir, unique(tse$diet))
+    dir.create(diet_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, formula_used_int, diet_dir)
+  }
+    )
+}
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_pa", unique(tse$diet), "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of features for path coverage within group", unique(tse$diet),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+      select(c(-model, -metadata, -value))
+    
+  
+    
+      datatable(
+        daa_tab_split$abundance,
+        options = list(pageLength = 50, dom = 'Bfrtip'),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Diet Oat
+
+```{r}
+tabs[[1]]
+```
+
+### Diet Rice
+
+```{r}
+tabs[[2]]
+```
+
+## Across-Group Comparisons
+
+```{r}
+tse_after <- pa_tse[, pa_tse$timepoint == "after"]
+tse_before <- pa_tse[, pa_tse$timepoint == "before"]
+
+formula_used_int <- '~ diet'
+file_path <- file.path("../../output/daa/daa_pa", unique(tse_before$timepoint), "all_results.tsv")
+tse_list = list(tse_after, tse_before)
+if (!file.exists(file_path)) {
+lapply(tse_list, function(tse){
+  timepoint_dir <- file.path(output_base_dir, unique(tse$timepoint))
+  dir.create(timepoint_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  run_maaslin3(tse, formula_used_int, timepoint_dir)
+}
+  )
+}
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_pa", unique(tse$timepoint), "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of features for metacyc at", unique(tse$duration),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+      select(c(-model, -metadata, -value))
+  
+      datatable(
+        daa_tab_split$abundance,
+        options = list(pageLength = 50, dom = 'Bfrtip'),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Before Intervention - Week 0
+
+```{r}
+tabs[[1]]
+```
+
+### Post Intervention - Week 6
+
+```{r}
+tabs[[2]]
+```

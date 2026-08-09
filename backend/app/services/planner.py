@@ -8,6 +8,7 @@ from app.config import settings
 from app.schemas.schemas import AnalysisPlan, ClarificationAnswer, ClarificationQuestion, ClarificationRequest
 from app.services.file_inspector import format_file_summary_for_llm
 from app.services.llm import call_llm, load_system_prompt
+from app.services.provider_errors import LLMProviderError
 from app.services.recipe_registry import (
     format_recipes_for_llm,
     get_recipe,
@@ -16,6 +17,10 @@ from app.services.recipe_registry import (
 )
 from app.services.registry import format_registry_for_llm, get_ensemble_methods
 from app.services.study_manifest import format_manifest_for_llm
+from app.services.spawner import (
+    format_report_pack_catalog_for_llm,
+    resolve_report_pack,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +60,10 @@ async def generate_plan(
     answers = _answers_by_id(clarifications)
 
     provider = settings.llm_provider.lower()
-    provider_has_key = {
-        "anthropic": bool(settings.anthropic_api_key and not settings.anthropic_api_key.startswith("sk-ant-...")),
-        "openai": bool(settings.openai_api_key and not settings.openai_api_key.startswith("sk-...")),
-        "gemini": bool(settings.gemini_api_key and not settings.gemini_api_key.startswith("AIza...")),
-        "openrouter": bool(settings.openrouter_api_key and not settings.openrouter_api_key.startswith("sk-or-...")),
-        "deepseek": bool(settings.openai_api_key and not settings.openai_api_key.startswith("sk-...")),
-        "groq": bool(settings.groq_api_key and not settings.groq_api_key.startswith("gsk_...")),
-        "grok": bool(settings.grok_api_key or settings.xai_api_key),
-        "xai": bool(settings.grok_api_key or settings.xai_api_key),
-        "ollama": True,
-    }
 
-    if not provider_has_key.get(provider, False):
+    from app.services.providers import is_configured
+
+    if not is_configured(provider):
         logger.warning("No configured API key for %s; using deterministic fallback plan", provider)
         return _build_default_plan(
             question,
@@ -84,6 +80,7 @@ async def generate_plan(
         registry_text = format_registry_for_llm()
         recipe_text = format_recipes_for_llm()
         manifest_text = format_manifest_for_llm(study_manifest)
+        report_pack_text = format_report_pack_catalog_for_llm()
 
         user_plan_section = ""
         if custom_plan_text and custom_plan_text.strip():
@@ -150,6 +147,13 @@ You are generating an executable downstream analysis plan. The user has uploaded
 
 {recipe_text}
 
+## Available ReportPacks
+
+Select the pack whose domain and methodological shape best match the approved workflow.
+ReportPacks are adaptive source directories, not fixed study-input schemas.
+
+{report_pack_text}
+
 ## Response Format
 
 Return ONLY valid JSON (no markdown, no explanation outside the JSON).
@@ -159,6 +163,8 @@ If the study design CAN be determined, return an analysis plan matching this str
 {{
   "project_name": "string — inferred from question or custom plan",
   "domain": "microbiome | metabolomics",
+  "report_pack_id": "exact ID from Available ReportPacks or null",
+  "capabilities": ["exact capability id(s) from the selected ReportPack"],
   "study_type": "two_group_comparison | multi_group | longitudinal | other",
   "question": "the research question restated concisely",
   "detected_inputs": [
@@ -242,7 +248,10 @@ Rules for needs_clarification:
 
         return _bind_recipes(AnalysisPlan(**plan_data))
 
-    except Exception as e:
+    except LLMProviderError:
+        logger.exception("LLM planning stopped because the configured provider is unavailable")
+        raise
+    except Exception:
         logger.exception("LLM planning failed; using deterministic fallback plan")
         return _build_default_plan(
             question,
@@ -514,5 +523,22 @@ def _bind_recipes(plan: AnalysisPlan) -> AnalysisPlan:
         recipe = recipe or resolve_recipe(step.id, plan.domain)
         step.recipe_id = recipe.get("id") if recipe else None
     plan.recipe_registry_version = load_recipe_registry().get("version")
-    return plan
+    try:
+        pack = resolve_report_pack(plan.report_pack_id, domain=plan.domain)
+    except Exception as exc:
+        logger.warning(
+            "Planner selected invalid ReportPack %r: %s; using domain default",
+            plan.report_pack_id,
+            exc,
+        )
+        pack = resolve_report_pack(None, domain=plan.domain)
+    plan.report_pack_id = pack.pack_id if pack is not None else None
+    if pack is not None and pack.capabilities and not plan.capabilities:
+        # Preserve compatibility with older planner responses while making the
+        # selected capability set explicit in the persisted plan.
+        plan.capabilities = [item.capability_id for item in pack.capabilities]
+    if pack is not None and plan.capabilities:
+        from app.services.capability_contract import resolve_plan_capabilities
 
+        resolve_plan_capabilities(pack, plan)
+    return plan

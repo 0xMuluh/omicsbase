@@ -1,0 +1,93 @@
+---
+title: "Analysis plan"
+---
+
+## Objective
+
+Estimate associations between child diet exposures and child metabolite outcomes at visit 6 and visit 7, including a prospective conditional follow-up analysis from visit 6 to visit 7 and a repeated-measures mixed model across visits 6 and 7.
+
+## Scope
+
+- Primary exposures: child diet metrics (nutrient E%, diet quality variables).
+- Primary outcomes: metabolite-level outcomes.
+- Secondary outcomes: pathway or cluster scores.
+
+## Data processing steps
+
+1. Build visit-specific analysis sets (`Filter6==1`, `Filter7==1`).
+2. Validate diet variables and units at each visit.
+3. Log-transform skewed metabolite outcomes when required.
+4. Standardize outcomes within visit.
+5. Generate visit-specific missingness and sparsity tables.
+6. Run covariate balance tests across intervention groups (Kruskal-Wallis for continuous, Fisher exact for discrete covariates including ordinal and nominal categorical) and apply BH correction.
+
+## Covariate strategy
+
+Visit 6 core block:
+
+- `Intervention`, `MPrimipara`, `MUniEdu`, `MGDMOGTT1OR2Fi`, `CGender`, `CWeightBirth`, `Bfdurationm`
+
+Visit 7 core block:
+
+- `Intervention`, `MPrimipara`, `MUniEdu`, `MGDMOGTT1OR2Fi`, `CGender`, `CWeightBirth`, `Bfdurationm`
+
+Prospective baseline block:
+
+- `Intervention`, `MPrimipara`, `MUniEdu`, `MGDMOGTT1OR2Fi`, `CGender`, `CWeightBirth`, `Bfdurationm`
+
+Repeated-measures core block:
+
+- `Intervention`, `MPrimipara`, `MUniEdu`, `MGDMOGTT1OR2Fi`, `CGender`, `CWeightBirth`, `Bfdurationm`
+
+Sensitivity block:
+
+- `MPRSmoke`, `Premature`, `Bfdurationm`, `CSGA`, `CMacrosomy`, `CHealthy6`, `CHealthy7`
+
+Covariates are pre-specified. Test results are reported and are not used as the sole inclusion rule.
+
+## Model plan
+
+1. Visit-specific models:
+   - `lm(Y_v6 ~ E_v6 + core_v6)`
+   - `lm(Y_v7 ~ E_v7 + core_v7_lean)`
+2. Longitudinal conditional model:
+   - `lm(Y_v7 ~ E_v6 + Y_v6 + baseline_covariates)`
+   - fit separately for each metabolite so each visit-7 metabolite is conditioned on its own visit-6 baseline value
+3. Repeated-measures mixed model:
+   - `lmer(Y_it ~ E_it * visit_t + repeated_core_covariates + (1|child))`
+   - `E_it` is harmonized within-child exposure at visit 6 or visit 7
+   - sensitivity healthy-diet variables are harmonized as time-varying covariates for expanded sensitivity models
+
+## Multiplicity
+
+- Apply Benjamini-Hochberg correction across metabolites, with the adjustment scope defined by model family.
+- Concurrent outputs apply BH within each exposure-specific result set.
+- Prospective outputs apply BH within each exposure-specific result set.
+- Repeated-measures outputs apply BH separately within each exposure and coefficient family.
+- Report raw `p`, adjusted `q`, effect size, and confidence interval.
+
+## Deliverables
+
+- Visit-specific effect tables.
+- Prospective conditional model table.
+- Repeated-measures mixed-model table with main-effect and diet-by-visit interaction terms.
+- Sensitivity comparison table.
+- Model-status summary with complete-case ranges and skipped/failed reasons.
+- Figures: effect-size plots, repeated-measures status plots, and prospective overlap summaries.
+
+## Tools
+
+- Data: `haven`, `readxl`, `dplyr`, `tidyr`
+- Models: `stats`, `limma`, `lmerTest`, `broom.mixed`
+- Figures: `ggplot2`, `patchwork`
+- DAG and adjustment checks: `dagitty`
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: analysis-plan-01
+#| echo: false
+sessionInfo()
+```
+:::

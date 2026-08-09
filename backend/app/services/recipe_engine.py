@@ -15,12 +15,12 @@ from app.services.recipe_registry import get_recipe, resolve_recipe
 TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "recipe_templates"
 SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".tsv", ".txt", ".xlsx", ".xls", ".sav", ".rds"}
 RECIPE_TEMPLATE_BINDINGS = {
-    "microbiome.alpha_diversity": ("microbiome/alpha.qmd", "code/primary/alpha_diversity.qmd"),
-    "microbiome.beta_diversity": ("microbiome/beta.qmd", "code/primary/beta_diversity.qmd"),
-    "microbiome.permanova": ("microbiome/permanova.qmd", "code/primary/permanova.qmd"),
+    "microbiome.alpha_diversity": ("microbiome/alpha.qmd", "code/alpha/alpha.qmd"),
+    "microbiome.beta_diversity": ("microbiome/beta.qmd", "code/beta/beta.qmd"),
+    "microbiome.permanova": ("microbiome/permanova.qmd", "code/beta/permanova.qmd"),
     "microbiome.limrots_differential_abundance": (
         "microbiome/limrots.qmd",
-        "code/primary/differential_abundance_limrots.qmd",
+        "code/daa/daa_limrots.qmd",
     ),
     "metabolomics.linear_feature_scan": (
         "metabolomics/limma_panel.qmd",
@@ -143,8 +143,14 @@ def _build_study_config(
 ) -> dict[str, Any]:
     feature_record = _manifest_file(manifest, feature_source)
     metadata_record = _manifest_file(manifest, metadata_source)
-    sample_id = _select_identifier(manifest, metadata_record)
     feature_id = _select_feature_identifier(feature_record)
+    sample_id = _select_identifier(
+        manifest,
+        metadata_record,
+        feature_source=feature_source,
+        metadata_source=metadata_source,
+        feature_id=feature_id,
+    )
     visit = _select_visit_column(metadata_record)
     recipe_parameters = _collect_recipe_parameters(plan, recipe_ids)
     analysis_parameters = _collect_analysis_parameters(recipe_parameters)
@@ -249,27 +255,143 @@ def _select_feature_source(domain: str, paths: dict[str, list[str]]) -> str | No
     return None
 
 
-def _select_identifier(manifest: dict[str, Any], metadata_record: dict[str, Any] | None) -> str | None:
+def _select_identifier(
+    manifest: dict[str, Any],
+    metadata_record: dict[str, Any] | None,
+    *,
+    feature_source: str | None = None,
+    metadata_source: str | None = None,
+    feature_id: str | None = None,
+) -> str | None:
+    """Pick the sample identifier column.
+
+    Name heuristics score candidates; when the feature table and metadata
+    file are readable, candidates whose actual values overlap the feature
+    table's sample columns get a decisive boost (this catches layouts where
+    ``id`` is a re-encoded key and ``sample`` holds the matching IDs).
+    """
     metadata_name = (metadata_record or {}).get("name")
     candidates = manifest.get("identifier_candidates", [])
     preferred = []
     for candidate in candidates:
-        normalized = str(candidate.get("column", "")).lower().replace(" ", "").replace("_", "")
+        column = str(candidate.get("column", "") or "")
+        if not column:
+            continue
         score = 0
         if candidate.get("file") == metadata_name:
             score += 3
+        normalized = column.lower().replace(" ", "").replace("_", "")
         if normalized in {"sampleid", "studyid", "participantid", "subjectid", "id"}:
             score += 5
         elif normalized.endswith("id"):
             score += 2
-        column = candidate.get("column")
-        if column:
-            preferred.append((score, column))
+        score += _overlap_evidence(metadata_source, column, feature_source, feature_id)
+        preferred.append((score, column))
     preferred.sort(key=lambda item: item[0], reverse=True)
     if preferred and preferred[0][0] > 0:
         return preferred[0][1]
     columns = (metadata_record or {}).get("columns") or []
+    if metadata_source and feature_source:
+        best_column, best_score = None, 0
+        for column in columns:
+            evidence = _overlap_evidence(metadata_source, str(column), feature_source, feature_id)
+            if evidence > best_score:
+                best_column, best_score = column, evidence
+        if best_column is not None and best_score > 0:
+            return best_column
     return columns[0] if columns else None
+
+
+def _overlap_evidence(
+    metadata_source: str | None,
+    column: str,
+    feature_source: str | None,
+    feature_id: str | None,
+) -> int:
+    """Score how many metadata values match the feature table's sample columns."""
+    if not metadata_source or not feature_source or not column:
+        return 0
+    sample_columns = _read_sample_columns(feature_source, feature_id)
+    if not sample_columns:
+        return 0
+    values = _read_column_values(metadata_source, column, limit=100)
+    if not values:
+        return 0
+    overlap = sum(1 for value in values if value in sample_columns)
+    if overlap == 0:
+        return 0
+    # Decisive when a meaningful fraction of values align; capped otherwise.
+    return 10 if overlap >= min(3, len(sample_columns)) else 4
+
+
+def _read_sample_columns(source: str, feature_id: str | None) -> set[str] | None:
+    """Return the sample column names of a feature table header (best effort)."""
+    try:
+        suffix = Path(source).suffix.lower()
+        if suffix in {".csv", ".tsv", ".txt"}:
+            delimiter = "," if suffix == ".csv" else "\t"
+            with open(source, "r", encoding="utf-8", errors="replace") as handle:
+                header = handle.readline().strip()
+            columns = [col.strip() for col in header.split(delimiter) if col.strip()]
+        elif suffix in {".xlsx", ".xls"}:
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(source, read_only=True, data_only=True)
+            sheet = workbook[workbook.sheetnames[0]]
+            columns = []
+            for row in sheet.iter_rows(min_row=1, max_row=1, values_only=True):
+                columns = [str(value) for value in row if value is not None]
+        else:
+            return None
+        if feature_id and feature_id in columns:
+            columns.remove(feature_id)
+        elif columns and not feature_id:
+            columns = columns[1:]
+        return {column for column in columns if column and column.lower() not in {"sample_id", "subject_id"}}
+    except Exception:
+        return None
+
+
+def _read_column_values(source: str, column: str, limit: int = 100) -> set[str]:
+    """Read up to ``limit`` values of one column from a tabular file (best effort)."""
+    values: set[str] = set()
+    try:
+        suffix = Path(source).suffix.lower()
+        if suffix in {".csv", ".tsv", ".txt"}:
+            delimiter = "," if suffix == ".csv" else "\t"
+            with open(source, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+            if not lines:
+                return values
+            header = [cell.strip() for cell in lines[0].split(delimiter)]
+            try:
+                index = header.index(column)
+            except ValueError:
+                return values
+            for line in lines[1 : limit + 1]:
+                cells = [cell.strip() for cell in line.split(delimiter)]
+                if index < len(cells) and cells[index]:
+                    values.add(cells[index])
+        elif suffix in {".xlsx", ".xls"}:
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(source, read_only=True, data_only=True)
+            sheet = workbook[workbook.sheetnames[0]]
+            index = None
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if index is None:
+                    for i, value in enumerate(row):
+                        if str(value) == column:
+                            index = i
+                            break
+                    continue
+                if index is not None and row_index - 1 >= limit:
+                    break
+                if index < len(row) and row[index] is not None:
+                    values.add(str(row[index]).strip())
+    except Exception:
+        pass
+    return values
 
 
 def _select_feature_identifier(feature_record: dict[str, Any] | None) -> str | None:

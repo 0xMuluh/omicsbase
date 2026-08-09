@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, AgentStreamEvent, ChatMessage, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
+import { api, AgentStreamEvent, ChatMessage, EditTransaction, FileAttachment, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
 import PlanReviewPanel from "@/components/PlanReviewPanel";
 import { WorkspaceComposer } from "@/components/WorkspaceComposer";
 import { Button } from "@/components/ui/button";
@@ -20,9 +20,11 @@ import {
 import Editor from "@monaco-editor/react";
 import { InlineAiWidget } from "@/components/InlineAiWidget";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
+import { MessageAttachments } from "@/components/MessageAttachments";
 import { ProjectsSidebarContent } from "@/components/ProjectsSidebar";
 import { ThreadOverviewRail } from "@/components/ThreadOverviewRail";
 import { friendlyToolLabel } from "@/lib/toolLabels";
+import { retryStageCopy, retryStageForFailure } from "@/lib/retryStage";
 import { useTheme } from "next-themes";
 import {
   AlertCircle,
@@ -149,6 +151,7 @@ function projectMessageToChatMessage(message: ProjectMessage): ChatMessage {
     content: message.content,
     time: message.created_at,
     metadata: message.metadata,
+    attachments: Array.isArray(message.metadata?.attachments) ? message.metadata.attachments as FileAttachment[] : [],
     cell_id: message.cell_id,
     cell_type: message.cell_type,
     cell_revision: message.cell_revision,
@@ -374,6 +377,7 @@ export default function WorkspacePage() {
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [fileSaveError, setFileSaveError] = useState<string | null>(null);
   const [dataViewMode, setDataViewMode] = useState<"table" | "source">("table");
   const [iframeKey, setIframeKey] = useState(0);
   const [workspaceMode, setWorkspaceMode] = useState<"preview" | "code">("preview");
@@ -383,6 +387,8 @@ export default function WorkspacePage() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedEditId, setSelectedEditId] = useState<string | null>(null);
+  const [showConflictDialog, setShowConflictDialog] = useState(false);
   const [fileSearch, setFileSearch] = useState("");
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const treeExpandedInitRef = useRef(false);
@@ -411,6 +417,19 @@ export default function WorkspacePage() {
   const { data: fileTree, isLoading: treeLoading } = useQuery({
     queryKey: ["fileTree", projectId],
     queryFn: () => api.getFileTree(projectId),
+    // Live streaming: while generation runs, files appear as they are written.
+    refetchInterval: project?.status === "generating" ? 2000 : false,
+  });
+
+  const { data: editHistory } = useQuery({
+    queryKey: ["editTransactions", projectId],
+    queryFn: () => api.listEditTransactions(projectId),
+    enabled: Boolean(project?.project_dir),
+  });
+  const { data: selectedEdit } = useQuery({
+    queryKey: ["editTransaction", projectId, selectedEditId],
+    queryFn: () => api.getEditTransaction(projectId, selectedEditId as string),
+    enabled: Boolean(project?.project_dir && selectedEditId),
   });
 
   const { data: projectFiles } = useQuery({
@@ -521,7 +540,31 @@ export default function WorkspacePage() {
   const isFailed = project?.status === "failed";
   const hasPreview = Boolean(project?.project_dir);
   const agentState = project?.agent_state || "idle";
-  const latestFailedJob = useMemo(() => jobs?.find((job) => job.status === "failed"), [jobs]);
+  const latestFailedJob = useMemo(
+    () => [...(jobs || [])]
+      .filter((job) => job.status === "failed")
+      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0],
+    [jobs],
+  );
+  const retryStage = retryStageForFailure(latestFailedJob?.job_type, {
+    hasPlan: Boolean(project?.analysis_plan),
+    hasWorkspace: Boolean(project?.project_dir),
+  });
+  const revertEditMutation = useMutation({
+    mutationFn: (transactionId: string) => api.revertEditTransaction(projectId, transactionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["editTransactions", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["fileTree", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["filePreview", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      setDrafts({});
+      setFileSaveError(null);
+      setShowConflictDialog(false);
+      setIframeKey((value) => value + 1);
+    },
+  });
+
   const recentAgentActions = useMemo(() => [...(project?.agent_actions || [])].reverse().slice(0, 5), [project?.agent_actions]);
   const applyActionEvents = useMemo(() => {
     const editAction = [...(project?.agent_actions || [])]
@@ -576,12 +619,6 @@ export default function WorkspacePage() {
       setViewMode("chat");
     }
   }, [project?.project_dir, project?.status]);
-
-  useEffect(() => {
-    if (project?.status === "planned" || (project?.agent_state === "needs_user" && !project.project_dir)) {
-      router.replace(`/projects/${projectId}/plan`);
-    }
-  }, [project?.agent_state, project?.project_dir, project?.status, projectId, router]);
 
   const activeDraft = activeTab ? drafts[activeTab] : undefined;
   const editorValue = activeDraft ?? fileContent?.content ?? "";
@@ -657,10 +694,12 @@ export default function WorkspacePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          project_id: projectId,
           path: activeTab,
           prompt: prompt,
           selection: selectedText || null,
           content: fullContent,
+          base_sha256: fileContent?.sha256,
           project_context: projectCtx,
           error_context: errorCtx,
         }),
@@ -686,26 +725,28 @@ export default function WorkspacePage() {
           try {
             const data = JSON.parse(line);
             if (data.type === "token" && data.token) {
+              // Keep the live Monaco model unchanged while the provider streams.
+              // Applying each token against a fixed range corrupts offsets and can
+              // leave a partial, accidentally saveable edit after a failed stream.
               streamedTokens += data.token;
-              if (selectedText) {
-                editor.executeEdits("inline-ai", [{
-                  range: selection,
-                  text: streamedTokens,
-                  forceMoveMarkers: true,
-                }]);
-              } else {
-                editor.executeEdits("inline-ai", [{
-                  range: model.getFullModelRange(),
-                  text: streamedTokens,
-                  forceMoveMarkers: true,
-                }]);
-              }
             }
           } catch {
             // Ignore parse errors
           }
         }
       }
+
+      if (!streamedTokens) {
+        throw new Error("Inline edit provider returned an empty preview");
+      }
+      // Commit the complete provider response to Monaco as one preview edit.
+      // Accept still only stages it in the draft buffer; persistence remains the
+      // separate If-Match save transaction.
+      editor.executeEdits("inline-ai-preview", [{
+        range: selectedText ? selection : model.getFullModelRange(),
+        text: streamedTokens,
+        forceMoveMarkers: true,
+      }]);
 
       // Compute diff stats
       const originalLines = (selectedText || fullContent).split("\n").length;
@@ -774,9 +815,17 @@ export default function WorkspacePage() {
   const saveMutation = useMutation({
     mutationFn: () => {
       if (!activeTab || activeDraft === undefined) return Promise.reject("No file selected");
-      return api.saveFileContent(projectId, activeTab, activeDraft);
+      if (!fileContent?.sha256) return Promise.reject("Reload the file before saving so its SHA-256 is known.");
+      return api.saveFileContent(projectId, activeTab, activeDraft, fileContent.sha256);
+    },
+    onMutate: () => setFileSaveError(null),
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Save failed; reload the file before retrying.";
+      setFileSaveError(message);
+      if (/409|conflict|changed since/i.test(message)) setShowConflictDialog(true);
     },
     onSuccess: () => {
+      setFileSaveError(null);
       if (activeTab) {
         setDrafts((prev) => {
           const next = { ...prev };
@@ -792,9 +841,9 @@ export default function WorkspacePage() {
 
   const retryMutation = useMutation({
     mutationFn: () => {
-      if (project?.project_dir) return api.startRendering(projectId);
-      if (project?.analysis_plan) return api.startGeneration(projectId);
-      return api.startPlanning(projectId);
+      if (retryStage === "plan") return api.startPlanning(projectId);
+      if (retryStage === "generate") return api.startGeneration(projectId);
+      return api.startRendering(projectId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
@@ -831,11 +880,32 @@ export default function WorkspacePage() {
 
   const handleSendPrompt = async (
     event?: React.FormEvent,
-    override?: { message?: string; mode?: "build" | "discuss" },
+    override?: { message?: string; mode?: "build" | "discuss"; attachments?: FileAttachment[]; files?: File[] },
   ) => {
     event?.preventDefault();
-    const message = (override?.message ?? "").trim();
+    const rawMessage = (override?.message ?? "").trim();
     const mode = override?.mode ?? chatMode;
+
+    let attachments: FileAttachment[] = override?.attachments ? [...override.attachments] : [];
+    if (override?.files?.length) {
+      for (const file of override.files) {
+        try {
+          const uploaded = await api.uploadFile(projectId, file, "auto");
+          attachments.push({
+            id: uploaded.id,
+            name: uploaded.original_name || file.name,
+            format: uploaded.detected_format,
+            mime_type: file.type || null,
+            size_bytes: file.size,
+            source: "project",
+          });
+        } catch (err) {
+          console.error("Failed to upload attached file:", file.name, err);
+        }
+      }
+    }
+
+    const message = rawMessage || (attachments.length ? "I attached files for the analysis." : "");
     if (!message || assistantPending) return;
 
     setPendingQuestion(null);
@@ -845,6 +915,7 @@ export default function WorkspacePage() {
       role: "user",
       content: message,
       time: new Date().toISOString(),
+      attachments: attachments,
     };
     setChatMessages((prev) => [...prev, userMessage]);
     setAssistantPending(true);
@@ -861,6 +932,7 @@ export default function WorkspacePage() {
           selected_content_dirty: isDirty,
           preview_path: previewReportPath,
           chat_mode: mode,
+          attachments: attachments,
         },
         (streamEvent: AgentStreamEvent) => {
           if (streamEvent.type === "question" && streamEvent.question) {
@@ -872,11 +944,19 @@ export default function WorkspacePage() {
           if (streamEvent.type === "title_update" && typeof streamEvent.name === "string") {
             const updatedTitle = streamEvent.name;
             queryClient.setQueryData(["project", projectId], (old: any) =>
-              old ? { ...old, name: updatedTitle } : old
+              old?.name_source === "user"
+                ? old
+                : old
+                  ? { ...old, name: updatedTitle, name_source: streamEvent.name_source || "auto" }
+                  : old
             );
             queryClient.setQueryData(["projects"], (old: any) =>
               Array.isArray(old)
-                ? old.map((p: any) => (p.id === projectId ? { ...p, name: updatedTitle } : p))
+                ? old.map((p: any) =>
+                    p.id !== projectId || p.name_source === "user"
+                      ? p
+                      : { ...p, name: updatedTitle, name_source: streamEvent.name_source || "auto" }
+                  )
                 : old
             );
           }
@@ -965,20 +1045,6 @@ export default function WorkspacePage() {
     }
   };
 
-  const initialQuestionSentRef = useRef(false);
-  useEffect(() => {
-    if (
-      project?.question
-      && projectMessages !== undefined
-      && projectMessages.length === 0
-      && !initialQuestionSentRef.current
-      && !assistantPending
-    ) {
-      initialQuestionSentRef.current = true;
-      void handleSendPrompt(undefined, { message: project.question, mode: "build" });
-    }
-  }, [project?.question, projectMessages, assistantPending]);
-
   const askAgent = (prompt: string, mode: "build" | "discuss" = "build") => {
     setChatMode(mode);
     void handleSendPrompt(undefined, { message: prompt, mode });
@@ -991,17 +1057,31 @@ export default function WorkspacePage() {
 
   const handleAddFiles = async (files: File[]) => {
     const failures: string[] = [];
+    const attachments: FileAttachment[] = [];
     for (const file of files) {
       try {
-        await api.uploadFile(projectId, file, "auto");
+        const uploaded = await api.uploadFile(projectId, file, "auto");
+        attachments.push({
+          id: uploaded.id,
+          name: uploaded.original_name || file.name,
+          format: uploaded.detected_format,
+          mime_type: file.type || null,
+          size_bytes: file.size,
+          source: "project",
+        });
       } catch {
         failures.push(file.name);
       }
     }
+    const failedText = failures.length
+      ? ` The following files could not be uploaded: ${failures.join(", ")}.`
+      : "";
     void handleSendPrompt(undefined, {
-      message: `[Attached: ${files.map((file) => file.name).join(", ")}]`
-        + (failures.length ? ` (failed to upload: ${failures.join(", ")})` : ""),
+      message: attachments.length
+        ? `I attached ${attachments.length === 1 ? "a file" : "files"} for the analysis.${failedText}`
+        : `I could not attach the selected files.${failedText}`,
       mode: chatMode,
+      attachments,
     });
     void queryClient.invalidateQueries({ queryKey: ["projects"] });
   };
@@ -1030,6 +1110,7 @@ export default function WorkspacePage() {
 
   const handleFileSelect = (path: string) => {
     setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
+    setFileSaveError(null);
     setActiveTab(path);
   };
 
@@ -1197,7 +1278,59 @@ export default function WorkspacePage() {
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 no-scrollbar">
-              <div className="space-y-0.5">
+              <div className="space-y-3">
+                {(editHistory?.transactions || []).length > 0 ? (
+                  <section className="space-y-1.5">
+                    <p className="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Committed source edits</p>
+                    {(editHistory?.transactions || []).map((transaction: EditTransaction) => (
+                      <div
+                        key={transaction.transaction_id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedEditId(transaction.transaction_id)}
+                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedEditId(transaction.transaction_id); }}
+                        className={`w-full rounded-lg border px-2 py-2 text-left transition-colors ${selectedEditId === transaction.transaction_id ? "border-teal-500/60 bg-teal-500/5" : "border-border/60 hover:bg-muted"}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs text-foreground/90">{transaction.summary || transaction.origin || "Source edit"}</p>
+                            <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{transaction.files.map((file) => file.path).join(", ")}</p>
+                          </div>
+                          {transaction.status === "committed" ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 shrink-0 px-2 text-[10px]"
+                              disabled={revertEditMutation.isPending}
+                              onClick={() => revertEditMutation.mutate(transaction.transaction_id)}
+                            >
+                              Undo
+                            </Button>
+                          ) : (
+                            <Badge variant="outline" className="text-[9px]">{transaction.status}</Badge>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedEdit ? (
+                      <div className="mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/30 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Diff preview</p>
+                          <span className="font-mono text-[9px] text-muted-foreground">{selectedEdit.transaction_id.slice(0, 12)}</span>
+                        </div>
+                        {(selectedEdit.files || []).map((file) => (
+                          <div key={file.path} className="space-y-1">
+                            <p className="font-mono text-[10px] text-foreground/80">{file.path}</p>
+                            <pre className="max-h-56 overflow-auto rounded bg-background p-2 text-[10px] leading-4 text-foreground/80">{file.diff || "Binary or unavailable diff"}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+                <section className="space-y-0.5">
+                  <p className="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Agent activity</p>
                 {[...(project?.agent_actions || [])].reverse().map((action, index) => (
                   <div
                     key={`${action.time}-${index}`}
@@ -1212,6 +1345,7 @@ export default function WorkspacePage() {
                     <p className="mt-1 text-[9px] uppercase tracking-wide text-muted-foreground/70">{action.type}</p>
                   </div>
                 ))}
+                </section>
               </div>
             </div>
           </>
@@ -1263,11 +1397,34 @@ export default function WorkspacePage() {
             ) : null}
 
             {isFailed && failureActionEvent ? (
-              <AgentActionCard
-                event={failureActionEvent}
-                onAskAgent={(prompt) => askAgent(prompt, "build")}
-                onOpenPath={handleFileSelect}
-              />
+              <div className="space-y-2">
+                <AgentActionCard
+                  event={failureActionEvent}
+                  onAskAgent={(prompt) => askAgent(prompt, "build")}
+                  onOpenPath={handleFileSelect}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="w-full gap-2"
+                  disabled={retryMutation.isPending}
+                  onClick={() => retryMutation.mutate()}
+                  title={retryStageCopy[retryStage].detail}
+                >
+                  {retryMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  {retryStageCopy[retryStage].label}
+                </Button>
+                {retryMutation.isError ? (
+                  <p className="text-xs text-red-600 dark:text-red-300">
+                    {(retryMutation.error as Error).message}
+                  </p>
+                ) : null}
+              </div>
             ) : null}
 
             <div className="space-y-2">
@@ -1296,6 +1453,7 @@ export default function WorkspacePage() {
                 >
                   {message.role === "user" ? (
                     <div className="max-w-[85%] rounded-3xl bg-muted/80 px-4 py-2.5 text-base leading-relaxed text-foreground shadow-sm">
+                      <MessageAttachments attachments={message.attachments} className="mb-2" />
                       {message.content}
                     </div>
                   ) : (
@@ -1536,6 +1694,7 @@ export default function WorkspacePage() {
                         data-overview-id={`ws-msg-${message.id || index}`}
                         className="max-w-[75%] rounded-3xl bg-muted/80 px-4.5 py-3 text-base leading-relaxed text-foreground shadow-sm"
                       >
+                        <MessageAttachments attachments={message.attachments} className="mb-2" />
                         {message.content}
                       </div>
                     ) : (
@@ -1592,13 +1751,12 @@ export default function WorkspacePage() {
                   pendingQuestion={pendingQuestion}
                   chatMode={chatMode}
                   disabled={assistantPending}
-                  onSend={(message, mode) => {
+                  onSend={(message, mode, files) => {
                     setChatMode(mode);
-                    void handleSendPrompt(undefined, { message, mode });
+                    void handleSendPrompt(undefined, { message, mode, files });
                   }}
                   onAnswer={answerQuestion}
                   onModeChange={setChatMode}
-                  onAddFiles={handleAddFiles}
                 />
               </div>
             </div>
@@ -1730,7 +1888,12 @@ export default function WorkspacePage() {
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2 px-2 py-1.5">
-                    {saveMutation.isSuccess && !isDirty ? (
+                    {fileSaveError ? (
+                      <span className="max-w-[260px] truncate text-[11px] text-red-600 dark:text-red-300" title={fileSaveError}>
+                        Save conflict — reload before retrying
+                      </span>
+                    ) : null}
+                    {saveMutation.isSuccess && !isDirty && !fileSaveError ? (
                       <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
                         <Check className="h-3 w-3" />
                         Saved
@@ -1876,6 +2039,31 @@ export default function WorkspacePage() {
         </div>
       </main>
 
+      {showConflictDialog ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="alertdialog" aria-modal="true" aria-label="Save conflict">
+          <div className="w-full max-w-md space-y-4 rounded-xl border border-red-500/30 bg-background p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
+              <div>
+                <h2 className="text-sm font-semibold">This file changed elsewhere</h2>
+                <p className="mt-1 text-xs text-muted-foreground">Reload the latest file before applying your draft. Your unsaved text remains in this editor until you choose an action.</p>
+              </div>
+            </div>
+            <p className="max-h-20 overflow-auto rounded bg-muted p-2 font-mono text-[10px] text-muted-foreground">{fileSaveError}</p>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowConflictDialog(false)}>Keep editing</Button>
+              <Button type="button" size="sm" onClick={() => {
+                if (activeTab) {
+                  void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId, activeTab] });
+                  setDrafts((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
+                }
+                setFileSaveError(null);
+                setShowConflictDialog(false);
+              }}>Reload latest</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

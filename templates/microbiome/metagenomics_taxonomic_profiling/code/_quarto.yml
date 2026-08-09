@@ -1,0 +1,95 @@
+project:
+  type: website
+  output-dir: "../output"
+  resources:
+    - "lib/"
+  render:
+    - "*.qmd"
+    - "beta/*.qmd"
+    - "ratio/*.qmd"
+    - "daa/*.qmd"
+    - "inflammation/*.qmd"
+    - "!alpha/alpha.qmd"
+    - "!daa/daa_level.qmd"
+    - "!daa.qmd"
+    - "!daa/daa_mtc.qmd"
+website:
+  title: "Metagenomics Taxonomic Profiling Analysis"
+  navbar:
+    left:
+      - text: "Alpha Diversity"
+        menu:
+          - text: "Shannon"
+            href: alpha/alpha_shannon.html
+          - text: "Observed"
+            href: alpha/alpha_observed.html
+      - text: "Beta Diversity"
+        href: beta/beta.html
+      - text: "B/F Ratio"
+        href: ratio/ratio.html
+      - text: "Taxonomic DAA"
+        menu:
+          - text: "Wilcoxon Genus"
+            href: daa/daa_genus_prevalent_wilcoxon.html
+          - text: "Wilcoxon Species"
+            href: daa/daa_species_prevalent_wilcoxon.html
+          - text: "Maaslin Species"
+            href: daa/daa_maaslin_species.html
+          - text: "Maaslin Genus"
+            href: daa/daa_maaslin_genus.html
+          - text: "LimROTS Species"
+            href: daa/daa_limrots_species.html
+          - text: "LimROTS Genus"
+            href: daa/daa_limrots_genus.html
+          - text: "Methods Comparison"
+            href: daa/daa_comparison.html
+          - text: "Taxa of interest"
+            href: daa/daa_interest.html
+      - text: "Functional DAA"
+        menu:
+          - text: "MAaslin Pathways"
+            href: daa/daa_pa.html
+          - text: "Wilcoxon Pathways"
+            href: daa/daa_pa_wilcox.html
+          - text: "LimROTS Pathways"
+            href: daa/daa_limrots_pa.html
+      - text: "Inflammation & Microbiota"
+        href: inflammation/inflammation.html
+  sidebar:
+    style: "docked"
+    search: true
+
+format:
+  html:
+    theme: cosmo
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show Code"
+    page-layout: full
+    number-depth: 3
+    crossref:
+      fig-title: "Figure "
+      tbl-title: "Table "
+  # pdf:
+  #   documentclass: article
+  #   keep-tex: true
+  #   number-sections: true
+  #   include-in-header:
+  #     text: |
+  #       \usepackage{booktabs}
+  #       \usepackage{longtable}
+  #       \usepackage[a4paper, left=0.75in, right=1in, top=1in, bottom=1in]{geometry}
+
+execute:
+  echo: true
+  warning: false
+  message: false
+  include: true
+  freeze: false
+  dependencies:
+    - quarto
+    - fs
+
+editor: visual

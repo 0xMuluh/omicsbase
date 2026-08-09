@@ -1,6 +1,6 @@
 # OmicsBase
 
-AI-powered microbiome analysis with transparent, reproducible Quarto reports.
+OmicsBase-powered omics analysis with transparent, reproducible Quarto reports.
 
 OmicsBase lets you:
 
@@ -8,6 +8,7 @@ OmicsBase lets you:
 - Sit back while an agent plans the workflow, writes R + Quarto source, and renders an HTML report
 - Ask the agent to improve the analysis, tweak recipes, or fix the report
 - Work in NoteThreads: literate notebooks where the agent runs R cells for you, backed by a Bioconductor book knowledge base
+- Adapt a versioned team ReportPack (an existing R/Quarto directory) rather than generating every report from an empty scaffold
 
 ## Getting started
 
@@ -49,6 +50,7 @@ Optional:
 |----------|---------|
 | `API_KEY` | Shared-deployment auth (`X-API-Key` header) |
 | `USE_DOCKER_SANDBOX` | Run R/Quarto in an isolated container (requires `omicsbase-runner` image) |
+| `REPORT_PACKS_DIR` | Optional administrator-managed directory of additional ReportPacks |
 
 ## Create a new analysis
 
@@ -75,7 +77,7 @@ You can also edit files in the Code panel, save, and re-render.
 - A rendered HTML report plus machine-readable results
 - A downloadable project zip
 
-Post-render review checks required files, QMD pages, `sessionInfo`, and portable paths.
+Post-render review checks the selected ReportPack's declared sources and artifacts, QMD pages, `sessionInfo`, and portable paths. Available packs are listed at `GET /api/report-packs`; plans select them by ID rather than raw filesystem path.
 
 ## NoteThreads
 

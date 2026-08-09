@@ -67,7 +67,7 @@ export function InlineAiWidget({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs font-semibold text-teal-400">
           <Sparkles className="h-4 w-4 animate-pulse text-teal-400" />
-          <span>Inline AI Edit (Cmd+K)</span>
+          <span>Inline OmicsBase Edit (Cmd+K)</span>
           {selectedText ? (
             <span className="truncate rounded bg-teal-500/10 px-1.5 py-0.5 font-mono text-[10px] text-teal-300">
               {selectedText.split("\n").length} lines selected

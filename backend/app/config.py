@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     openai_base_url: str = ""        # Optional custom base_url for Ollama, vLLM, DeepSeek, Groq, OpenRouter
     qwen_base_url: str = ""
     llm_model: str = "claude-sonnet-4-20250514"
+    # Native Gemini SDK (google-genai) instead of the OpenAI-compatible endpoint.
+    gemini_native: bool = True
+    # Thinking budget for Gemini thinking models; 0 = provider default (auto).
+    gemini_thinking_budget: int = 0
     llm_input_cost_per_million: float = 0.0
     llm_output_cost_per_million: float = 0.0
     # Per-task model targets: "provider:model" (empty provider = the global
@@ -40,7 +44,7 @@ class Settings(BaseSettings):
     # Output budget for the judge. Reasoning-class models burn tokens on
     # internal reasoning before emitting the JSON verdict; too small a cap
     # returns empty content and silently disables the fast path.
-    fast_path_judge_max_tokens: int = 512
+    fast_path_judge_max_tokens: int = 1024
     # Reasoning effort for judge calls on models that support it (gpt-5/o
     # series): "low" cuts judge latency ~2.5x with no measured accuracy loss.
     fast_path_judge_reasoning_effort: str = "low"
@@ -54,10 +58,16 @@ class Settings(BaseSettings):
 
     # Project storage
     projects_dir: str = "./projects"
+    # Optional administrator-managed catalog of additional ReportPacks. Packs
+    # are selected by manifest ID; plans never provide raw filesystem paths.
+    report_packs_dir: str = ""
 
     # Paths
     registry_path: str = str(Path(__file__).parent.parent.parent / "registry" / "decision_points.yaml")
     prompts_dir: str = str(Path(__file__).parent.parent.parent / "prompts")
+    # Skills live next to prompts (same app root). PROMPTS_DIR is env-overridable
+    # (see docker-compose), so an unset skills_dir follows prompts_dir's parent.
+    skills_dir: str = ""
 
     # QMD-first Bioconductor book knowledge
     bioc_knowledge_catalog_path: str = str(Path(__file__).parent.parent / "knowledge" / "bioc_books.yaml")
@@ -96,9 +106,10 @@ class Settings(BaseSettings):
     note_execution_max_output_artifacts: int = 25
     note_execution_max_output_artifact_bytes: int = 25 * 1024 * 1024
 
-    # Persistent R kernel: one long-lived R process per thread keeps the
-    # workspace in memory between cells (no per-cell process boot or
-    # full-workspace save.image). The kernel is killed after the idle TTL.
+    # Local-development persistent R kernel: one long-lived host R process per
+    # thread keeps the workspace in memory between cells. This optimization is
+    # ignored unless dev_mode is True; deployed execution uses the isolated
+    # one-shot runner while preserving shared state through workspace.RData.
     note_kernel_enabled: bool = True
     note_kernel_idle_ttl_seconds: int = 1800
 
@@ -116,6 +127,9 @@ class Settings(BaseSettings):
     # cut off mid-reply; the model stops naturally when finished.
     agent_max_output_tokens: int = 16000
     fast_path_max_output_tokens: int = 4000
+    # Presentation gate: how many LLM repair rounds run on language findings
+    # before remaining findings are reported rather than fixed.
+    qa_repair_rounds: int = 1
 
     @classmethod
     def settings_customise_sources(

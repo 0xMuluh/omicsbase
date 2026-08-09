@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import workspace_agent
+from app.services.provider_errors import LLMQuotaError
 
 
 def _pin_judge_to_tools(monkeypatch):
@@ -49,6 +50,175 @@ def _project(tmp_path):
         project_dir=str(project_dir),
         files=[],
     )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Why did this generation fail?", False),
+        ("Analyze why this generation failed", False),
+        ("Inspect the failed job and explain it", False),
+        ("What happens if I rerun the analysis?", False),
+        ("Can you rerun the analysis?", True),
+        ("Fix this generate failure", True),
+        ("Complete the analysis report", True),
+        ("For alpha diversity use only Shannon", True),
+        ("Diagnose the failure and then fix it", True),
+        ("Analyze why this failed and then fix it", True),
+        ("Show me the failure logs", False),
+        ("Show me an example dataset", True),
+    ],
+)
+def test_explicit_workspace_mutation_intent(message, expected):
+    assert workspace_agent.has_explicit_workspace_mutation_intent(message) is expected
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_turn_cannot_invoke_pipeline_mutation(tmp_path):
+    request = SimpleNamespace(
+        message="Why did this generation fail?",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+        chat_mode="build",
+    )
+    executor = workspace_agent.WorkspaceAgentExecutor(
+        project=_project(tmp_path),
+        request=request,
+        persisted_messages=[],
+    )
+
+    advertised = {tool["function"]["name"] for tool in executor.tools}
+    assert "inspect_failures" in advertised
+    assert "plan_analysis" not in advertised
+    assert "run_analysis" not in advertised
+
+    for action in ("plan_analysis", "run_analysis"):
+        result = await executor.execute_tool(
+            action,
+            {},
+            step=1,
+            tool_call_id=f"blocked-{action}",
+            persisted_arguments={},
+            step_text="",
+        )
+        assert result.observation["status"] == "error"
+        assert "did not explicitly" in result.observation["error"]
+        assert result.end_turn is False
+
+
+@pytest.mark.asyncio
+async def test_explicit_fix_turn_can_request_pipeline_action(tmp_path):
+    request = SimpleNamespace(
+        message="Fix this generate failure and rerun the analysis",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+        chat_mode="build",
+    )
+    executor = workspace_agent.WorkspaceAgentExecutor(
+        project=_project(tmp_path),
+        request=request,
+        persisted_messages=[],
+    )
+
+    advertised = {tool["function"]["name"] for tool in executor.tools}
+    assert "plan_analysis" not in advertised
+    assert "run_analysis" in advertised
+    result = await executor.execute_tool(
+        "run_analysis",
+        {},
+        step=1,
+        tool_call_id="allowed-run",
+        persisted_arguments={},
+        step_text="Resuming generation",
+    )
+    assert result.end_turn is True
+    assert result.final_event["mutation_authorized"] is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_replan_turn_can_request_planning(tmp_path):
+    request = SimpleNamespace(
+        message="Replan the analysis from the study inputs",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+        chat_mode="build",
+    )
+    executor = workspace_agent.WorkspaceAgentExecutor(
+        project=_project(tmp_path),
+        request=request,
+        persisted_messages=[],
+    )
+
+    advertised = {tool["function"]["name"] for tool in executor.tools}
+    assert "plan_analysis" in advertised
+    result = await executor.execute_tool(
+        "plan_analysis",
+        {},
+        step=1,
+        tool_call_id="allowed-plan",
+        persisted_arguments={},
+        step_text="Replanning the analysis",
+    )
+    assert result.end_turn is True
+    assert result.final_event["mutation_authorized"] is True
+
+
+def test_capability_routing_hides_legacy_recipe_and_repair_alias(tmp_path):
+    request = SimpleNamespace(
+        message="Review the current workspace",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+        chat_mode="build",
+    )
+    executor = workspace_agent.WorkspaceAgentExecutor(
+        project=_project(tmp_path),
+        request=request,
+        persisted_messages=[],
+    )
+    advertised = {tool["function"]["name"] for tool in executor.tools}
+    assert "repair_report" not in advertised
+    assert "list_recipes" not in advertised
+
+    (tmp_path / "project" / "code" / "study_config.yml").write_text("analyses: {}\n")
+    recipe_project = executor.project
+    recipe_executor = workspace_agent.WorkspaceAgentExecutor(
+        project=recipe_project,
+        request=request,
+        persisted_messages=[],
+    )
+    recipe_advertised = {tool["function"]["name"] for tool in recipe_executor.tools}
+    assert "list_recipes" in recipe_advertised
+
+
+def test_typed_provider_failure_is_terminal_even_for_edit_request(tmp_path):
+    request = SimpleNamespace(
+        message="Fix the report caption",
+        selected_file=None,
+        selected_content=None,
+        selected_content_dirty=False,
+        preview_path="index.html",
+        chat_mode="build",
+    )
+    executor = workspace_agent.WorkspaceAgentExecutor(
+        project=_project(tmp_path),
+        request=request,
+        persisted_messages=[],
+    )
+    events = executor.fallback_events(
+        LLMQuotaError("qwen", "Provider quota exhausted; explicitly retry later.")
+    )
+
+    assert [event["type"] for event in events] == ["token", "final"]
+    assert all(event["type"] != "action" for event in events)
+    assert "quota exhausted" in events[-1]["message"]
 
 
 @pytest.mark.asyncio
@@ -351,4 +521,3 @@ async def test_agent_multi_tool_batching(tmp_path, monkeypatch):
     assert completed_tools == ["read_file", "read_results"]
     assert events[-1]["type"] == "final"
     assert events[-1]["message"] == "Both files inspected."
-

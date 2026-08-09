@@ -69,7 +69,7 @@ def _load_assistant_prompt() -> str:
     path = Path(settings.prompts_dir) / "assistant.md"
     if path.exists():
         return path.read_text()
-    return "You are a microbiome analysis assistant. Answer questions using only the provided project context."
+    return "You are an omics analysis assistant. Answer questions using only the provided project context."
 
 
 def _strip_html(html: str, max_chars: int = MAX_REPORT_CHARS) -> str:

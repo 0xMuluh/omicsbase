@@ -219,7 +219,7 @@ export function WorkspaceEditorPanel({
           </div>
         )}
 
-        {/* Monaco Inline AI Overlay Widget (Cmd+K) */}
+        {/* Monaco Inline OmicsBase Overlay Widget (Cmd+K) */}
         {inlineWidget.show && (
           <InlineAiWidget
             top={inlineWidget.top}

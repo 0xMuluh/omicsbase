@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ClarificationQuestion, WorkflowStep } from "@/lib/api";
+import { api, ClarificationQuestion, Job, WorkflowStep } from "@/lib/api";
+import { retryStageCopy, retryStageForFailure } from "@/lib/retryStage";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -304,6 +305,10 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
       return data?.status === "planning" ? 2000 : false;
     },
   });
+  const { data: jobs, isLoading: jobsLoading } = useQuery({
+    queryKey: ["jobs", projectId],
+    queryFn: () => api.listJobs(projectId),
+  });
 
   const [workflow, setWorkflow] = useState<WorkflowStep[] | null>(null);
   const [selectedGroupingKey, setSelectedGroupingKey] = useState("");
@@ -347,8 +352,26 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     },
   });
+  const latestFailedJob = [...(jobs || [])]
+    .filter((job: Job) => job.status === "failed")
+    .sort((left: Job, right: Job) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+  const retryStage = retryStageForFailure(latestFailedJob?.job_type, {
+    hasPlan: Boolean(project?.analysis_plan),
+    hasWorkspace: Boolean(project?.project_dir),
+  });
+  const retryFailedStageMutation = useMutation({
+    mutationFn: async () => {
+      if (retryStage === "plan") await api.startPlanning(projectId);
+      else if (retryStage === "generate") await api.startGeneration(projectId);
+      else await api.startRendering(projectId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
+    },
+  });
 
-  if (isLoading) {
+  if (isLoading || (project?.status === "failed" && jobsLoading)) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -367,32 +390,57 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
           <Loader2 className="mx-auto h-12 w-12 animate-spin text-teal-400 mb-6" />
           <h2 className="text-xl font-semibold mb-2">Analyzing your data...</h2>
           <p className="text-sm text-muted-foreground">
-            The AI is inspecting your files and designing an analysis plan.
+            OmicsBase is inspecting your files and designing an analysis plan.
           </p>
         </motion.div>
       </div>
     );
   }
 
-  if (project?.status === "failed" || (!project?.analysis_plan && project?.status !== "planning")) {
+  if (project?.status === "failed") {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-20 text-center space-y-4">
+        <AlertTriangle className="mx-auto h-12 w-12 text-amber-400 mb-2" />
+        <h2 className="text-xl font-semibold text-foreground">Build Stage Encountered an Issue</h2>
+        <p className="text-sm text-muted-foreground max-w-md mx-auto">
+          {retryStageCopy[retryStage].detail}
+        </p>
+        <Button
+          onClick={() => retryFailedStageMutation.mutate()}
+          disabled={retryFailedStageMutation.isPending}
+          className="bg-teal-600 hover:bg-teal-500 gap-2"
+        >
+          {retryFailedStageMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Play className="h-4 w-4" />
+          )}
+          {retryStageCopy[retryStage].label}
+        </Button>
+        {retryFailedStageMutation.isError ? (
+          <p className="text-sm text-red-600 dark:text-red-300">
+            {(retryFailedStageMutation.error as Error).message}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!project?.analysis_plan && project?.status !== "planning") {
     return (
       <div className="mx-auto max-w-3xl px-6 py-20 text-center space-y-4">
         <AlertTriangle className="mx-auto h-12 w-12 text-amber-400 mb-2" />
         <h2 className="text-xl font-semibold text-foreground">Planning Encountered an Issue</h2>
         <p className="text-sm text-muted-foreground max-w-md mx-auto">
-          The planning task did not complete cleanly. You can retry generating the plan using the automated workflow.
+          No analysis plan is available. Retry only the planning stage.
         </p>
         <Button
           onClick={() => retryPlanningMutation.mutate()}
           disabled={retryPlanningMutation.isPending}
           className="bg-teal-600 hover:bg-teal-500 gap-2"
         >
-          {retryPlanningMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Play className="h-4 w-4" />
-          )}
-          Retry Analysis Planning
+          {retryPlanningMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          Retry planning
         </Button>
       </div>
     );

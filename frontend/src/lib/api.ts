@@ -45,9 +45,20 @@ export interface ProjectFile {
   created_at: string;
 }
 
+export interface FileAttachment {
+  id?: string | null;
+  name: string;
+  format?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  r_path?: string | null;
+  source?: "project" | "thread" | string;
+}
+
 export interface Project {
   id: string;
   name: string;
+  name_source: "default" | "auto" | "user";
   question: string | null;
   notes: string | null;
   custom_plan_text: string | null;
@@ -126,6 +137,28 @@ export interface AnalysisPlan {
   notes: string | null;
 }
 
+export interface EditTransactionFile {
+  path: string;
+  before_sha256: string | null;
+  after_sha256: string | null;
+  strategies?: string[];
+  reasons?: string[];
+  diff?: string;
+}
+
+export interface EditTransaction {
+  transaction_id: string;
+  status: string;
+  origin?: string;
+  summary?: string;
+  files: EditTransactionFile[];
+  modified_files?: string[];
+  diagnostics?: Record<string, any>[];
+  created_at?: string | null;
+  committed_at?: string | null;
+  reverted_by?: string | null;
+}
+
 export interface Job {
   id: string;
   project_id: string;
@@ -194,6 +227,7 @@ export interface ChatMessage {
   content: string;
   time: string;
   metadata?: Record<string, any> | null;
+  attachments?: FileAttachment[];
   cell_id?: string | null;
   cell_type?: "markdown" | "agent" | "code" | "output" | "provenance" | string | null;
   cell_revision?: number | null;
@@ -214,6 +248,7 @@ export interface AgentStreamEvent {
   token?: string;
   chat_mode?: string;
   name?: string;
+  name_source?: "default" | "auto" | "user";
   project_id?: string;
   question?: PendingQuestion;
   awaiting_answer?: PendingQuestion | null;
@@ -260,6 +295,7 @@ export interface ProjectMessage {
   kind: string;
   content: string;
   metadata: Record<string, any> | null;
+  attachments?: FileAttachment[];
   cell_id?: string | null;
   cell_type?: "markdown" | "agent" | "code" | "output" | "provenance" | string | null;
   cell_revision?: number | null;
@@ -629,6 +665,8 @@ export const api = {
     }
     return res.json() as Promise<NoteDataFile>;
   },
+  listProjectNoteFiles: (projectId: string, threadId: string) =>
+    request<NoteDataFile[]>(`/projects/${projectId}/notes/${threadId}/files`),
 
   getStandaloneNoteThread: (threadId: string) =>
     request<NoteThread>("/notes/" + threadId),
@@ -785,6 +823,7 @@ export const api = {
       selected_content_dirty?: boolean;
       preview_path?: string | null;
       chat_mode?: "build" | "discuss";
+      attachments?: FileAttachment[];
     idempotency_key?: string;
     },
     onEvent: (event: AgentStreamEvent) => void,
@@ -827,15 +866,19 @@ export const api = {
   // Files & Report
   getFileTree: (projectId: string) => request<FileTreeNode[]>(`/projects/${projectId}/files/tree`),
   getFileContent: (projectId: string, filePath: string) =>
-    request<{ content: string; path: string; type: string }>(
+    request<{ content: string; path: string; type: string; sha256?: string }>(
       `/projects/${projectId}/files/content/${filePath}`
     ),
   getFilePreview: (projectId: string, filePath: string) =>
     request<FilePreview>(`/projects/${projectId}/files/preview/${filePath}`),
-  saveFileContent: (projectId: string, filePath: string, content: string) =>
-    request<{ content: string; path: string; type: string; saved: boolean }>(
+  saveFileContent: (projectId: string, filePath: string, content: string, baseSha256: string) =>
+    request<{ content: string; path: string; type: string; saved: boolean; sha256?: string; transaction_id?: string }>(
       `/projects/${projectId}/files/content/${filePath}`,
-      { method: "PATCH", body: JSON.stringify({ content }) }
+      {
+        method: "PATCH",
+        headers: { "If-Match": `"${baseSha256}"` },
+        body: JSON.stringify({ content }),
+      }
     ),
   runCodeChunk: (projectId: string, code: string, filePath?: string | null) =>
     request<ChunkRunResult>(`/projects/${projectId}/files/run-chunk`, {
@@ -849,6 +892,16 @@ export const api = {
     `${API_BASE}/projects/${projectId}/files/content/${filePath.split("/").map(encodeURIComponent).join("/")}`,
   getDownloadUrl: (projectId: string) =>
     `${API_BASE}/projects/${projectId}/files/download`,
+
+  listEditTransactions: (projectId: string) =>
+    request<{ transactions: EditTransaction[] }>(`/projects/${projectId}/edits`),
+  getEditTransaction: (projectId: string, transactionId: string) =>
+    request<EditTransaction>(`/projects/${projectId}/edits/${transactionId}`),
+  revertEditTransaction: (projectId: string, transactionId: string) =>
+    request<{ transaction_id: string; status: string; modified_files?: string[] }>(
+      `/projects/${projectId}/edits/${transactionId}/revert`,
+      { method: "POST" },
+    ),
 
   // Health
   health: () => request<{ status: string }>("/health"),
@@ -964,6 +1017,7 @@ async function streamAgentMessage(
     selected_content_dirty?: boolean;
     preview_path?: string | null;
     chat_mode?: "build" | "discuss";
+    attachments?: FileAttachment[];
     idempotency_key?: string;
   },
   onEvent: (event: AgentStreamEvent) => void,

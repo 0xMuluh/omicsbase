@@ -1,0 +1,340 @@
+---
+title: "Figures: child diet and metabolites"
+---
+
+Figures from the 2-year, 5-6-year, prospective, and repeated-measures analyses. The repeated-measures figures should be read cautiously because the executed repeated-measures models produced substantial singular-fit and rank-deficiency warnings that are not encoded in the saved status object.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+q1 <- results$q1
+q2 <- results$q2
+q3 <- results$q3
+q4 <- results$q4
+q1_sens <- results$q1_sensitivity
+q2_sens <- results$q2_sensitivity
+q3_sens <- results$q3_sensitivity
+q4_sens <- results$q4_sensitivity
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+
+mae <- analysis_obj$mae
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+feature_meta$feature_group <- if ("Group" %in% names(feature_meta)) as.character(feature_meta$Group) else "Unknown"
+feature_meta$feature_group[is.na(feature_meta$feature_group) | feature_meta$feature_group == ""] <- "Unknown"
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group")], by = "feature")
+}
+
+label_exposure <- function(x) gsub("_", " ", x, fixed = TRUE)
+
+safe_logp <- function(p) {
+  p <- as.numeric(p)
+  p[p <= 0 | is.na(p)] <- NA_real_
+  -log10(p)
+}
+
+pick_representative_exposure <- function(df) {
+  cand <- df %>%
+    filter(is.finite(q.value)) %>%
+    group_by(exposure) %>%
+    summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+    arrange(best_q)
+  if (nrow(cand) == 0) return(NA_character_)
+  cand$exposure[[1]]
+}
+```
+
+## Analytic sample structure
+
+```{r}
+#| label: fig-sample-flow
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Analytic sample flow and overlap for the 2-year, 5-6-year, prospective, and repeated-measures analytic sets."
+cd6 <- as.data.frame(colData(experiments(mae)[["visit_6"]]), stringsAsFactors = FALSE)
+cd7 <- as.data.frame(colData(experiments(mae)[["visit_7"]]), stringsAsFactors = FALSE)
+nboth <- length(intersect(as.character(cd6$StudyID), as.character(cd7$StudyID)))
+
+sample_flow_tbl <- data.frame(
+  panel = c("2-Year metabolomics", "5-6-Year metabolomics", "Prospective linked pool", "Repeated-measures linked pool"),
+  n = c(nrow(cd6), nrow(cd7), nboth, nboth),
+  stringsAsFactors = FALSE
+)
+
+sample_flow_tbl %>%
+  ggplot(aes(x = fct_reorder(panel, n), y = n, fill = panel)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  labs(x = NULL, y = "Participants") +
+  theme_minimal(base_size = 12)
+```
+
+## Complete-case model coverage
+
+```{r}
+#| label: fig-cc-distribution
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Distribution of complete-case sample sizes across the four main analysis components."
+cc_tbl <- bind_rows(
+  q1 %>% distinct(exposure, n) %>% mutate(component = COMPONENT_LABELS$concurrent_2y, n_complete = n),
+  q2 %>% distinct(exposure, n) %>% mutate(component = COMPONENT_LABELS$concurrent_56y, n_complete = n),
+  q3 %>% distinct(exposure, n) %>% mutate(component = COMPONENT_LABELS$prospective, n_complete = n),
+  q4 %>% distinct(exposure, n_obs) %>% mutate(component = COMPONENT_LABELS$rm_both, n_complete = n_obs)
+) %>%
+  add_exposure_family()
+
+cc_tbl %>%
+  ggplot(aes(x = component, y = n_complete, color = exposure_family)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.55, show.legend = FALSE) +
+  geom_jitter(width = 0.12, alpha = 0.7, show.legend = FALSE) +
+  labs(x = "Component", y = "Complete-case n", color = "Exposure family") +
+  theme_minimal(base_size = 16) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Reported result rows
+
+```{r}
+#| label: fig-testing-burden
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Count of reported result rows by analysis component. This figure avoids mixing linear-model exposure-metabolite counts with mixed-model term counts."
+burden_tbl <- bind_rows(
+  add_exposure_family(q1) %>% mutate(component = COMPONENT_LABELS$concurrent_2y),
+  add_exposure_family(q2) %>% mutate(component = COMPONENT_LABELS$concurrent_56y),
+  add_exposure_family(q3) %>% mutate(component = COMPONENT_LABELS$prospective),
+  add_exposure_family(split_q4_terms(q4)$main) %>% mutate(component = COMPONENT_LABELS$rm_main),
+  add_exposure_family(split_q4_terms(q4)$interaction) %>% mutate(component = COMPONENT_LABELS$rm_interaction)
+) %>%
+  group_by(component, exposure_family) %>%
+  summarise(result_rows = n(), .groups = "drop") %>%
+  mutate(exposure_family = factor(exposure_family, levels = family_order))
+
+burden_tbl %>%
+  ggplot(aes(x = component, y = result_rows, fill = exposure_family)) +
+  geom_col(width = 0.65, position = position_dodge(width = 0.75)) +
+  geom_text(aes(label = scales::comma(result_rows)), position = position_dodge(width = 0.75), vjust = -0.2, size = 3.5) +
+  labs(x = "Component", y = "Reported result rows", fill = "Exposure family") +
+  theme_minimal(base_size = 16) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Inferential signal summary
+
+```{r}
+#| label: fig-signal-summary
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Significant result-row counts and fractions across analysis components. Repeated-measures results are split into main-effect and interaction rows because those terms answer different questions."
+signal_tbl <- bind_rows(
+  add_exposure_family(q1) %>% mutate(component = COMPONENT_LABELS$concurrent_2y),
+  add_exposure_family(q2) %>% mutate(component = COMPONENT_LABELS$concurrent_56y),
+  add_exposure_family(q3) %>% mutate(component = COMPONENT_LABELS$prospective),
+  add_exposure_family(q4) %>% mutate(
+    component = ifelse(
+      grepl(":", term),
+      COMPONENT_LABELS$rm_interaction,
+      COMPONENT_LABELS$rm_main
+    )
+  )
+) %>%
+  group_by(component, exposure_family) %>%
+  summarise(significant_rows = sum(q.value < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop") %>%
+  mutate(
+    exposure_family = factor(exposure_family, levels = family_order),
+    significant_fraction = significant_rows / total_rows
+  )
+
+signal_tbl %>%
+  ggplot(aes(x = component, y = significant_fraction, fill = exposure_family)) +
+  geom_col(width = 0.65, position = position_dodge(width = 0.75)) +
+  geom_text(
+    aes(label = paste0(scales::percent(significant_fraction, accuracy = 0.1), "\n(", significant_rows, "/", total_rows, ")")),
+    position = position_dodge(width = 0.75),
+    vjust = -0.2,
+    size = 3.3
+  ) +
+  labs(x = "Component", y = "Fraction of rows with q < 0.10", fill = "Exposure family") +
+  theme_minimal(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Primary-vs-sensitivity stability
+
+```{r}
+#| label: fig-stability
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Visual summary of how much reported estimates move under expanded covariate adjustment. Reclassification uses the q < 0.10 threshold."
+comp_tbl <- bind_rows(
+  compare_primary_sensitivity(q1, q1_sens, c("exposure", "feature", "visit")) %>% mutate(component = COMPONENT_LABELS$concurrent_2y),
+  compare_primary_sensitivity(q2, q2_sens, c("exposure", "feature", "visit")) %>% mutate(component = COMPONENT_LABELS$concurrent_56y),
+  compare_primary_sensitivity(q3, q3_sens, c("exposure", "feature", "visit_exposure", "visit_outcome")) %>% mutate(component = COMPONENT_LABELS$prospective),
+  compare_primary_sensitivity(q4, q4_sens, c("exposure", "feature", "term")) %>% mutate(component = COMPONENT_LABELS$rm_both)
+)
+
+stability_tbl <- comp_tbl %>%
+  mutate(exposure_family = exposure_family(exposure)) %>%
+  group_by(component, exposure_family) %>%
+  summarise(
+    pairs_compared = n(),
+    median_abs_delta = median(abs_delta, na.rm = TRUE),
+    q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    median_abs_delta = round(median_abs_delta, 3),
+    q_reclassification_fraction = round(q_reclassification_fraction, 3)
+  )
+
+stability_tbl %>%
+  pivot_longer(cols = c(median_abs_delta, q_reclassification_fraction), names_to = "metric", values_to = "value") %>%
+  mutate(metric = recode(metric,
+    median_abs_delta = "Median absolute beta change",
+    q_reclassification_fraction = "Fraction reclassified at q < 0.10"
+  )) %>%
+  mutate(exposure_family = factor(exposure_family, levels = family_order)) %>%
+  ggplot(aes(x = component, y = value, fill = exposure_family)) +
+  geom_col(width = 0.65, position = position_dodge(width = 0.75)) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(x = "Component", y = "Value", fill = "Exposure family") +
+  theme_minimal(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Representative volcano plots for the concurrent and prospective components
+
+```{r}
+#| label: fig-volcano
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Illustrative volcano plots for one post hoc exemplar exposure per linear-model question family. Exemplar exposures are selected by the smallest observed q-value within each family and are not pre-specified headline exposures."
+rep_q1 <- pick_representative_exposure(q1)
+rep_q2 <- pick_representative_exposure(q2)
+rep_q3 <- pick_representative_exposure(q3)
+
+volcano_df <- bind_rows(
+  q1 %>% filter(exposure == rep_q1) %>% mutate(component = COMPONENT_LABELS$concurrent_2y, sig = q.value < 0.1),
+  q2 %>% filter(exposure == rep_q2) %>% mutate(component = "Concurrent at 5-6 Years", sig = q.value < 0.1),
+  q3 %>% filter(exposure == rep_q3) %>% mutate(component = "Prospective", sig = q.value < 0.1)
+) %>%
+  mutate(logp = safe_logp(p.value))
+
+volcano_df %>%
+  ggplot(aes(x = estimate, y = logp, color = sig)) +
+  geom_point(alpha = 0.65, size = 1.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ component, scales = "free") +
+  scale_color_manual(values = c("FALSE" = "grey65", "TRUE" = "firebrick")) +
+  labs(x = "Beta", y = "-log10(p)", color = "q < 0.10") +
+  theme_minimal(base_size = 16)
+```
+
+## Repeated-measures term profile
+
+```{r}
+#| label: fig-q4-terms
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Top saved repeated-measures coefficient rows, split into main diet effects and diet-by-time interaction terms. These rankings should be interpreted cautiously because the executed repeated-measures models generated singular-fit and rank-deficiency warnings."
+q4_plot <- q4 %>%
+  filter(is.finite(q.value)) %>%
+  add_exposure_family() %>%
+  mutate(
+    term_family = ifelse(grepl(":", term), "Interaction", "Main effect"),
+    label = paste(label_exposure(exposure), feature, sep = " | ")
+  ) %>%
+  arrange(q.value) %>%
+  group_by(exposure_family, term_family) %>%
+  slice_head(n = 20) %>%
+  ungroup()
+
+q4_plot %>%
+  ggplot(aes(x = estimate, y = fct_reorder(label, estimate), color = term_family)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_point(size = 1.8) +
+  facet_wrap(~ exposure_family + term_family, scales = "free_y") +
+  labs(x = "Beta", y = "Exposure | Metabolite", color = "Term family") +
+  theme_minimal(base_size = 15)
+```
+
+## Model status
+
+```{r}
+#| label: fig-model-status
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Execution status across the planned analysis components. Status reflects whether output rows were produced, not whether the fitted models were warning-free."
+status_tbl <- model_status %>%
+  count(analysis, status, name = "n")
+
+status_tbl %>%
+  ggplot(aes(x = analysis, y = n, fill = status)) +
+  geom_col(position = "stack", width = 0.7) +
+  geom_text(aes(label = n), position = position_stack(vjust = 0.5), size = 3.1) +
+  labs(x = "Analysis", y = "Exposure attempts", fill = "Status") +
+  theme_minimal(base_size = 15) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Prospective overlap and concordance
+
+```{r}
+#| label: fig-overlap-upset
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Overlap of significantly associated metabolites across the 2-year, 5-6-year, and prospective linear-model components."
+sig_q1 <- unique(q1$feature[q1$q.value < 0.1])
+sig_q2 <- unique(q2$feature[q2$q.value < 0.1])
+sig_q3 <- unique(q3$feature[q3$q.value < 0.1])
+all_feat <- unique(c(sig_q1, sig_q2, sig_q3))
+
+ov <- data.frame(feature = all_feat, stringsAsFactors = FALSE) %>%
+  mutate(
+    q1 = feature %in% sig_q1,
+    q2 = feature %in% sig_q2,
+    q3 = feature %in% sig_q3,
+    signature = paste0(ifelse(q1, "2y", "-"), " | ", ifelse(q2, "5-6y", "-"), " | ", ifelse(q3, "Prospective", "-"))
+  ) %>%
+  count(signature, name = "n_features") %>%
+  arrange(desc(n_features))
+
+ov %>%
+  ggplot(aes(x = fct_reorder(signature, n_features), y = n_features, fill = signature)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(x = "Signature membership", y = "Metabolite count") +
+  theme_minimal(base_size = 15)
+```

@@ -1,0 +1,191 @@
+---
+title: "Study overview"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+library(dplyr)
+library(tidyr)
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+
+raw_df <- extract_long_from_mae(
+  analysis_obj$mae,
+  visits = c("visit_6", "visit_7")
+)
+```
+
+## Research aim
+
+Child diet at 2 years and 5-6 years is evaluated against the child plasma metabolome measured at the same ages, with an additional prospective analysis from 2-year diet to 5-6-year metabolites.
+
+Questions:
+
+1. concurrent associations at 2 years
+2. concurrent associations at 5-6 years
+3. prospective associations from 2-year diet to 5-6-year metabolites, conditioning on the same metabolite at 2 years
+4. repeated-measures associations across 2 years and 5-6 years
+
+## Analytic panels
+
+```{r}
+#| label: study-overview-01
+panel_tbl <- raw_df %>%
+  distinct(StudyID, visit_num) %>%
+  count(visit_num, name = "n_children") %>%
+  mutate(
+    child_age = visit_label(visit_num),
+    metabolite_features = length(analysis_obj$metabolite_cols)
+  ) %>%
+  select(child_age, n_children, metabolite_features)
+
+make_table(panel_tbl, caption = "Analytic child-age panels", table_mode = "compact")
+```
+
+## Exposure timing and families
+
+```{r}
+#| label: study-overview-02
+exposure_tbl <- tibble(
+  component = c(
+    COMPONENT_LABELS$concurrent_2y,
+    COMPONENT_LABELS$concurrent_56y,
+    COMPONENT_LABELS$prospective,
+    COMPONENT_LABELS$rm_both
+  ),
+  exposure_timing = c("2-year child diet", "5-6-year child diet", "2-year child diet", "2-year child diet paired across both child ages"),
+  exposure_families = c(
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q1"])), collapse = "; "),
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q2"])), collapse = "; "),
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q3"])), collapse = "; "),
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q4"])), collapse = "; ")
+  )
+)
+
+make_table(exposure_tbl, caption = "Exposure timing and families", table_mode = "wide")
+```
+
+## Covariate strategy
+
+```{r}
+#| label: study-overview-03
+covar_tbl <- tibble(
+  analysis_component = c(
+    COMPONENT_LABELS$concurrent_2y,
+    COMPONENT_LABELS$concurrent_56y,
+    COMPONENT_LABELS$prospective,
+    COMPONENT_LABELS$rm_both
+  ),
+  primary_covariates = c(
+    "Intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "Intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "2-year exposure; baseline metabolite at 2 years; intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "Time-varying paired diet exposure across 2 years and 5-6 years; intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration"
+  ),
+  sensitivity_additions = c(
+    "Small-for-gestational-age; macrosomy; healthy-diet score at 2 years",
+    "Maternal smoking; prematurity; small-for-gestational-age; macrosomy; healthy-diet score at 5-6 years",
+    "Primary prospective block plus small-for-gestational-age; macrosomy; healthy-diet score at 2 years",
+    "Primary repeated-measures block plus small-for-gestational-age; macrosomy; time-varying healthy-diet score"
+  )
+)
+
+make_table(covar_tbl, caption = "Primary and sensitivity covariate strategy", table_mode = "wide")
+```
+
+## Model families
+
+```{r}
+#| label: study-overview-04
+q4_split <- split_q4_terms(results$q4)
+model_tbl <- tibble(
+  component = c(
+    COMPONENT_LABELS$concurrent_2y,
+    COMPONENT_LABELS$concurrent_56y,
+    COMPONENT_LABELS$prospective,
+    COMPONENT_LABELS$rm_main,
+    COMPONENT_LABELS$rm_interaction
+  ),
+  model_family = c(
+    "Feature-wise linear model",
+    "Feature-wise linear model",
+    "Feature-wise linear model with baseline metabolite adjustment",
+    "Feature-wise mixed model with child-level repeated measures",
+    "Feature-wise mixed model with child-level repeated measures"
+  ),
+  outcome = c(
+    "2-year metabolite",
+    "5-6-year metabolite",
+    "5-6-year metabolite",
+    "Metabolite measured at both child ages",
+    "Metabolite measured at both child ages"
+  ),
+  result_rows = c(
+    nrow(results$q1),
+    nrow(results$q2),
+    nrow(results$q3),
+    nrow(q4_split$main),
+    nrow(q4_split$interaction)
+  )
+)
+
+make_table(model_tbl, caption = "Primary model families", table_mode = "wide")
+```
+
+## Multiple testing
+
+False-discovery control is based on Benjamini-Hochberg adjustment across metabolites, but the adjustment scope differs by model family.
+
+- Concurrent outputs apply BH within each exposure-specific result set.
+- Prospective outputs apply BH within each exposure-specific result set.
+- Repeated-measures outputs apply BH separately within each exposure and coefficient family.
+
+## Result inventory
+
+```{r}
+#| label: study-overview-05
+inventory_tbl <- build_result_inventory(results)
+
+make_table(inventory_tbl, caption = "Returned result inventory", table_mode = "compact")
+```
+
+## Execution status
+
+```{r}
+#| label: study-overview-06
+status_tbl <- model_status %>%
+  mutate(
+    question = dplyr::case_when(
+      question == "Q1" ~ COMPONENT_LABELS$concurrent_2y,
+      question == "Q2" ~ COMPONENT_LABELS$concurrent_56y,
+      question == "Q3" ~ "Prospective",
+      question == "Q4" ~ "Repeated-Measures",
+      TRUE ~ question
+    ),
+    exposure = pretty_var(exposure),
+    n_complete = ifelse(
+      is.na(n_complete_min) | !is.finite(n_complete_min),
+      NA_character_,
+      ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+    )
+  ) %>%
+  select(question, analysis, exposure, status, reason, n_complete, n_features_tested, term_family)
+
+make_table(status_tbl, caption = "Saved execution-status inventory", table_mode = "wide")
+```
+
+## Interpretation notes
+
+1. The concurrent and prospective models carry the clearest inferential weight.
+2. The prospective model is conditional on the earlier metabolite value, so it should be interpreted as a follow-up association rather than a pure baseline-only prediction.
+3. The repeated-measures component is included because it is part of the Study 1 question set, but it remains the most warning-prone analysis family and should be interpreted more cautiously than the linear components.
+4. Detailed coefficient tables, sensitivity comparisons, and supporting figures are reported elsewhere in the site; this page is the study-level map.

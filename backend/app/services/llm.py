@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.providers import api_key_for, base_url_for, default_model_for
+from app.services.provider_errors import raise_classified_provider_exception
 from app.services.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,31 @@ _async_anthropic_key: str | None = None
 
 _openai_clients: dict[tuple[str, str | None], Any] = {}
 _async_openai_clients: dict[tuple[str, str | None], Any] = {}
+
+_gemini_client: Any = None
+_gemini_client_key: str | None = None
+
+# Stable fallback when the configured model isn't a Gemini model name.
+_GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+_NON_GEMINI_HINTS = ("claude", "gpt-", "deepseek", "llama", "qwen", "grok", "o1-", "o3-", "o4-", "grok-")
+
+
+def _get_gemini_client(api_key: str):
+    global _gemini_client, _gemini_client_key
+    from google import genai
+
+    if _gemini_client is None or _gemini_client_key != api_key:
+        _gemini_client = genai.Client(api_key=api_key)
+        _gemini_client_key = api_key
+    return _gemini_client
+
+
+def _resolve_gemini_model(model_override: str | None = None) -> str:
+    """Return the Gemini model name, guarding against non-Gemini leftovers."""
+    model = (model_override or settings.llm_model or "").strip()
+    if not model or any(hint in model.lower() for hint in _NON_GEMINI_HINTS):
+        return default_model_for("gemini") or _GEMINI_FALLBACK_MODEL
+    return model
 
 
 def _get_anthropic_client(api_key: str):
@@ -109,15 +136,21 @@ async def call_llm(
 
     provider = (provider_override or settings.llm_provider).lower()
 
-    if provider == "anthropic":
-        return await _call_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override)
-    elif provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
-        return await _call_openai(
-            system_prompt, user_prompt, response_format, max_tokens,
-            provider=provider, model_override=model_override, reasoning_effort=reasoning_effort,
-        )
-    else:
+    try:
+        if provider == "gemini" and settings.gemini_native:
+            return await _call_gemini(
+                system_prompt, user_prompt, response_format, max_tokens, model_override=model_override
+            )
+        if provider == "anthropic":
+            return await _call_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override)
+        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+            return await _call_openai(
+                system_prompt, user_prompt, response_format, max_tokens,
+                provider=provider, model_override=model_override, reasoning_effort=reasoning_effort,
+            )
         raise ValueError(f"Unknown LLM provider: {provider}")
+    except Exception as exc:
+        raise_classified_provider_exception(exc, provider)
 
 
 async def stream_llm_text(
@@ -132,17 +165,24 @@ async def stream_llm_text(
     user_prompt = sanitize_text(user_prompt)
 
     provider = (provider_override or settings.llm_provider).lower()
-    if provider == "anthropic":
-        async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override):
-            yield chunk
-        return
-    if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
-        async for chunk in _stream_openai(
-            system_prompt, user_prompt, max_tokens, provider=provider, model_override=model_override,
-        ):
-            yield chunk
-        return
-    raise ValueError(f"Unknown LLM provider: {provider}")
+    try:
+        if provider == "gemini" and settings.gemini_native:
+            async for chunk in _stream_gemini(system_prompt, user_prompt, max_tokens, model_override=model_override):
+                yield chunk
+            return
+        if provider == "anthropic":
+            async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override):
+                yield chunk
+            return
+        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+            async for chunk in _stream_openai(
+                system_prompt, user_prompt, max_tokens, provider=provider, model_override=model_override,
+            ):
+                yield chunk
+            return
+        raise ValueError(f"Unknown LLM provider: {provider}")
+    except Exception as exc:
+        raise_classified_provider_exception(exc, provider)
 
 
 async def stream_llm_with_tools(
@@ -165,25 +205,39 @@ async def stream_llm_with_tools(
     live_context = sanitize_text(live_context) if live_context else None
 
     provider = (provider_override or settings.llm_provider).lower()
-    if provider == "anthropic":
-        async for event in _stream_anthropic_with_tools(
-            system_prompt, messages, tools, max_tokens, live_context=live_context, model_override=model_override,
-        ):
-            yield event
-        return
-    if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
-        async for event in _stream_openai_with_tools(
-            system_prompt,
-            messages,
-            tools,
-            max_tokens,
-            provider=provider,
-            live_context=live_context,
-            model_override=model_override,
-        ):
-            yield event
-        return
-    raise ValueError(f"Unknown LLM provider: {provider}")
+    try:
+        if provider == "gemini" and settings.gemini_native:
+            async for event in _stream_gemini_with_tools(
+                system_prompt,
+                messages,
+                tools,
+                max_tokens,
+                live_context=live_context,
+                model_override=model_override,
+            ):
+                yield event
+            return
+        if provider == "anthropic":
+            async for event in _stream_anthropic_with_tools(
+                system_prompt, messages, tools, max_tokens, live_context=live_context, model_override=model_override,
+            ):
+                yield event
+            return
+        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+            async for event in _stream_openai_with_tools(
+                system_prompt,
+                messages,
+                tools,
+                max_tokens,
+                provider=provider,
+                live_context=live_context,
+                model_override=model_override,
+            ):
+                yield event
+            return
+        raise ValueError(f"Unknown LLM provider: {provider}")
+    except Exception as exc:
+        raise_classified_provider_exception(exc, provider)
 
 
 async def _call_anthropic(
@@ -228,6 +282,224 @@ async def _stream_anthropic(system_prompt: str, user_prompt: str, max_tokens: in
         async for text in stream.text_stream:
             if text:
                 yield text
+
+
+def _gemini_config(
+    system_prompt: str,
+    live_context: str | None,
+    max_tokens: int,
+    response_mime_type: str | None = None,
+    tools: list[Any] | None = None,
+    thinking_budget: int | None = None,
+) -> Any:
+    """Build a native GenerateContentConfig for the google-genai SDK."""
+    from google.genai import types
+
+    system_parts = [system_prompt]
+    if live_context:
+        system_parts.append(live_context)
+    config = types.GenerateContentConfig(
+        system_instruction="\n\n".join(system_parts),
+        max_output_tokens=max_tokens,
+    )
+    if response_mime_type:
+        config.response_mime_type = response_mime_type
+    if tools:
+        config.tools = tools
+    budget = thinking_budget if thinking_budget is not None else settings.gemini_thinking_budget
+    if budget and budget > 0:
+        config.thinking_config = types.ThinkingConfig(thinking_budget=budget)
+    return config
+
+
+def _gemini_tools(tools: list[dict[str, Any]]) -> list[Any] | None:
+    """Convert OpenAI-format tool definitions to Gemini FunctionDeclarations."""
+    from google.genai import types
+
+    if not tools:
+        return None
+    declarations = []
+    for tool in tools:
+        func = tool.get("function", {})
+        declarations.append(
+            types.FunctionDeclaration(
+                name=func.get("name", ""),
+                description=func.get("description", ""),
+                parameters=func.get("parameters", {"type": "object", "properties": {}}),
+            )
+        )
+    return [types.Tool(function_declarations=declarations)]
+
+
+def _openai_to_gemini_contents(
+    messages: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, str]]:
+    """Convert OpenAI-style messages to Gemini Content parts.
+
+    Returns (contents, tool_id_to_name) where the map lets later tool
+    responses resolve their function name from the preceding assistant call.
+    """
+    from google.genai import types
+
+    contents: list[Any] = []
+    tool_id_to_name: dict[str, str] = {}
+    for msg in messages:
+        role = msg.get("role")
+        if role == "user":
+            contents.append(types.Content(role="user", parts=[types.Part(text=msg.get("content") or "")]))
+        elif role == "assistant":
+            parts: list[Any] = []
+            if msg.get("content"):
+                parts.append(types.Part(text=msg["content"]))
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                name = fn.get("name") or ""
+                call_id = tc.get("id") or f"call_{len(tool_id_to_name)}"
+                tool_id_to_name[call_id] = name
+                arguments = fn.get("arguments") or "{}"
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                parts.append(
+                    types.Part(
+                        function_call=types.FunctionCall(id=call_id, name=name, args=arguments)
+                    )
+                )
+            contents.append(types.Content(role="model", parts=parts))
+        elif role == "tool":
+            name = tool_id_to_name.get(msg.get("tool_call_id") or "", "unknown")
+            raw = msg.get("content") or ""
+            try:
+                response = json.loads(raw) if isinstance(raw, str) else raw
+            except json.JSONDecodeError:
+                response = {"output": raw}
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(name=name, response=response)
+                        )
+                    ],
+                )
+            )
+    return contents, tool_id_to_name
+
+
+async def _call_gemini(
+    system_prompt: str,
+    user_prompt: str,
+    response_format: str,
+    max_tokens: int,
+    model_override: str | None = None,
+) -> str:
+    """Call the Gemini native API (google-genai SDK)."""
+    model = _resolve_gemini_model(model_override)
+    client = _get_gemini_client(settings.gemini_api_key or settings.openai_api_key or "dummy-key")
+    config = _gemini_config(
+        system_prompt,
+        None,
+        max_tokens,
+        response_mime_type="application/json" if response_format == "json" else None,
+    )
+    response = await client.aio.models.generate_content(
+        model=model, contents=user_prompt, config=config
+    )
+    return (response.text if response is not None else None) or ""
+
+
+async def _stream_gemini(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    model_override: str | None = None,
+):
+    """Stream text from the Gemini native API."""
+    model = _resolve_gemini_model(model_override)
+    client = _get_gemini_client(settings.gemini_api_key or settings.openai_api_key or "dummy-key")
+    config = _gemini_config(system_prompt, None, max_tokens)
+    async for chunk in client.aio.models.generate_content_stream(
+        model=model, contents=user_prompt, config=config
+    ):
+        if chunk and chunk.text:
+            yield chunk.text
+
+
+async def _stream_gemini_with_tools(
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    max_tokens: int,
+    live_context: str | None = None,
+    model_override: str | None = None,
+):
+    """Stream from the Gemini native API with function calling.
+
+    Yields the same event shapes as the OpenAI/Anthropic tool paths:
+    text_delta, tool_call, usage, done. Function call arguments may arrive
+    split across chunks, so they are accumulated before emitting.
+    """
+    model = _resolve_gemini_model(model_override)
+    client = _get_gemini_client(settings.gemini_api_key or settings.openai_api_key or "dummy-key")
+    contents, _ = _openai_to_gemini_contents(messages)
+    config = _gemini_config(system_prompt, live_context, max_tokens, tools=_gemini_tools(tools))
+
+    tool_calls_acc: dict[str, dict[str, Any]] = {}
+    tool_call_order: list[str] = []
+    usage_payload: dict[str, int] | None = None
+
+    async def _consume_chunk(chunk: Any) -> None:
+        nonlocal usage_payload
+        if chunk is None:
+            return
+        metadata = getattr(chunk, "usage_metadata", None)
+        if metadata is not None:
+            usage_payload = {
+                "input_tokens": int(getattr(metadata, "prompt_token_count", 0) or 0),
+                "output_tokens": int(getattr(metadata, "candidates_token_count", 0) or 0),
+            }
+        function_calls = getattr(chunk, "function_calls", None) or []
+        if not function_calls:
+            if chunk.text:
+                yield {"type": "text_delta", "content": chunk.text}
+            return
+        for call in function_calls:
+            call_id = call.id or f"call_{len(tool_call_order)}"
+            if call_id not in tool_calls_acc:
+                tool_calls_acc[call_id] = {"id": call_id, "name": "", "args": {}}
+                tool_call_order.append(call_id)
+            acc = tool_calls_acc[call_id]
+            if call.name:
+                acc["name"] = call.name
+            if call.args:
+                acc["args"].update(call.args)
+
+    def _emit_tool_calls():
+        for call_id in tool_call_order:
+            tc = tool_calls_acc[call_id]
+            yield {"type": "tool_call", "id": tc["id"], "name": tc["name"], "arguments": tc["args"]}
+
+    for attempt in range(2):
+        try:
+            async for chunk in client.aio.models.generate_content_stream(
+                model=model, contents=contents, config=config
+            ):
+                async for event in _consume_chunk(chunk):
+                    yield event
+            break
+        except Exception as exc:
+            if attempt == 0 and not tool_call_order and not tool_calls_acc:
+                logger.warning("Gemini stream failed, retrying once: %s", exc)
+                continue
+            raise
+
+    for event in _emit_tool_calls():
+        yield event
+    if usage_payload:
+        yield {"type": "usage", "usage": usage_payload}
+    yield {"type": "done"}
 
 
 async def _call_openai(
@@ -292,30 +564,9 @@ async def _stream_openai(
 
 def _resolve_openai_provider(provider: str, model_override: str | None = None) -> tuple[str, str | None, str]:
     """Return (api_key, base_url, model_name) for an OpenAI-compatible provider."""
-    if provider == "qwen":
-        api_key = settings.dashscope_api_key or settings.qwen_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.qwen_base_url or settings.openai_base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model.lower() else "qwen-plus"
-    elif provider == "gemini":
-        api_key = settings.gemini_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "gemini-2.0-flash"
-    elif provider == "openrouter":
-        api_key = settings.openrouter_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://openrouter.ai/api/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "anthropic/claude-3.5-sonnet"
-    elif provider == "groq":
-        api_key = settings.groq_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.groq.com/openai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "llama-3.3-70b-versatile"
-    elif provider in {"grok", "xai"}:
-        api_key = settings.grok_api_key or settings.xai_api_key or settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url or "https://api.x.ai/v1"
-        model_name = settings.llm_model if settings.llm_model and "claude" not in settings.llm_model else "grok-2-latest"
-    else:
-        api_key = settings.openai_api_key or "dummy-key"
-        base_url = settings.openai_base_url
-        model_name = settings.llm_model
+    api_key = api_key_for(provider) or "dummy-key"
+    base_url = base_url_for(provider)
+    model_name = default_model_for(provider, settings.llm_model)
     if model_override:
         model_name = model_override
     return api_key, base_url or None, model_name
@@ -434,11 +685,6 @@ async def _stream_openai_with_tools(
         kwargs["reasoning_effort"] = "none"
     _set_token_limit(kwargs, provider, model_name, max_tokens)
 
-    stream = await client.chat.completions.create(**kwargs)
-
-    # Accumulate tool calls across streamed chunks
-    tool_calls_acc: dict[int, dict[str, Any]] = {}
-
     async def _run_stream():
         stream = await client.chat.completions.create(**kwargs)
 
@@ -473,9 +719,9 @@ async def _stream_openai_with_tools(
                         if tc_delta.function.arguments:
                             tool_calls_acc[idx]["arguments_json"] += tc_delta.function.arguments
 
-            # Check for stop
-            if chunk.choices[0].finish_reason:
-                break
+            # Do not stop on finish_reason: OpenAI sends the include_usage
+            # chunk after the final choice chunk, with an empty choices list.
+            # The async stream itself is the authoritative end boundary.
 
         # Emit accumulated tool calls
         import json as _json
@@ -665,15 +911,55 @@ def _should_retry_with_alternate_token_param(exc: Exception, kwargs: dict[str, A
     return False
 
 
-def load_system_prompt() -> str:
-    """Load and assemble the full system prompt with registry and writing guide."""
+def load_system_prompt(
+    prompt_references: tuple[str, ...] | list[str] | None = None,
+    *,
+    include_registry: bool = True,
+) -> str:
+    """Load the base prompt plus only the scientific references in scope.
+
+    The report generator passes references declared by its active ReportPack.
+    Other callers receive the generic writing guide, never a hard-coded
+    domain architecture.
+    """
     global _cached_system_prompt, _cached_prompt_mtimes
 
     prompt_path = Path(settings.prompts_dir) / "system.md"
     registry_path = Path(settings.registry_path)
-    guide_path = Path(settings.prompts_dir) / "REPORT_WRITING_GUIDE.md"
+    skills_root = Path(
+        settings.skills_dir
+        or str(Path(settings.prompts_dir).resolve().parent / "skills")
+    ).resolve()
+    guide_path = (
+        skills_root
+        / "quarto-research-report"
+        / "references"
+        / "writing-style.md"
+    )
+    reference_paths: list[tuple[str, Path]] = []
+    seen_paths: set[Path] = set()
+    for reference in prompt_references or ():
+        relative = Path(str(reference))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Unsafe scientific prompt reference: {reference!r}")
+        candidate = (skills_root / relative).resolve()
+        try:
+            candidate.relative_to(skills_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Scientific prompt reference escaped the skills root: {reference!r}"
+            ) from exc
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                f"Scientific prompt reference not found: {reference!r}"
+            )
+        if candidate not in seen_paths:
+            reference_paths.append((relative.as_posix(), candidate))
+            seen_paths.add(candidate)
 
-    tracked_paths = [prompt_path, registry_path, guide_path]
+    tracked_paths = [prompt_path, guide_path, *(path for _, path in reference_paths)]
+    if include_registry:
+        tracked_paths.append(registry_path)
     current_mtimes: dict[str, tuple[int, int, str]] = {}
     for path in tracked_paths:
         if path.exists():
@@ -691,16 +977,21 @@ def load_system_prompt() -> str:
     try:
         parts.append(_load_prompt("system"))
     except FileNotFoundError:
-        parts.append("You are a scientific microbiome analysis assistant.")
+        parts.append("You are a scientific omics analysis assistant.")
 
-    if registry_path.exists():
+    if include_registry and registry_path.exists():
         parts.append("\n\n## Decision-Point Registry\n\n```yaml\n" + registry_path.read_text() + "\n```")
 
     if guide_path.exists():
         parts.append("\n\n## Report Writing Guide\n\n" + guide_path.read_text())
 
+    for reference, path in reference_paths:
+        parts.append(
+            f"\n\n## ReportPack Scientific Reference: {reference}\n\n"
+            + path.read_text()
+        )
+
     assembled = "\n".join(parts)
     _cached_system_prompt = assembled
     _cached_prompt_mtimes = current_mtimes
     return assembled
-

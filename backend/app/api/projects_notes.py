@@ -33,7 +33,7 @@ from app.models.notes import (
     NoteThread,
     Report,
 )
-from app.models.project import Project
+from app.models.project import Project, UploadedFile
 from app.schemas.schemas import (
     NoteCellCreate,
     NoteCellOut,
@@ -599,10 +599,46 @@ def export_note_thread_report(
             detail="The Quarto source path already exists; choose another slug or pass overwrite=true",
         )
 
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = source_path.with_name(source_path.name + ".tmp")
-    temporary_path.write_text(content, encoding="utf-8")
-    temporary_path.replace(source_path)
+    from app.services.edit_engine import (
+        EditBusy,
+        EditConflict,
+        EditEngineError,
+        EditOperation,
+        EditPolicy,
+        apply_transaction,
+        sha256_bytes,
+    )
+
+    existing_bytes = source_path.read_bytes() if source_path.is_file() else None
+    operation = EditOperation(
+        path=relative_source.as_posix(),
+        kind="rewrite" if existing_bytes is not None else "create",
+        content=content,
+        base_sha256=sha256_bytes(existing_bytes),
+        reason="Export NoteThread as draft Quarto source",
+    )
+    try:
+        edit_result = apply_transaction(
+            base,
+            [operation],
+            origin="note_report_export",
+            summary=f"Export NoteThread report {relative_source.as_posix()}",
+            policy=EditPolicy(
+                allowed_extensions=frozenset({".qmd"}),
+                allow_create=True,
+                allow_delete=False,
+                require_base_for_rewrite=True,
+            ),
+            validate=True,
+            lock_timeout=0,
+        )
+    except EditBusy as exc:
+        raise HTTPException(status_code=423, detail=exc.to_dict()) from exc
+    except EditConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+    except EditEngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+
     if existing is None:
         existing = Report(
             project_id=project_id,
@@ -625,14 +661,20 @@ def export_note_thread_report(
     db.commit()
     db.refresh(existing)
     from app.services.agent_runtime import record_agent_action
+    from app.services.project_edit_index import record_project_edit
 
+    record_project_edit(db, project, edit_result)
     record_agent_action(
         db,
         project,
         "report",
         "completed",
         "Exported NoteThread as draft Quarto source",
-        {"note_thread_id": str(thread.id), "report_id": str(existing.id)},
+        {
+            "note_thread_id": str(thread.id),
+            "report_id": str(existing.id),
+            "transaction_id": edit_result.transaction_id,
+        },
         files=[relative_source.as_posix()],
     )
     return report_payload(existing)
@@ -657,10 +699,16 @@ def _promote_cell_to_workspace(
     *,
     turn_id: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a tested cell into the project's code directory (guarded write)."""
-    from pathlib import Path
-
-    from app.services.apply_edits import is_path_locked, safe_resolve_path
+    """Promote only an immutable, successfully executed notebook revision."""
+    from app.services.edit_engine import (
+        EditConflict,
+        EditEngineError,
+        EditOperation,
+        EditPolicy,
+        apply_transaction,
+        is_path_locked,
+        sha256_bytes,
+    )
 
     if not thread.project_id:
         return {
@@ -677,36 +725,139 @@ def _promote_cell_to_workspace(
             "turn_id": turn_id,
         }
 
-    relative_path = str(arguments.get("path") or "").strip()
-    content = str(arguments.get("content") or "")
-    if not relative_path or not content.strip():
-        return {"status": "error", "error": "promote_to_workspace needs a path and cell content.", "turn_id": turn_id}
-    if not relative_path.lower().endswith((".r", ".qmd", ".md")):
-        return {"status": "error", "error": "Only .R, .qmd, and .md files can be promoted.", "turn_id": turn_id}
-    if len(content) > 200_000:
-        return {"status": "error", "error": "The promoted content exceeds the 200 KB limit.", "turn_id": turn_id}
-
-    project_relative = f"code/{relative_path}"
-    if is_path_locked(base, project_relative):
+    cell_id = str(arguments.get("cell_id") or "").strip()
+    revision_id = str(arguments.get("revision_id") or "").strip()
+    execution_id = str(arguments.get("execution_id") or "").strip()
+    relative_path = str(arguments.get("path") or "").strip().replace("\\", "/")
+    if relative_path.startswith("code/"):
+        relative_path = relative_path[5:]
+    if not relative_path:
         return {
             "status": "error",
-            "error": f"{project_relative} is locked. Unlock it in the workspace before promoting.",
+            "error": "Promotion requires cell_id, revision_id, execution_id, and a code-relative path.",
             "turn_id": turn_id,
         }
-    code_dir = base / "code"
-    target = safe_resolve_path(code_dir, relative_path)
-    if target is None:
+    path_parts = Path(relative_path).parts
+    if Path(relative_path).is_absolute() or ".." in path_parts:
         return {"status": "error", "error": "The path escapes the project code directory.", "turn_id": turn_id}
+    if not relative_path.lower().endswith((".r", ".qmd", ".md")):
+        return {"status": "error", "error": "The promotion path must stay inside code/ and use .R, .qmd, or .md.", "turn_id": turn_id}
+    project_relative = f"code/{relative_path}"
+    target = (base / project_relative).resolve(strict=False)
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return {"status": "error", "error": "The path escapes the project code directory.", "turn_id": turn_id}
+    strategy = str(arguments.get("strategy") or "create_only").strip().lower()
+    supplied_base_sha256 = str(arguments.get("base_sha256") or "").strip().strip('"')
+    if strategy not in {"replace", "append", "create_only"}:
+        return {"status": "error", "error": "Promotion strategy must be replace, append, or create_only.", "turn_id": turn_id}
+    if is_path_locked(base, project_relative):
+        return {"status": "error", "error": "The promotion path is locked by workspace policy.", "turn_id": turn_id}
+    if not cell_id or not revision_id or not execution_id:
+        return {
+            "status": "error",
+            "error": "Promotion requires cell_id, revision_id, execution_id, and a code-relative path.",
+            "turn_id": turn_id,
+        }
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    cell = db.query(NoteCell).filter(NoteCell.id == cell_id, NoteCell.thread_id == thread.id).first()
+    revision = db.query(NoteCellRevision).filter(NoteCellRevision.id == revision_id, NoteCellRevision.cell_id == cell_id).first()
+    execution = db.query(CellExecution).filter(CellExecution.id == execution_id, CellExecution.revision_id == revision_id).first()
+    if cell is None or revision is None or execution is None:
+        return {"status": "error", "error": "The supplied notebook provenance does not belong to this thread.", "turn_id": turn_id}
+    if str(revision.cell_type or "") != "code" or str(revision.language or "r").lower() not in {"r", "rscript"}:
+        return {"status": "error", "error": "Only successfully executed R code cells can be promoted.", "turn_id": turn_id}
+    if execution.status != "completed":
+        return {"status": "error", "error": f"The referenced execution is not successful (status: {execution.status}).", "turn_id": turn_id}
+    expected_input = input_fingerprint(revision.content, revision.language, execution.parameters)
+    if not execution.input_fingerprint or execution.input_fingerprint != expected_input:
+        return {"status": "error", "error": "Execution provenance does not match the immutable cell revision.", "turn_id": turn_id}
+
+    content = str(revision.content or "")
+    if not content.strip():
+        return {"status": "error", "error": "The tested cell is empty and cannot be promoted.", "turn_id": turn_id}
+    if len(content.encode("utf-8")) > 200_000:
+        return {"status": "error", "error": "The promoted content exceeds the 200 KB limit.", "turn_id": turn_id}
+    existing = target.read_bytes() if target.exists() else None
+    actual_base_sha256 = sha256_bytes(existing)
+    if existing is not None and strategy == "create_only":
+        return {"status": "error", "error": f"{project_relative} already exists; choose append or replace with an explicit base_sha256.", "turn_id": turn_id}
+    if existing is not None and not supplied_base_sha256:
+        return {
+            "status": "error",
+            "error": "Updating an existing promoted file requires base_sha256 from the current workspace.",
+            "code": "edit_precondition_required",
+            "actual_sha256": actual_base_sha256,
+            "turn_id": turn_id,
+        }
+    if existing is not None and supplied_base_sha256 != actual_base_sha256:
+        return {
+            "status": "error",
+            "error": "The promoted target changed since it was inspected; reload it before promotion.",
+            "code": "edit_conflict",
+            "expected_sha256": supplied_base_sha256,
+            "actual_sha256": actual_base_sha256,
+            "turn_id": turn_id,
+        }
+    if existing is None:
+        operation = EditOperation(path=project_relative, kind="create", content=content, reason=f"Promote note execution {execution_id}")
+    elif strategy == "append":
+        operation = EditOperation(path=project_relative, kind="replace", search="", replace=content, base_sha256=supplied_base_sha256, reason=f"Promote note execution {execution_id}")
+    else:
+        operation = EditOperation(path=project_relative, kind="rewrite", content=content, base_sha256=supplied_base_sha256, reason=f"Promote note execution {execution_id}")
+
+    try:
+        result = apply_transaction(
+            base,
+            [operation],
+            origin="note_promotion",
+            summary=f"Promote tested note cell to {project_relative}",
+            validate=True,
+            policy=EditPolicy(
+                allowed_extensions=frozenset({".r", ".qmd", ".md"}),
+                allow_create=True,
+                allow_delete=False,
+                require_base_for_rewrite=True,
+            ),
+            lock_timeout=0,
+        )
+    except EditConflict as exc:
+        return {"status": "error", "error": str(exc), "code": exc.code, "details": exc.details, "turn_id": turn_id}
+    except EditEngineError as exc:
+        return {"status": "error", "error": str(exc), "code": exc.code, "details": exc.details, "turn_id": turn_id}
+
+    from app.services.agent_runtime import record_agent_action, refresh_project_memory
+    from app.services.project_edit_index import record_project_edit
+    record_project_edit(db, project, result)
+    refresh_project_memory(db, project)
+    record_agent_action(
+        db,
+        project,
+        "file_edit",
+        "completed",
+        f"Promoted tested note cell to {project_relative}",
+        {
+            "transaction_id": result.transaction_id,
+            "note_thread_id": str(thread.id),
+            "cell_id": cell_id,
+            "revision_id": revision_id,
+            "execution_id": execution_id,
+            "strategy": strategy,
+        },
+        files=[project_relative],
+    )
     return {
         "status": "ok",
         "path": project_relative,
         "promoted": True,
         "turn_id": turn_id,
+        "transaction_id": result.transaction_id,
+        "cell_id": cell_id,
+        "revision_id": revision_id,
+        "execution_id": execution_id,
+        "content_sha256": sha256_bytes(content.encode("utf-8")),
     }
-
 
 def _note_agent_context(db: Session, thread: NoteThread) -> dict[str, Any]:
     cells: list[dict[str, Any]] = []
@@ -1209,8 +1360,9 @@ async def note_thread_turn(
                     usage = output_event.get("usage")
                     if isinstance(usage, dict):
                         for key, value in usage.items():
+                            usage_key = str(key)
                             try:
-                                provider_usage[str(key)] = int(value)
+                                provider_usage[usage_key] = provider_usage.get(usage_key, 0) + int(value)
                             except (TypeError, ValueError):
                                 continue
                     continue
@@ -1749,6 +1901,35 @@ def attach_standalone_note_thread(
     return _thread_payload(thread)
 
 
+def _note_thread_question(thread: NoteThread) -> str | None:
+    for cell in sorted(thread.cells, key=lambda item: (int(item.position or 0), item.created_at)):
+        revision = cell.revisions[-1] if cell.revisions else None
+        if revision is None:
+            continue
+        if str(revision.cell_type or "") in {"agent", "markdown"} and str(revision.content or "").strip():
+            return str(revision.content).strip()[:20_000]
+    return None
+
+
+def _note_thread_planning_notes(thread: NoteThread) -> str:
+    parts = [f"Imported from NoteThread {thread.id}; immutable notebook cells and execution provenance remain attached."]
+    for cell in sorted(thread.cells, key=lambda item: (int(item.position or 0), item.created_at))[-24:]:
+        revision = cell.revisions[-1] if cell.revisions else None
+        if revision is None:
+            continue
+        content = str(revision.content or "").strip()
+        if not content:
+            continue
+        if str(revision.cell_type or "") in {"agent", "markdown", "provenance"}:
+            parts.append(content[:2000])
+        for execution in sorted(revision.executions or [], key=lambda item: item.created_at, reverse=True)[:1]:
+            if execution.status == "completed":
+                preview = str((execution.result_metadata or {}).get("stdout_preview") or "").strip()
+                if preview:
+                    parts.append(f"Observed successful execution for cell {cell.id}: {preview[:1200]}")
+    return "\n\n".join(parts)[:20_000]
+
+
 @standalone_router.post("/{thread_id}/workspace")
 def create_workspace_from_note_thread(
     thread_id: str,
@@ -1757,13 +1938,19 @@ def create_workspace_from_note_thread(
     tenant_id: str = Depends(get_current_tenant),
     user_id: str = Depends(get_current_user_id),
 ):
+    """Create a workspace while carrying note files and findings forward."""
     thread = _get_standalone_thread(db, thread_id, tenant_id)
+    from app.services.file_inspector import inspect_file
     from app.services.study_manifest import build_study_manifest
 
+    question = (data.question or _note_thread_question(thread) or "").strip() or None
+    imported_notes = _note_thread_planning_notes(thread)
+    notes = "\n\n".join(part for part in [data.notes, imported_notes] if part and part.strip())[:20_000] or None
     project = Project(
         name=(data.name or thread.title).strip() or "New analysis workspace",
-        question=data.question,
-        notes=data.notes,
+        name_source="user",
+        question=question,
+        notes=notes,
         auto_build=data.auto_build,
         owner_id=user_id,
         tenant_id=tenant_id,
@@ -1772,23 +1959,74 @@ def create_workspace_from_note_thread(
     )
     db.add(project)
     db.flush()
+    project_dir = Path(settings.projects_dir).resolve() / str(project.id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    project.project_dir = str(project_dir)
+
+    standalone_root = Path(thread.storage_path).resolve() if thread.storage_path else None
+    if standalone_root and standalone_root.exists():
+        source_meta = standalone_root / ".omicsbase"
+        if source_meta.is_dir():
+            shutil.copytree(source_meta, project_dir / ".omicsbase", dirs_exist_ok=True)
+        source_uploads = standalone_root / "uploads"
+        destination_note_uploads = project_dir / ".omicsbase" / "note-uploads" / str(thread.id)
+        destination_note_uploads.mkdir(parents=True, exist_ok=True)
+        data_dir = project_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        imported_records = []
+        if source_uploads.is_dir():
+            for source in sorted(source_uploads.iterdir()):
+                if not source.is_file():
+                    continue
+                note_destination = destination_note_uploads / source.name
+                data_destination = data_dir / source.name
+                shutil.copy2(source, note_destination)
+                shutil.copy2(source, data_destination)
+                summary = inspect_file(str(data_destination))
+                imported_records.append(
+                    UploadedFile(
+                        project_id=str(project.id),
+                        file_role="other",
+                        original_name=source.name,
+                        detected_format=summary.get("format"),
+                        file_summary=summary,
+                        file_path=str(data_destination),
+                    )
+                )
+        if imported_records:
+            db.add_all(imported_records)
+            db.flush()
+            project.study_manifest = build_study_manifest(imported_records)
+
     thread.project_id = str(project.id)
+    thread.storage_path = str(project_dir)
     thread.updated_at = _now()
     db.commit()
     db.refresh(project)
     db.refresh(thread)
 
     from app.services.agent_runtime import record_agent_action, refresh_project_memory
-    refresh_project_memory(db, project)
+    refresh_project_memory(db, project, files=list(project.files))
     record_agent_action(
         db,
         project,
         "workspace",
         "completed",
-        "Workspace created from NoteThread",
-        {"note_thread_id": str(thread.id)},
+        "Workspace created from NoteThread with files and findings carried forward",
+        {
+            "note_thread_id": str(thread.id),
+            "imported_file_count": len(project.files),
+            "cell_count": len(thread.cells),
+            "question_carried_forward": bool(question),
+        },
     )
     return {
         "project_id": str(project.id),
         "note_thread": _thread_payload(thread),
+        "carried_forward": {
+            "files": len(project.files),
+            "cells": len(thread.cells),
+            "question": question,
+            "notes": bool(notes),
+        },
     }

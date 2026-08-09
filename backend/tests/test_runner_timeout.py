@@ -88,7 +88,13 @@ async def test_parallel_leaf_rendering(tmp_path, monkeypatch):
 
     rendered_pages = []
 
-    async def fake_run_command(cmd, cwd, progress_callback=None, timeout=1800):
+    async def fake_run_command(
+        cmd,
+        cwd,
+        progress_callback=None,
+        timeout=1800,
+        sandbox_root=None,
+    ):
         page = cmd[2]
         rendered_pages.append(page)
         # Create output html file to simulate successful rendering

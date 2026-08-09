@@ -1,0 +1,93 @@
+project:
+  type: website
+  output-dir: "../output"
+  resources:
+    - "lib/"
+  render:
+    - "*.qmd"
+    - "beta/*.qmd"
+    - "ratio/*.qmd"
+    - "daa/*.qmd"
+    - "!alpha/alpha.qmd"
+    - "!daa/daa_mtc.qmd"
+    - "!daa/daa_level.qmd"
+    - "!corr.qmd"
+website:
+  title: "Microbiota Diversity Analysis"
+  navbar:
+    left:
+      - text: "Alpha Diversity"
+        menu:
+          - text: "Shannon"
+            href: alpha/alpha_shannon.html
+          - text: "Observed"
+            href: alpha/alpha_observed.html
+      - text: "Beta Diversity"
+        href: beta/beta.html
+      - text: "B/F Ratio"
+        href: ratio/ratio.html
+      - text: "Taxonomic DAA"
+        menu:
+          - text: "Maaslin"
+            href: daa/daa_taxa_maaslin3.html
+          - text: "Selected Taxa"
+            href: daa/daa_interest.html
+          - text: "Wilcoxon Genus"
+            href: daa/wilcoxon_genus_prevalent.html
+          - text: "Wilcoxon Species"
+            href: daa/wilcoxon_species_prevalent.html
+          
+      - text: "Functional DAA"
+        menu:
+          - text: "Maaslin Pathways"
+            href: daa/daa_pa.html
+          - text: "Wilcoxon Pathways"
+            href: daa/daa_pa_wilcox.html
+      - text: "Correlations"
+        menu:
+          - text: "Phylum"
+            href: corr/corr_phylum_prevalent.html
+          - text: "Family"
+            href: corr/corr_family_prevalent.html
+          - text: "Genus"
+            href: corr/corr_genus_prevalent.html
+          - text: "Species"
+            href: corr/corr_species_prevalent.html
+  sidebar:
+    style: "docked"
+    search: true
+
+format:
+  html:
+    theme: cosmo
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show Code"
+    page-layout: full
+    number-depth: 3
+    crossref:
+      fig-title: "Figure "
+      tbl-title: "Table "
+  # pdf:
+  #   documentclass: article
+  #   keep-tex: true
+  #   number-sections: true
+  #   include-in-header:
+  #     text: |
+  #       \usepackage{booktabs}
+  #       \usepackage{longtable}
+  #       \usepackage[a4paper, left=0.75in, right=1in, top=1in, bottom=1in]{geometry}
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  include: true
+  freeze: true
+  dependencies:
+    - quarto
+    - fs
+
+editor: visual

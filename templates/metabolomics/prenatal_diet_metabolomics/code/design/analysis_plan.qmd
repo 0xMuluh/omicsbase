@@ -1,0 +1,81 @@
+---
+title: "Analysis plan"
+---
+
+## Objective
+
+Estimate associations between maternal prenatal diet exposures and child metabolite outcomes across visit 4 (6 months), visit 5 (12 months), visit 6 (24 months), and visit 7 (5-6 years).
+
+## Scope
+
+- Primary exposure family: maternal prenatal diet metrics.
+- Primary outcomes: metabolite-level outcomes.
+- Secondary outcomes: pathway or cluster scores.
+
+## Data processing steps
+
+1. Build visit-specific analysis panels (visit 4, 5, 6, 7) using metabolite availability and linked child IDs.
+2. Confirm exposure coding and units.
+3. Log-transform skewed metabolite variables as needed.
+4. Standardize outcomes within visit/timepoint for comparability.
+5. Produce missingness table for all candidate covariates.
+6. Run covariate balance tests across intervention groups within each visit panel (Kruskal-Wallis for continuous, Fisher exact for discrete covariates including ordinal and nominal categorical) and apply BH correction.
+
+## Covariate strategy
+
+Primary covariate block:
+
+- `Intervention`, `CGender`, `MEthnicity`, `MDise`
+
+Sensitivity covariate block:
+
+- `MprepBMI`, `MAge1`, `MprevGDM_new`, `Bfdurationm`, `MPRSmoke`, `MUniEdu`, `CWeightBirth`
+
+Rule: keep primary estimates based on primary block; report sensitivity shifts separately.
+Age-specific, mutual-timing, and longitudinal models additionally adjust for visit-specific fasting time when available as a measurement-condition covariate.
+
+Covariates are pre-specified. Test results are reported and are not used as the sole inclusion rule.
+
+## Model plan
+
+1. Age-specific model:
+   - `lm(Y_age ~ E + primary_covariates + fasting_age)`
+2. Mutual timing model:
+   - `lm(Y_age ~ E_early + E_late + primary_covariates + fasting_age)`
+3. Longitudinal mixed model:
+   - `lmer(Y_it ~ E + age_t + E:age_t + primary_covariates + fasting_it + (1|child))`
+4. Sensitivity model:
+   - add sensitivity block to models 1-3 and compare coefficients.
+
+## Multiplicity
+
+- Apply Benjamini-Hochberg correction across metabolites, with the adjustment scope defined by model family.
+- Age-specific outputs apply BH within each visit-specific exposure model.
+- Mutual timing outputs apply BH separately to the early-term and late-term coefficients within each visit-specific exposure pair.
+- Longitudinal outputs apply BH separately within each exposure and coefficient family.
+- Report raw `p`, adjusted `q`, effect size, and confidence interval.
+
+## Deliverables
+
+- Main-effect table by age.
+- Mutual timing table (early and late windows together).
+- Longitudinal interaction table (`E:age`).
+- Sensitivity comparison table.
+- Plots: volcano/effect plot and trajectory plot.
+
+## Tools
+
+- Data: `haven`, `readxl`, `dplyr`, `tidyr`
+- Models: `stats`, `lmerTest`, `broom`, `broom.mixed`
+- Figures: `ggplot2`, `patchwork`
+- DAG and adjustment checks: `dagitty`
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: analysis-plan-01
+#| echo: false
+sessionInfo()
+```
+:::

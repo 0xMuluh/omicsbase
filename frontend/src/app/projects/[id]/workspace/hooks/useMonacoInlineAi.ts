@@ -115,30 +115,24 @@ export function useMonacoInlineAi({
           try {
             const data = JSON.parse(line);
             if (data.type === "token" && data.token) {
+              // Accumulate off-model; applying each token to a fixed Monaco
+              // range corrupts offsets and can leave a partial saveable edit.
               streamedTokens += data.token;
-              if (selectedText) {
-                editor.executeEdits("inline-ai", [
-                  {
-                    range: selection,
-                    text: streamedTokens,
-                    forceMoveMarkers: true,
-                  },
-                ]);
-              } else {
-                editor.executeEdits("inline-ai", [
-                  {
-                    range: model.getFullModelRange(),
-                    text: streamedTokens,
-                    forceMoveMarkers: true,
-                  },
-                ]);
-              }
             }
           } catch {
             // Ignore parse errors
           }
         }
       }
+
+      if (!streamedTokens) {
+        throw new Error("Inline edit provider returned an empty preview");
+      }
+      editor.executeEdits("inline-ai-preview", [{
+        range: selectedText ? selection : model.getFullModelRange(),
+        text: streamedTokens,
+        forceMoveMarkers: true,
+      }]);
 
       const originalLines = (selectedText || fullContent).split("\n").length;
       const streamedLines = streamedTokens.split("\n").length;

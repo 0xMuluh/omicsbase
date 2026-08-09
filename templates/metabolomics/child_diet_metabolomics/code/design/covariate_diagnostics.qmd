@@ -1,0 +1,1550 @@
+---
+title: "Covariate and model specification"
+---
+
+## Setup
+
+```{r}
+#| label: covariate-diagnostics-01
+library(haven)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+has_dagitty <- requireNamespace("dagitty", quietly = TRUE)
+has_DT <- requireNamespace("DT", quietly = TRUE)
+has_patchwork <- requireNamespace("patchwork", quietly = TRUE)
+
+show_table <- function(tbl, page_len = 10, caption = NULL, title = NULL, colnames = NULL) {
+  if (!has_DT) return(tbl)
+  
+    options_list <- list(
+      pageLength = page_len,
+      scrollX = FALSE,
+      autoWidth = FALSE,
+      dom = "Blfrtip",
+      buttons = c("copy", "csv", "excel")
+    )
+
+    tbl_dt <- DT::datatable(
+      tbl,
+      caption = caption,
+      rownames = FALSE,
+      filter = "top",
+      escape = FALSE,
+      colnames = if (is.null(colnames)) names(tbl) else colnames,
+      extensions = "Buttons",
+      options = options_list
+    )
+
+  # Conditional formatting based on column name presence
+  # 1. Suggested status (green/yellow/gray)
+  if ("Suggested status" %in% names(tbl)) {
+    tbl_dt <- tbl_dt %>% DT::formatStyle(
+      "Suggested status",
+      target = "row",
+      backgroundColor = DT::styleEqual(
+        c("keep_core", "keep_sensitivity", "consider_drop"),
+        c("#e2f0d9", "#fff2cc", "#f2f2f2")
+      )
+    )
+  }
+
+  # 2. Collinearity flagged/flag (soft red background for whole row)
+  if ("Collinearity flag" %in% names(tbl)) {
+    tbl_dt <- tbl_dt %>% DT::formatStyle(
+      "Collinearity flag",
+      target = "row",
+      backgroundColor = DT::styleEqual("yes", "#fce4e4")
+    )
+  }
+  if ("flagged" %in% names(tbl)) {
+    tbl_dt <- tbl_dt %>% DT::formatStyle(
+      "flagged",
+      target = "row",
+      backgroundColor = DT::styleEqual(TRUE, "#fce4e4")
+    )
+  }
+
+  # 3. High missingness (Missing_pct): soft orange (>10%), soft red (>20%)
+  if ("Missing_pct" %in% names(tbl)) {
+    tbl_dt <- tbl_dt %>% DT::formatStyle(
+      "Missing_pct",
+      backgroundColor = DT::styleInterval(c(10, 20), c("transparent", "#ffe6cc", "#fce4e4"))
+    )
+  }
+
+  if (!is.null(title) && nzchar(title)) {
+    return(htmltools::tagList(htmltools::tags$h4(title), tbl_dt))
+  }
+
+  tbl_dt
+}
+
+clinical_path <- "../data/FOPP_clinical_diet_variables_mother-child_270426.sav"
+metabolite_path <- "../data/Fopp_childserum_all_visits_MASTER_090326.xlsx"
+
+clinical <- read_sav(clinical_path)
+```
+
+## Analysis question
+
+Association between child diet exposures and child metabolite outcomes at visit 6 and visit 7.
+
+## Covariate specification
+
+### Covariate selection framework
+
+Covariate selection is pre-specified and DAG-informed:
+
+1. The primary adjustment set is fixed in advance for each visit.
+2. Balance tests and missingness summaries are reported.
+3. Collinearity diagnostics are reported to flag potentially unstable expanded adjustment sets.
+4. Secondary models add sensitivity covariates.
+
+```{mermaid}
+graph LR
+    A[Covariate Candidate] --> B{In Core DAG?}
+    B -- Yes --> C[Status: keep_core]
+    B -- No --> D{In Sensitivity Block?}
+    D -- Yes --> E{Screening Signal?<br>p < 0.20 OR Beta Change > 10%}
+    E -- Yes --> F[Status: keep_sensitivity]
+    E -- No --> G[Status: consider_drop]
+    D -- No --> G
+```
+
+### Group balance tests across intervention arms
+
+::: {.callout-note}
+#### Why this matters: Balance Diagnostics
+These tests check whether covariates are balanced across the intervention arms. Because this study evaluates a randomized trial context, minor imbalances can arise by chance. Note that standard guidelines discourage using p-values alone to drop covariates—pre-specified confounders are retained regardless of balance test significance.
+:::
+
+Covariate balance diagnostics across intervention groups:
+
+- `Kruskal-Wallis` for continuous covariates.
+- `Fisher exact` for discrete covariates (ordinal and nominal categorical).
+- `BH` adjusted p-values across all visits in the combined table.
+
+These are covariate-intervention association tests used as balance diagnostics. They are not outcome-association tests, and their p-values are not used alone to choose adjustment covariates. The intervention variable itself is the grouping variable and is therefore not included as a balance-test covariate.
+
+```{r}
+#| label: covariate-diagnostics-02
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+run_covariate_test <- function(df, group_var, covariate, test_method) {
+  out <- data.frame(
+    var = covariate,
+    test = test_method,
+    p_value = NA_real_,
+    p_adj_bh = NA_real_,
+    n_groups = NA_integer_,
+    note = NA_character_,
+    stringsAsFactors = FALSE
+  )
+
+  if (!covariate %in% names(df)) {
+    out$note <- "covariate_missing_in_data"
+    return(out)
+  }
+  if (!group_var %in% names(df)) {
+    out$note <- "group_var_missing_in_data"
+    return(out)
+  }
+  if (!test_method %in% c("anova", "kruskal_wallis", "fisher_or_chisq")) {
+    out$note <- "invalid_test_method"
+    return(out)
+  }
+
+  x <- df[[covariate]]
+  g <- df[[group_var]]
+  keep <- !is.na(x) & !is.na(g)
+  if (!any(keep)) {
+    out$note <- "no_complete_cases"
+    return(out)
+  }
+
+  x <- x[keep]
+  g <- as.factor(g[keep])
+  out$n_groups <- nlevels(g)
+
+  if (out$n_groups < 2L) {
+    out$note <- "fewer_than_two_groups"
+    return(out)
+  }
+  if (length(unique(x)) < 2L) {
+    out$note <- "constant_covariate"
+    return(out)
+  }
+
+  if (identical(test_method, "anova")) {
+    out$p_value <- tryCatch({
+      fit <- aov(as.numeric(x) ~ g)
+      summary(fit)[[1]][["Pr(>F)"]][1]
+    }, error = function(e) NA_real_)
+  } else if (identical(test_method, "kruskal_wallis")) {
+    out$test <- "kruskal_wallis"
+    y <- if (is.character(x) || is.factor(x)) as.numeric(factor(x)) else as.numeric(x)
+    out$p_value <- tryCatch(kruskal.test(y ~ g)$p.value, error = function(e) NA_real_)
+  } else {
+    x_cat <- as.factor(x)
+    if (nlevels(x_cat) < 2L) {
+      out$note <- "fewer_than_two_levels"
+      return(out)
+    }
+
+    tbl <- table(g, x_cat)
+    if (any(dim(tbl) < 2L)) {
+      out$note <- "invalid_contingency_table"
+      return(out)
+    }
+
+    out$p_value <- tryCatch({
+      out$test <- "fisher_exact"
+      fisher.test(tbl)$p.value
+    }, error = function(e) NA_real_)
+  }
+
+  out$note <- ifelse(is.na(out$p_value), "test_failed", "ok")
+  out
+}
+
+run_group_balance_panel <- function(df, group_var, covariates, panel_name) {
+  res <- bind_rows(lapply(seq_len(nrow(covariates)), function(i) {
+    run_covariate_test(
+      df = df,
+      group_var = group_var,
+      covariate = covariates$var[i],
+      test_method = covariates$test[i]
+    )
+  }))
+  res$panel <- panel_name
+  res %>% arrange(p_value, .by_group = FALSE)
+}
+
+idx_v6 <- which(!is.na(clinical$Filter6) & as.numeric(clinical$Filter6) == 1)
+idx_v7 <- which(!is.na(clinical$Filter7) & as.numeric(clinical$Filter7) == 1)
+
+balance_covars_child_diet <- data.frame(
+  var = c(
+  "MAge1", "MprepBMI", "MPrimipara", "MUniEdu",
+  "MPRSmoke", "MGDMOGTT1OR2Fi", "Premature", "MModeOfDelivery_cat",
+  "CGender", "CWeightBirth", "Bfdurationm", "CFastingHoursBloodSample6",
+  "CFastingHoursBloodSample7", "CMed6", "CMed7", "CAb6", "CAbQ7",
+  "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7"
+),
+test = c(
+  "kruskal_wallis",   # MAge1
+  "kruskal_wallis",   # MprepBMI
+  "fisher_or_chisq",  # MPrimipara
+  "fisher_or_chisq",  # MUniEdu
+  "fisher_or_chisq",  # MPRSmoke
+  "fisher_or_chisq",  # MGDMOGTT1OR2Fi
+  "fisher_or_chisq",  # Premature
+  "fisher_or_chisq",  # MModeOfDelivery_cat
+  "fisher_or_chisq",  # CGender
+  "kruskal_wallis",   # CWeightBirth
+  "kruskal_wallis",   # Bfdurationm
+  "kruskal_wallis",   # CFastingHoursBloodSample6
+  "kruskal_wallis",   # CFastingHoursBloodSample7
+  "fisher_or_chisq",  # CMed6
+  "fisher_or_chisq",  # CMed7
+  "fisher_or_chisq",  # CAb6
+  "fisher_or_chisq",  # CAbQ7
+  "fisher_or_chisq",  # CSGA
+  "fisher_or_chisq",  # CMacrosomy
+  "fisher_or_chisq",  # CHealthy6
+  "fisher_or_chisq"   # CHealthy7
+),
+  stringsAsFactors = FALSE
+)
+
+balance_v6 <- run_group_balance_panel(
+  df = clinical[idx_v6, , drop = FALSE],
+  group_var = "Intervention",
+  covariates = balance_covars_child_diet,
+  panel_name = "visit6"
+)
+
+balance_v7 <- run_group_balance_panel(
+  df = clinical[idx_v7, , drop = FALSE],
+  group_var = "Intervention",
+  covariates = balance_covars_child_diet,
+  panel_name = "visit7"
+)
+
+pretty_test <- function(x) dplyr::case_when(
+  x == "anova" ~ "ANOVA",
+  x == "kruskal_wallis" ~ "Kruskal-Wallis",
+  x == "fisher_exact" ~ "Fisher exact",
+  TRUE ~ x
+)
+format_p <- function(x) {
+  ifelse(
+    is.na(x),
+    "",
+    ifelse(x < 0.001, "<0.001", formatC(x, format = "f", digits = 3))
+  )
+}
+format_p2 <- function(x) ifelse(is.na(x), "", formatC(x, format = "f", digits = 2))
+
+balance_child_diet_all <- bind_rows(balance_v6, balance_v7)
+ok_all_child_diet <- balance_child_diet_all$note == "ok" & !is.na(balance_child_diet_all$p_value)
+if (any(ok_all_child_diet)) {
+  balance_child_diet_all$p_adj_bh[ok_all_child_diet] <- p.adjust(balance_child_diet_all$p_value[ok_all_child_diet], method = "BH")
+}
+balance_child_diet_all <- balance_child_diet_all %>% arrange(p_adj_bh, p_value)
+
+balance_child_diet_display <- balance_child_diet_all %>%
+  filter(note == "ok", !is.na(p_adj_bh)) %>%
+  transmute(
+    visit = gsub("visit", "visit ", panel),
+    var = var,
+    test = pretty_test(test),
+    p = format_p(p_value),
+    `adjusted p` = format_p2(p_adj_bh)
+  )
+
+show_table(
+  balance_child_diet_display,
+  page_len = 10,
+  title = "Covariate balance across visits",
+  caption = "Covariate balance across visits (BH adjusted across all visits)"
+)
+
+plot_balance_var <- function(df, group_var, var_name, test_name, panel_label) {
+  x <- df[[var_name]]
+  g <- as.factor(df[[group_var]])
+  keep <- !is.na(x) & !is.na(g)
+
+  if (!any(keep)) return(NULL)
+
+  dat <- data.frame(
+    group = as.factor(g[keep]),
+    value = x[keep],
+    stringsAsFactors = FALSE
+  )
+
+  if (test_name %in% c("anova", "kruskal_wallis")) {
+    dat$value <- suppressWarnings(as.numeric(dat$value))
+    ggplot(dat, aes(x = group, y = value)) +
+      geom_boxplot(outlier.alpha = 0.4, width = 0.6) +
+      geom_jitter(width = 0.12, alpha = 0.35, size = 1.2) +
+      labs(
+        title = paste0(panel_label, ": ", var_name, " (", pretty_test(test_name), ")"),
+        x = "Intervention",
+        y = var_name
+      ) +
+      theme_minimal(base_size = 11)
+  } else {
+    dat$value <- as.factor(dat$value)
+    ggplot(dat, aes(x = group, fill = value)) +
+      geom_bar(position = "fill") +
+      labs(
+        title = paste0(panel_label, ": ", var_name, " (", pretty_test(test_name), ")"),
+        x = "Intervention",
+        y = "Proportion",
+        fill = var_name
+      ) +
+      theme_minimal(base_size = 11)
+  }
+}
+
+top_balance_v6 <- balance_v6 %>%
+  filter(note == "ok", !is.na(p_value)) %>%
+  arrange(p_value) %>%
+  slice_head(n = 3)
+
+top_balance_v7 <- balance_v7 %>%
+  filter(note == "ok", !is.na(p_value)) %>%
+  arrange(p_value) %>%
+  slice_head(n = 3)
+
+prop_plot_data_child_diet <- list()
+
+build_prop_plot_data <- function(df, group_var, var_name, panel_title) {
+  x <- df[[var_name]]
+  g <- as.factor(df[[group_var]])
+  keep <- !is.na(x) & !is.na(g)
+  if (!any(keep)) return(NULL)
+
+  data.frame(
+    group = as.factor(g[keep]),
+    value = as.factor(x[keep]),
+    panel = panel_title,
+    stringsAsFactors = FALSE
+  )
+}
+
+for (i in seq_len(nrow(top_balance_v6))) {
+  test_name_i <- top_balance_v6$test[i]
+  p <- plot_balance_var(
+    df = clinical[idx_v6, , drop = FALSE],
+    group_var = "Intervention",
+    var_name = top_balance_v6$var[i],
+    test_name = test_name_i,
+    panel_label = "Visit 6"
+  )
+  if (!is.null(p)) {
+    if (test_name_i %in% c("anova", "kruskal_wallis")) {
+      print(p)
+    } else {
+      prop_df <- build_prop_plot_data(
+        df = clinical[idx_v6, , drop = FALSE],
+        group_var = "Intervention",
+        var_name = top_balance_v6$var[i],
+        panel_title = paste0("Visit 6: ", top_balance_v6$var[i], " (", pretty_test(test_name_i), ")")
+      )
+      if (!is.null(prop_df)) {
+        prop_plot_data_child_diet[[length(prop_plot_data_child_diet) + 1L]] <- prop_df
+      }
+    }
+  }
+}
+
+for (i in seq_len(nrow(top_balance_v7))) {
+  test_name_i <- top_balance_v7$test[i]
+  p <- plot_balance_var(
+    df = clinical[idx_v7, , drop = FALSE],
+    group_var = "Intervention",
+    var_name = top_balance_v7$var[i],
+    test_name = test_name_i,
+    panel_label = "Visit 7"
+  )
+  if (!is.null(p)) {
+    if (test_name_i %in% c("anova", "kruskal_wallis")) {
+      print(p)
+    } else {
+      prop_df <- build_prop_plot_data(
+        df = clinical[idx_v7, , drop = FALSE],
+        group_var = "Intervention",
+        var_name = top_balance_v7$var[i],
+        panel_title = paste0("Visit 7: ", top_balance_v7$var[i], " (", pretty_test(test_name_i), ")")
+      )
+      if (!is.null(prop_df)) {
+        prop_plot_data_child_diet[[length(prop_plot_data_child_diet) + 1L]] <- prop_df
+      }
+    }
+  }
+}
+
+if (length(prop_plot_data_child_diet) > 0L) {
+  prop_plot_df_child_diet <- bind_rows(prop_plot_data_child_diet)
+  print(
+    ggplot(prop_plot_df_child_diet, aes(x = group, fill = value)) +
+      geom_bar(position = "fill") +
+      facet_wrap(~panel, ncol = 2) +
+      scale_fill_brewer(palette = "Dark2") +
+      labs(x = "Intervention", y = "Proportion", fill = "Level") +
+      theme_minimal(base_size = 11) +
+      theme(
+        legend.position = "bottom",
+        strip.text = element_text(size = 10)
+      )
+  )
+}
+```
+
+Per visit panel, the three covariates with the smallest p-values are visualized (continuous: boxplots; discrete: stacked proportion bars).
+
+### Symbol key
+
+- $E$: exposure
+- $Y$: outcome
+- $C_k^{(6)}$: visit-6 covariate $k$
+- $C_k^{(7)}$: visit-7 covariate $k$
+- $B_k$: baseline covariate $k$
+- $i$: participant index
+- $t$: repeated-measure time index
+
+### Causal roles
+
+- `Confounder`: common cause of `E` and `Y`; adjust in primary models.
+- `Mediator`: on path `E -> mediator -> Y`; avoid in primary confounder set.
+- `Collider`: common effect; do not condition on it.
+
+### DAG
+
+```{r}
+#| label: covariate-diagnostics-03
+if (!has_dagitty) {
+  cat("Package 'dagitty' not installed; DAG plot and adjustment set are skipped.")
+} else {
+  dag_child_diet <- dagitty::dagitty(" 
+  dag {
+    E [exposure]
+    Y [outcome]
+    Intervention
+    MPrimipara
+    MUniEdu
+    MGDMOGTT1OR2Fi
+    CGender
+    CWeightBirth
+    Bfdurationm
+
+    Intervention -> E
+    MPrimipara -> E
+    MUniEdu -> E
+    MGDMOGTT1OR2Fi -> E
+    CGender -> E
+    CWeightBirth -> E
+    Bfdurationm -> E
+
+    Intervention -> Y
+    MPrimipara -> Y
+    MUniEdu -> Y
+    MGDMOGTT1OR2Fi -> Y
+    CGender -> Y
+    CWeightBirth -> Y
+    Bfdurationm -> Y
+
+    E -> Y
+  }
+  ")
+
+  plot(dag_child_diet)
+  dagitty::adjustmentSets(dag_child_diet, exposure = "E", outcome = "Y")
+}
+```
+
+### Analysis subsets
+
+```{r}
+#| label: covariate-diagnostics-04
+idx_v6 <- which(!is.na(clinical$Filter6) & as.numeric(clinical$Filter6) == 1)
+idx_v7 <- which(!is.na(clinical$Filter7) & as.numeric(clinical$Filter7) == 1)
+
+c(n_v6 = length(idx_v6), n_v7 = length(idx_v7))
+```
+
+### Covariate blocks
+
+Primary models use the core blocks below. The prospective model uses the baseline block plus the matched earlier metabolite value. The repeated-measures model uses the same core covariate block with harmonized paired diet exposures. Sensitivity models add the sensitivity block and compare estimates.
+
+```{r}
+#| label: covariate-diagnostics-05
+core_covars_v6 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+core_covars_v7_lean <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+baseline_covars_q3 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+sensitivity_covars_q3 <- c("CSGA", "CMacrosomy", "CHealthy6")
+
+mixed_covars_core <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+sensitivity_covars <- c(
+  "MPRSmoke", "Premature", "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7"
+)
+
+list(
+  core_v6 = core_covars_v6,
+  core_v7_lean = core_covars_v7_lean,
+  baseline_q3 = baseline_covars_q3,
+  mixed_core = mixed_covars_core,
+  sensitivity = sensitivity_covars,
+  sensitivity_q3 = sensitivity_covars_q3
+)
+```
+
+### Collinearity
+
+::: {.callout-tip}
+#### Understanding Collinearity & VIF
+* **Pairwise Screen**: A Spearman correlation, Epsilon-squared, or Cramer's V $\ge 0.70$ highlights redundant covariate pairs. In such cases, standard errors of the exposure effect estimate may inflate if both are kept.
+* **Model-Matrix VIF**: Variance Inflation Factors (VIF) summarize design-wide multicollinearity. Values below 5 indicate no concern. Values above 5 (or rank deficiency indicating exact aliasing) require reviewing the models for redundant parameters or category sparseness.
+:::
+
+Collinearity is checked before interpreting expanded adjustment sets:
+
+- Numeric covariate pairs are screened with Spearman correlations within each visit-specific analytic panel.
+- Categorical covariate pairs are screened with Cramer’s V.
+- Mixed continuous-categorical pairs are screened with Epsilon-squared from Kruskal-Wallis tests.
+- Pairs with absolute values at or above 0.70 are flagged for review.
+
+```{r}
+#| label: covariate-diagnostics-collinearity
+cramers_v <- function(x, y) {
+  keep <- !is.na(x) & !is.na(y)
+  x <- as.factor(x[keep])
+  y <- as.factor(y[keep])
+  if (length(x) == 0 || nlevels(x) < 2L || nlevels(y) < 2L) return(NA_real_)
+  tab <- table(x, y)
+  chi <- suppressWarnings(chisq.test(tab, correct = FALSE))
+  n <- sum(tab)
+  denom <- n * (min(dim(tab)) - 1)
+  if (!is.finite(denom) || denom <= 0) return(NA_real_)
+  sqrt(as.numeric(chi$statistic) / denom)
+}
+
+kruskal_epsilon_sq <- function(statistic, n, groups) {
+  if (!is.finite(statistic) || !is.finite(n) || !is.finite(groups) || n <= groups) return(NA_real_)
+  max(0, as.numeric((statistic - groups + 1) / (n - groups)))
+}
+
+collinearity_screen <- function(df, vars, panel_name, threshold = 0.70) {
+  vars <- intersect(vars, names(df))
+  vars <- vars[vapply(vars, function(v) sum(!is.na(df[[v]])) >= 10, logical(1))]
+  if (length(vars) < 2L) return(data.frame())
+
+  is_continuous <- function(val) {
+    if (is.character(val) || is.factor(val) || is.logical(val) || inherits(val, "haven_labelled")) return(FALSE)
+    val_num <- suppressWarnings(as.numeric(val))
+    sum(is.finite(val_num)) >= 8 && length(unique(val_num[is.finite(val_num)])) >= 6
+  }
+
+  pairs <- utils::combn(vars, 2, simplify = FALSE)
+  bind_rows(lapply(pairs, function(pair) {
+    x <- df[[pair[[1]]]]
+    y <- df[[pair[[2]]]]
+    
+    keep <- !is.na(x) & !is.na(y)
+    n_complete <- sum(keep)
+    if (n_complete < 10) return(NULL)
+    
+    x_cont <- is_continuous(x)
+    y_cont <- is_continuous(y)
+    
+    if (x_cont && y_cont) {
+      value <- suppressWarnings(cor(as.numeric(x), as.numeric(y), use = "pairwise.complete.obs", method = "spearman"))
+      metric <- "spearman_rho"
+      flag <- is.finite(value) && abs(value) >= threshold
+    } else if (!x_cont && !y_cont) {
+      value <- cramers_v(x, y)
+      metric <- "cramers_v"
+      flag <- is.finite(value) && value >= threshold
+    } else {
+      # Mixed continuous-categorical pair
+      if (x_cont) {
+        continuous_val <- as.numeric(x)
+        categorical_val <- factor(as.character(y))
+      } else {
+        continuous_val <- as.numeric(y)
+        categorical_val <- factor(as.character(x))
+      }
+      
+      if (nlevels(categorical_val) < 2) return(NULL)
+      tst <- suppressWarnings(kruskal.test(continuous_val ~ categorical_val))
+      value <- kruskal_epsilon_sq(tst$statistic, n_complete, nlevels(categorical_val))
+      metric <- "epsilon_sq"
+      flag <- is.finite(value) && value >= threshold
+    }
+
+    data.frame(
+      panel = panel_name,
+      covariate_1 = pair[[1]],
+      covariate_2 = pair[[2]],
+      metric = metric,
+      value = value,
+      flagged = flag,
+      stringsAsFactors = FALSE
+    )
+  })) %>%
+    filter(is.finite(value)) %>%
+    arrange(desc(abs(value)))
+}
+
+collinearity_vars_v6 <- unique(c(core_covars_v6, sensitivity_covars))
+collinearity_vars_v7 <- unique(c(core_covars_v7_lean, sensitivity_covars))
+
+collinearity_tbl <- bind_rows(
+  collinearity_screen(clinical[idx_v6, , drop = FALSE], collinearity_vars_v6, "visit6"),
+  collinearity_screen(clinical[idx_v7, , drop = FALSE], collinearity_vars_v7, "visit7")
+) %>%
+  mutate(value = round(value, 3))
+
+show_table(
+  collinearity_tbl,
+  page_len = 10,
+  title = "Covariate pair collinearity screen",
+  caption = "Covariate pair collinearity screen"
+)
+```
+
+### Model-matrix collinearity
+
+Model-matrix collinearity is checked before interpreting expanded adjustment sets. The fixed-effect design matrix is evaluated and the maximum design-column VIF is reported within each term; rank-deficient models indicate exact collinearity or aliasing.
+
+Each row summarizes one model term within one analysis panel. `N fits` is the number of exposure-specific design matrices checked. `Median VIF` and `Max VIF` summarize the term-level VIF across those fits. `VIF > 5` and `VIF > 10` are counts of fits above those thresholds. `Rank-deficient fits` is the count of design matrices with exact rank deficiency.
+
+Interpretation: VIF values below 5 indicate no material collinearity concern by the applied threshold. Terms with VIF above 5, especially above 10, or any rank-deficient fits should be reviewed for redundant covariates, sparse categories, or exact aliasing.
+
+```{r}
+#| label: covariate-diagnostics-model-collinearity
+source("analysis_data_utils.R")
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+
+df <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+
+q1_expos <- sort(unique(results$model_status$exposure[results$model_status$question == "Q1"]))
+q2_expos <- sort(unique(results$model_status$exposure[results$model_status$question == "Q2"]))
+q1_expos <- q1_expos[!is.na(q1_expos)]
+q2_expos <- q2_expos[!is.na(q2_expos)]
+
+categorical_vars <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MPRSmoke", "MGDMOGTT1OR2Fi",
+  "Premature", "MModeOfDelivery_cat", "CGender", "CMed6", "CMed7",
+  "CAb6", "CAbQ7", "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7",
+  "C_DietQuality_classes_6", "C_DietQuality_classes_7"
+)
+
+prep_model_data <- function(dat, vars) {
+  vars <- intersect(vars, names(dat))
+  out <- dat[, vars, drop = FALSE]
+  for (nm in names(out)) {
+    if (nm %in% categorical_vars || is.character(out[[nm]]) || is.factor(out[[nm]])) {
+      out[[nm]] <- factor(as.character(out[[nm]]))
+    } else {
+      out[[nm]] <- suppressWarnings(as.numeric(out[[nm]]))
+    }
+  }
+  out
+}
+
+design_vif <- function(dat, exposure, covars, label) {
+  rhs <- intersect(c(exposure, covars), names(dat))
+  if (length(rhs) < 2 || !exposure %in% rhs) {
+    return(tibble(model_family = label, exposure = exposure, term = NA_character_, n = 0L, matrix_rank = NA_integer_, matrix_cols = NA_integer_, rank_deficient = NA, max_column_vif = NA_real_))
+  }
+
+  dd <- prep_model_data(dat, rhs)
+  dd <- dd[stats::complete.cases(dd), , drop = FALSE]
+  if (nrow(dd) < 30) {
+    return(tibble(model_family = label, exposure = exposure, term = NA_character_, n = nrow(dd), matrix_rank = NA_integer_, matrix_cols = NA_integer_, rank_deficient = NA, max_column_vif = NA_real_))
+  }
+
+  X <- tryCatch(model.matrix(reformulate(rhs), data = dd), error = function(e) NULL)
+  if (is.null(X)) {
+    return(tibble(model_family = label, exposure = exposure, term = NA_character_, n = nrow(dd), matrix_rank = NA_integer_, matrix_cols = NA_integer_, rank_deficient = NA, max_column_vif = NA_real_))
+  }
+
+  assign_vec <- attr(X, "assign")
+  term_labels <- attr(terms(reformulate(rhs)), "term.labels")
+  X <- X[, colnames(X) != "(Intercept)", drop = FALSE]
+  assign_vec <- assign_vec[colnames(model.matrix(reformulate(rhs), data = dd)) != "(Intercept)"]
+  keep <- apply(X, 2, function(z) stats::sd(z, na.rm = TRUE) > 0)
+  X <- X[, keep, drop = FALSE]
+  assign_vec <- assign_vec[keep]
+
+  rank_x <- qr(X)$rank
+  p_x <- ncol(X)
+  if (p_x < 2) {
+    vif_vals <- rep(NA_real_, p_x)
+  } else {
+    vif_vals <- vapply(seq_len(p_x), function(j) {
+      xj <- X[, j]
+      others <- X[, -j, drop = FALSE]
+      r2 <- tryCatch(summary(lm(xj ~ others))$r.squared, error = function(e) NA_real_)
+      if (!is.finite(r2) || r2 >= 1) return(Inf)
+      1 / (1 - r2)
+    }, numeric(1))
+  }
+
+  tibble(
+    model_family = label,
+    exposure = exposure,
+    term = term_labels[assign_vec],
+    n = nrow(dd),
+    matrix_rank = rank_x,
+    matrix_cols = p_x,
+    rank_deficient = rank_x < p_x,
+    column_vif = vif_vals
+  ) %>%
+    group_by(model_family, exposure, term, n, matrix_rank, matrix_cols, rank_deficient) %>%
+    summarise(max_column_vif = max(column_vif, na.rm = TRUE), .groups = "drop")
+}
+
+d6 <- df %>% filter(visit_num == 6L)
+d7 <- df %>% filter(visit_num == 7L)
+
+q3_join <- d7 %>%
+  select(StudyID, all_of(metabolite_cols)) %>%
+  inner_join(
+    d6 %>% select(StudyID, all_of(unique(c(q1_expos, baseline_covars_q3, sensitivity_covars_q3, metabolite_cols)))),
+    by = "StudyID",
+    suffix = c("_v7", "_v6")
+  )
+
+vif_rows <- bind_rows(
+  lapply(q1_expos, function(e) design_vif(d6, e, core_covars_v6, "visit 6 current core")),
+  lapply(q1_expos, function(e) design_vif(d6, e, unique(c(core_covars_v6, sensitivity_covars)), "visit 6 expanded")),
+  lapply(q2_expos, function(e) design_vif(d7, e, core_covars_v7_lean, "visit 7 current core")),
+  lapply(q2_expos, function(e) design_vif(d7, e, unique(c(core_covars_v7_lean, sensitivity_covars)), "visit 7 expanded")),
+  lapply(q1_expos, function(e) design_vif(q3_join, e, baseline_covars_q3, "prospective current core")),
+  lapply(q1_expos, function(e) design_vif(q3_join, e, unique(c(baseline_covars_q3, sensitivity_covars_q3)), "prospective expanded"))
+)
+
+vif_summary <- vif_rows %>%
+  group_by(model_family, term) %>%
+  summarise(
+    models = n(),
+    median_vif = median(max_column_vif, na.rm = TRUE),
+    max_vif = max(max_column_vif, na.rm = TRUE),
+    models_vif_gt_5 = sum(max_column_vif > 5, na.rm = TRUE),
+    models_vif_gt_10 = sum(max_column_vif > 10, na.rm = TRUE),
+    rank_deficient_models = sum(rank_deficient, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(models_vif_gt_10), desc(max_vif), model_family, term)
+
+vif_display <- vif_summary %>%
+  transmute(
+    Panel = model_family,
+    Term = term,
+    `N fits` = models,
+    `Median VIF` = round(median_vif, 2),
+    `Max VIF` = round(max_vif, 2),
+    `VIF > 5` = models_vif_gt_5,
+    `VIF > 10` = models_vif_gt_10,
+    `Rank-deficient fits` = rank_deficient_models
+  )
+
+if (nrow(vif_display) == 0) {
+  vif_display <- data.frame(
+    Note = "No model-matrix collinearity results available.",
+    stringsAsFactors = FALSE
+  )
+}
+
+show_table(
+  vif_display,
+  page_len = 10,
+  title = "Model-matrix collinearity summary",
+  caption = "Model-matrix collinearity summary"
+)
+```
+
+
+### Exposure-covariate screening
+
+::: {.callout-note}
+#### Purposeful Selection Screening
+Purposeful-style screening checks whether candidate variables show empirical associations with the exposures and/or outcomes, which can support sensitivity-adjustment decisions but does not establish confounding on its own.
+* A significance threshold of $p < 0.20$ is typically used to screen potential candidates rather than the standard $p < 0.05$ to avoid omitting weak confounders.
+* Small $q$-values (BH adjusted) indicate associations that survive multiple-testing adjustments.
+:::
+
+This table screens covariate associations with diet exposures. Within each visit panel, each covariate is tested against each relevant diet exposure, then summarized as one row per covariate.
+
+Tests by variable type:
+
+- Spearman for continuous exposure and continuous covariate pairs.
+- Kruskal-Wallis for continuous exposure vs categorical covariate, and categorical exposure vs continuous covariate.
+- Fisher exact for categorical exposure and categorical covariate pairs.
+
+`Tests` is the number of exposure-covariate tests in the row. `Min p` is the smallest raw p-value across those tests. `Min q` is the smallest BH-adjusted p-value within the visit panel. `q < 0.10` is the number of exposure-covariate tests for that covariate with q < 0.10.
+
+Interpretation: a covariate with `q < 0.10` greater than zero is associated with at least one diet exposure after BH correction at the 10% FDR level. A value of zero means no exposure-covariate association met that threshold in the panel.
+
+```{r}
+#| label: covariate-diagnostics-exposure-screening
+if (!exists("categorical_vars")) {
+  categorical_vars <- c(
+    "Intervention", "MPrimipara", "MUniEdu", "MPRSmoke", "MGDMOGTT1OR2Fi",
+    "Premature", "MModeOfDelivery_cat", "CGender", "CMed6", "CMed7",
+    "CAb6", "CAbQ7", "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7",
+    "C_DietQuality_classes_6", "C_DietQuality_classes_7"
+  )
+}
+
+if (!exists("d6") || !exists("d7")) {
+  source("analysis_data_utils.R")
+  analysis_obj <- prepare_analysis_data(
+    mae_path = "../data/MAE_original.rds",
+    visits = c("visit_6", "visit_7")
+  )
+  df <- analysis_obj$data
+  d6 <- df %>% filter(visit_num == 6L)
+  d7 <- df %>% filter(visit_num == 7L)
+}
+
+if (!exists("q1_expos") || !exists("q2_expos")) {
+  results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+  q1_expos <- sort(unique(results$model_status$exposure[results$model_status$question == "Q1"]))
+  q2_expos <- sort(unique(results$model_status$exposure[results$model_status$question == "Q2"]))
+  q1_expos <- q1_expos[!is.na(q1_expos)]
+  q2_expos <- q2_expos[!is.na(q2_expos)]
+}
+
+var_kind <- function(x, nm = NULL) {
+  if (!is.null(nm) && nm %in% categorical_vars) return("categorical")
+  if (is.character(x) || is.factor(x)) return("categorical")
+  x_num <- suppressWarnings(as.numeric(x))
+  if (sum(is.finite(x_num)) < 8) return("categorical")
+  if (length(unique(x_num[is.finite(x_num)])) < 6) return("categorical")
+  "continuous"
+}
+
+assoc_test <- function(dat, exposure, covar, family) {
+  if (!all(c(exposure, covar) %in% names(dat))) {
+    return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "missing", n = 0L, statistic = NA_real_, p.value = NA_real_))
+  }
+  dd <- dat[, c(exposure, covar), drop = FALSE]
+  dd <- dd[stats::complete.cases(dd), , drop = FALSE]
+  if (nrow(dd) < 20) {
+    return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "too_few_complete", n = nrow(dd), statistic = NA_real_, p.value = NA_real_))
+  }
+  x_kind <- var_kind(dd[[exposure]], exposure)
+  z_kind <- var_kind(dd[[covar]], covar)
+  x_num <- suppressWarnings(as.numeric(dd[[exposure]]))
+  z_num <- suppressWarnings(as.numeric(dd[[covar]]))
+
+  if (x_kind == "continuous" && z_kind == "continuous") {
+    tst <- suppressWarnings(cor.test(x_num, z_num, method = "spearman", exact = FALSE))
+    return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "Spearman", n = nrow(dd), statistic = unname(tst$estimate), p.value = tst$p.value))
+  }
+
+  if (x_kind == "continuous" && z_kind == "categorical") {
+    g <- factor(as.character(dd[[covar]]))
+    if (nlevels(g) < 2) return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "constant", n = nrow(dd), statistic = NA_real_, p.value = NA_real_))
+    tst <- suppressWarnings(kruskal.test(x_num ~ g))
+    return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "Kruskal-Wallis", n = nrow(dd), statistic = unname(tst$statistic), p.value = tst$p.value))
+  }
+
+  if (x_kind == "categorical" && z_kind == "continuous") {
+    g <- factor(as.character(dd[[exposure]]))
+    if (nlevels(g) < 2) return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "constant", n = nrow(dd), statistic = NA_real_, p.value = NA_real_))
+    tst <- suppressWarnings(kruskal.test(z_num ~ g))
+    return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "Kruskal-Wallis", n = nrow(dd), statistic = unname(tst$statistic), p.value = tst$p.value))
+  }
+
+  tab <- table(factor(as.character(dd[[exposure]])), factor(as.character(dd[[covar]])))
+  if (any(dim(tab) < 2)) return(tibble(model_family = family, exposure = exposure, covariate = covar, test = "constant", n = nrow(dd), statistic = NA_real_, p.value = NA_real_))
+  tst <- suppressWarnings(fisher.test(tab))
+  tibble(model_family = family, exposure = exposure, covariate = covar, test = "Fisher exact", n = nrow(dd), statistic = NA_real_, p.value = tst$p.value)
+}
+
+screen_rows <- bind_rows(
+  lapply(q1_expos, function(e) bind_rows(lapply(unique(c(core_covars_v6, sensitivity_covars)), function(cov) assoc_test(d6, e, cov, "visit 6")))),
+  lapply(q2_expos, function(e) bind_rows(lapply(unique(c(core_covars_v7_lean, sensitivity_covars)), function(cov) assoc_test(d7, e, cov, "visit 7"))))
+) %>%
+  group_by(model_family) %>%
+  mutate(q.value = p.adjust(p.value, method = "BH")) %>%
+  ungroup()
+
+screen_summary <- screen_rows %>%
+  group_by(model_family, covariate) %>%
+  summarise(
+    tests = sum(!is.na(p.value)),
+    p_lt_0_20 = sum(p.value < 0.20, na.rm = TRUE),
+    min_p = min(p.value, na.rm = TRUE),
+    min_q = min(q.value, na.rm = TRUE),
+    q_lt_0_10 = sum(q.value < 0.10, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(min_q, model_family, covariate)
+
+screen_display <- screen_summary %>%
+  transmute(
+    Panel = model_family,
+    Covariate = covariate,
+    Tests = tests,
+    `p < 0.20` = p_lt_0_20,
+    `Any p < 0.20` = ifelse(p_lt_0_20 > 0, "yes", "no"),
+    `Min p` = format_p(min_p),
+    `Min q` = format_p(min_q),
+    `q < 0.10` = q_lt_0_10
+  )
+
+if (nrow(screen_display) == 0) {
+  screen_display <- data.frame(
+    Note = "No exposure-covariate screening results available.",
+    stringsAsFactors = FALSE
+  )
+}
+
+show_table(
+  screen_display,
+  page_len = 10,
+  title = "Exposure-covariate association screen",
+  caption = "Exposure-covariate association screen (BH adjusted within visit)"
+)
+```
+
+### Covariate-outcome screening
+
+This table screens covariate associations with metabolite outcome structure. Principal component analysis is run on the visit-specific metabolite matrix, and each covariate is tested against the first five metabolite principal components.
+
+- The first five metabolite principal components are calculated separately within visit 6 and visit 7.
+- Continuous covariates are screened against each PC with Spearman correlation.
+- Categorical covariates are screened with Kruskal-Wallis tests.
+- BH correction is applied within visit-specific PC screen.
+
+Each row summarizes one covariate within one visit-specific metabolite principal component panel. `Tests` is the number of principal component tests in the row, with a maximum of five. `Min p` is the smallest raw p-value across those tests. `Min q` is the smallest BH-adjusted p-value within the visit panel. `q < 0.10` is the number of covariate-principal component tests with q < 0.10.
+
+Interpretation: a covariate with `q < 0.10` greater than zero is associated with at least one of the first five metabolite principal components after BH correction at the 10% FDR level. This indicates association with broad metabolite variation, not with a specific metabolite.
+
+```{r}
+#| label: covariate-diagnostics-outcome-screening
+if (!exists("analysis_obj") || !exists("df") || !exists("metabolite_cols")) {
+  source("analysis_data_utils.R")
+  analysis_obj <- prepare_analysis_data(
+    mae_path = "../data/MAE_original.rds",
+    visits = c("visit_6", "visit_7")
+  )
+  df <- analysis_obj$data
+  metabolite_cols <- analysis_obj$metabolite_cols
+}
+
+if (!exists("d6") || !exists("d7")) {
+  d6 <- df %>% filter(visit_num == 6L)
+  d7 <- df %>% filter(visit_num == 7L)
+}
+
+if (!exists("var_kind")) {
+  var_kind <- function(x, nm = NULL) {
+    if (!is.null(nm) && exists("categorical_vars") && nm %in% categorical_vars) return("categorical")
+    if (is.character(x) || is.factor(x)) return("categorical")
+    x_num <- suppressWarnings(as.numeric(x))
+    if (sum(is.finite(x_num)) < 8) return("categorical")
+    if (length(unique(x_num[is.finite(x_num)])) < 6) return("categorical")
+    "continuous"
+  }
+}
+
+make_pc_scores <- function(dat, features, prefix) {
+  features <- intersect(features, names(dat))
+  if (length(features) == 0) return(dat %>% select(StudyID))
+  mat <- as.matrix(dat[, features, drop = FALSE])
+  mat <- apply(mat, 2, function(x) suppressWarnings(as.numeric(x)))
+  if (is.null(dim(mat))) mat <- matrix(mat, ncol = 1L)
+  keep <- colMeans(!is.na(mat)) >= 0.7 & apply(mat, 2, stats::sd, na.rm = TRUE) > 0
+  mat <- mat[, keep, drop = FALSE]
+  if (ncol(mat) == 0) return(dat %>% select(StudyID))
+  for (j in seq_len(ncol(mat))) {
+    mat[is.na(mat[, j]), j] <- stats::median(mat[, j], na.rm = TRUE)
+  }
+  pcs <- stats::prcomp(mat, center = TRUE, scale. = TRUE)
+  scores <- as.data.frame(pcs$x[, seq_len(min(5L, ncol(pcs$x))), drop = FALSE])
+  names(scores) <- paste0(prefix, "_PC", seq_along(scores))
+  bind_cols(dat %>% select(StudyID), scores)
+}
+
+pc_assoc <- function(dat, covar, pc, family) {
+  if (!all(c(covar, pc) %in% names(dat))) {
+    return(tibble(model_family = family, covariate = covar, outcome_summary = pc, test = "missing", n = 0L, p.value = NA_real_))
+  }
+  dd <- dat[, c(covar, pc), drop = FALSE]
+  dd <- dd[stats::complete.cases(dd), , drop = FALSE]
+  if (nrow(dd) < 20) {
+    return(tibble(model_family = family, covariate = covar, outcome_summary = pc, test = "too_few_complete", n = nrow(dd), p.value = NA_real_))
+  }
+
+  y <- suppressWarnings(as.numeric(dd[[pc]]))
+  if (var_kind(dd[[covar]], covar) == "continuous") {
+    x <- suppressWarnings(as.numeric(dd[[covar]]))
+    tst <- suppressWarnings(stats::cor.test(x, y, method = "spearman", exact = FALSE))
+    return(tibble(model_family = family, covariate = covar, outcome_summary = pc, test = "Spearman", n = nrow(dd), p.value = tst$p.value))
+  }
+
+  g <- factor(as.character(dd[[covar]]))
+  if (nlevels(g) < 2) {
+    return(tibble(model_family = family, covariate = covar, outcome_summary = pc, test = "constant", n = nrow(dd), p.value = NA_real_))
+  }
+  tst <- suppressWarnings(stats::kruskal.test(y ~ g))
+  tibble(model_family = family, covariate = covar, outcome_summary = pc, test = "Kruskal-Wallis", n = nrow(dd), p.value = tst$p.value)
+}
+
+pc6 <- make_pc_scores(d6, metabolite_cols, "v6")
+pc7 <- make_pc_scores(d7, metabolite_cols, "v7")
+d6_pc <- left_join(d6, pc6, by = "StudyID")
+d7_pc <- left_join(d7, pc7, by = "StudyID")
+
+pc_rows <- bind_rows(
+  lapply(unique(c(core_covars_v6, sensitivity_covars_q3, "CFastingHoursBloodSample6")), function(cov) {
+    bind_rows(lapply(names(pc6)[names(pc6) != "StudyID"], function(pc) pc_assoc(d6_pc, cov, pc, "visit 6 metabolite PCs")))
+  }),
+  lapply(unique(c(core_covars_v7_lean, sensitivity_covars, "CFastingHoursBloodSample7")), function(cov) {
+    bind_rows(lapply(names(pc7)[names(pc7) != "StudyID"], function(pc) pc_assoc(d7_pc, cov, pc, "visit 7 metabolite PCs")))
+  })
+) %>%
+  group_by(model_family) %>%
+  mutate(q.value = p.adjust(p.value, method = "BH")) %>%
+  ungroup()
+
+pc_summary <- pc_rows %>%
+  group_by(model_family, covariate) %>%
+  summarise(
+    tests = sum(!is.na(p.value)),
+    p_lt_0_20 = sum(p.value < 0.20, na.rm = TRUE),
+    min_p = min(p.value, na.rm = TRUE),
+    min_q = min(q.value, na.rm = TRUE),
+    q_lt_0_10 = sum(q.value < 0.10, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(min_q, model_family, covariate)
+
+pc_display <- pc_summary %>%
+  transmute(
+    Panel = model_family,
+    Covariate = covariate,
+    Tests = tests,
+    `p < 0.20` = p_lt_0_20,
+    `Any p < 0.20` = ifelse(p_lt_0_20 > 0, "yes", "no"),
+    `Min p` = format_p(min_p),
+    `Min q` = format_p(min_q),
+    `q < 0.10` = q_lt_0_10
+  )
+
+if (nrow(pc_display) == 0) {
+  pc_display <- data.frame(
+    Note = "No covariate-outcome PC screening results available.",
+    stringsAsFactors = FALSE
+  )
+}
+
+show_table(
+  pc_display,
+  page_len = 10,
+  title = "Covariate-outcome screen using metabolite PCs",
+  caption = "Covariate-outcome screen using metabolite PCs (BH adjusted within visit)"
+)
+```
+
+### Combined covariate screening summary
+
+This table combines the exposure-covariate and covariate-outcome screens. A covariate with evidence in both screens has statistical support for association with both sides of the exposure-outcome relation, subject to the prespecified causal role of the variable.
+
+`Exposure p < 0.20` and `Outcome p < 0.20` track purposeful-style screening signals. `q < 0.10` columns are retained as multiplicity-aware context.
+
+```{r}
+#| label: covariate-diagnostics-combined-screening
+panel_map <- data.frame(
+  exposure_panel = c("visit 6", "visit 7"),
+  outcome_panel = c("visit 6 metabolite PCs", "visit 7 metabolite PCs"),
+  panel = c("visit 6", "visit 7"),
+  stringsAsFactors = FALSE
+)
+
+exposure_flags <- screen_summary %>%
+  inner_join(panel_map, by = c("model_family" = "exposure_panel")) %>%
+  transmute(
+    Panel = panel,
+    Covariate = covariate,
+    `Exposure p < 0.20` = p_lt_0_20,
+    `Exposure q < 0.10` = q_lt_0_10,
+    `Min exposure p` = min_p,
+    `Min exposure q` = min_q
+  )
+
+outcome_flags <- pc_summary %>%
+  inner_join(panel_map, by = c("model_family" = "outcome_panel")) %>%
+  transmute(
+    Panel = panel,
+    Covariate = covariate,
+    `Outcome p < 0.20` = p_lt_0_20,
+    `Outcome q < 0.10` = q_lt_0_10,
+    `Min outcome p` = min_p,
+    `Min outcome q` = min_q
+  )
+
+combined_screen <- full_join(exposure_flags, outcome_flags, by = c("Panel", "Covariate")) %>%
+  mutate(
+    `Exposure p < 0.20` = ifelse(is.na(`Exposure p < 0.20`), 0L, `Exposure p < 0.20`),
+    `Outcome p < 0.20` = ifelse(is.na(`Outcome p < 0.20`), 0L, `Outcome p < 0.20`),
+    `Exposure q < 0.10` = ifelse(is.na(`Exposure q < 0.10`), 0L, `Exposure q < 0.10`),
+    `Outcome q < 0.10` = ifelse(is.na(`Outcome q < 0.10`), 0L, `Outcome q < 0.10`),
+    Pattern = case_when(
+      `Exposure p < 0.20` > 0 & `Outcome p < 0.20` > 0 ~ "exposure and outcome",
+      `Exposure p < 0.20` > 0 ~ "exposure only",
+      `Outcome p < 0.20` > 0 ~ "outcome only",
+      TRUE ~ "neither"
+    )
+  ) %>%
+  transmute(
+    Panel,
+    Covariate,
+    Pattern,
+    `Exposure p < 0.20`,
+    `Outcome p < 0.20`,
+    `Exposure q < 0.10`,
+    `Outcome q < 0.10`,
+    `Min exposure p` = format_p(`Min exposure p`),
+    `Min outcome p` = format_p(`Min outcome p`),
+    `Min exposure q` = format_p(`Min exposure q`),
+    `Min outcome q` = format_p(`Min outcome q`)
+  ) %>%
+  arrange(
+    factor(Pattern, levels = c("exposure and outcome", "exposure only", "outcome only", "neither")),
+    Panel,
+    Covariate
+  )
+
+show_table(
+  combined_screen,
+  page_len = 10,
+  title = "Combined covariate screening summary",
+  caption = "Combined covariate screening summary",
+  colnames = c(
+    "Exposure<br>p < 0.20" = "Exposure p < 0.20",
+    "Outcome<br>p < 0.20" = "Outcome p < 0.20",
+    "Exposure<br>q < 0.10" = "Exposure q < 0.10",
+    "Outcome<br>q < 0.10" = "Outcome q < 0.10",
+    "Min exposure<br>p" = "Min exposure p",
+    "Min outcome<br>p" = "Min outcome p",
+    "Min exposure<br>q" = "Min exposure q",
+    "Min outcome<br>q" = "Min outcome q"
+  )
+)
+```
+
+### Covariate decision support (reference models)
+
+Reference-model beta-change and complete-case impact are provided to support retain/drop discussion.
+
+```{r}
+#| label: covariate-diagnostics-decision-support
+beta_change_ref <- function(df, exposure, covars, candidate, outcome_pc) {
+  need <- unique(c(outcome_pc, exposure, covars))
+  need <- need[need %in% names(df)]
+  if (!all(c(outcome_pc, exposure, candidate) %in% need)) return(c(NA_real_, NA_integer_, NA_integer_))
+  d <- df[, need, drop = FALSE]
+  d <- d[stats::complete.cases(d), , drop = FALSE]
+  if (nrow(d) < 30) return(c(NA_real_, nrow(d), NA_integer_))
+
+  cov_full <- covars[covars %in% names(d)]
+  if (!candidate %in% cov_full) return(c(NA_real_, nrow(d), NA_integer_))
+  cov_red <- setdiff(cov_full, candidate)
+  f_full <- as.formula(paste(outcome_pc, "~", paste(c(exposure, cov_full), collapse = " + ")))
+  f_red <- as.formula(paste(outcome_pc, "~", paste(c(exposure, cov_red), collapse = " + ")))
+  m_full <- tryCatch(lm(f_full, data = d), error = function(e) NULL)
+  m_red <- tryCatch(lm(f_red, data = d), error = function(e) NULL)
+  if (is.null(m_full) || is.null(m_red)) return(c(NA_real_, nrow(d), NA_integer_))
+  b_full <- coef(m_full)[exposure]
+  b_red <- coef(m_red)[exposure]
+  if (is.na(b_full) || is.na(b_red) || !is.finite(b_full) || abs(b_full) < 1e-8) return(c(NA_real_, nrow(model.frame(m_full)), nrow(model.frame(m_red))))
+  c(abs((b_red - b_full) / b_full) * 100, nrow(model.frame(m_full)), nrow(model.frame(m_red)))
+}
+
+ref_exposure_v6 <- q1_expos[q1_expos %in% names(d6)][1]
+ref_exposure_v7 <- q2_expos[q2_expos %in% names(d7)][1]
+ref_pc_v6 <- names(pc6)[names(pc6) != "StudyID"][1]
+ref_pc_v7 <- names(pc7)[names(pc7) != "StudyID"][1]
+
+decision_tbl <- bind_rows(
+  lapply(unique(c(core_covars_v6, sensitivity_covars)), function(cov) {
+    stats_vec <- beta_change_ref(d6_pc, ref_exposure_v6, unique(c(core_covars_v6, sensitivity_covars)), cov, ref_pc_v6)
+    data.frame(
+      Panel = "visit 6",
+      Covariate = cov,
+      beta_change_pct = as.numeric(stats_vec[1]),
+      n_full = as.integer(stats_vec[2]),
+      n_drop_covariate = as.integer(stats_vec[3]),
+      stringsAsFactors = FALSE
+    )
+  }),
+  lapply(unique(c(core_covars_v7_lean, sensitivity_covars)), function(cov) {
+    stats_vec <- beta_change_ref(d7_pc, ref_exposure_v7, unique(c(core_covars_v7_lean, sensitivity_covars)), cov, ref_pc_v7)
+    data.frame(
+      Panel = "visit 7",
+      Covariate = cov,
+      beta_change_pct = as.numeric(stats_vec[1]),
+      n_full = as.integer(stats_vec[2]),
+      n_drop_covariate = as.integer(stats_vec[3]),
+      stringsAsFactors = FALSE
+    )
+  })
+) %>%
+  left_join(
+    combined_screen %>% transmute(Panel, Covariate, `Any p < 0.20` = ifelse(`Exposure p < 0.20` > 0 | `Outcome p < 0.20` > 0, "yes", "no")),
+    by = c("Panel", "Covariate")
+  ) %>%
+  mutate(
+    Role = case_when(
+      Covariate %in% core_covars_v6 ~ "core v6",
+      Covariate %in% core_covars_v7_lean ~ "core v7",
+      Covariate %in% sensitivity_covars ~ "sensitivity",
+      TRUE ~ "other"
+    ),
+    `Retain signal (>10% beta change)` = ifelse(!is.na(beta_change_pct) & beta_change_pct > 10, "yes", "no"),
+    `Suggested status` = case_when(
+      grepl("^core", Role) ~ "keep_core",
+      `Any p < 0.20` == "yes" | `Retain signal (>10% beta change)` == "yes" ~ "keep_sensitivity",
+      TRUE ~ "consider_drop"
+    ),
+    `Ref beta change %` = round(beta_change_pct, 1),
+    `N full` = n_full,
+    `N drop covariate` = n_drop_covariate
+  ) %>%
+  arrange(Panel, Covariate)
+
+show_table(
+  decision_tbl,
+  page_len = 10,
+  title = "Covariate decision support table",
+  caption = "Covariate decision support using p<0.20 screening and reference-model beta-change"
+)
+```
+
+```{r}
+#| label: covariate-diagnostics-summary-text
+#| results: asis
+
+# Count statuses
+core_cnt <- sum(grepl("^core", decision_tbl$Role))
+core_unique_cnt <- n_distinct(decision_tbl$Covariate[grepl("^core", decision_tbl$Role)])
+sens_cnt <- sum(decision_tbl$Role == "sensitivity")
+
+# Identify dropped covariates per panel
+drop_candidates <- decision_tbl %>%
+  filter(`Suggested status` == "consider_drop")
+
+cat("\n### Interpretation Summary\n\n")
+
+cat("Based on the DAG framework, statistical screening, and reference-model sensitivity checks, the following appendix decision support is provided:\n\n")
+
+cat(sprintf("- **Core Adjusters**: %d covariate-panel terms (%d unique covariates) are baseline confounders or design factors that are retained by default to block baseline back-door paths.\n", core_cnt, core_unique_cnt))
+
+keep_sens <- decision_tbl %>% filter(`Suggested status` == "keep_sensitivity")
+if (nrow(keep_sens) > 0) {
+  cat("- **Sensitivity Adjusters (Carried Forward)**: The following sensitivity covariates show screening signals (p < 0.20 or >10% change in exposure effect) and are carried forward in sensitivity analyses:\n")
+  for (pnl in unique(keep_sens$Panel)) {
+    vars_pnl <- keep_sens$Covariate[keep_sens$Panel == pnl]
+    cat(sprintf("  - *%s*: %s\n", pnl, paste(vars_pnl, collapse = ", ")))
+  }
+} else {
+  cat("- **Sensitivity Adjusters (Retain)**: None of the sensitivity covariates met the signal criteria.\n")
+}
+
+if (nrow(drop_candidates) > 0) {
+  cat("- **Candidates for Omission**: The following sensitivity covariates did not meet the screening signal thresholds (p < 0.20 or >10% reference beta change). They are flagged for possible omission to simplify the models, prevent over-specification, and maximize complete-case sample size:\n")
+  for (pnl in unique(drop_candidates$Panel)) {
+    vars_pnl <- drop_candidates$Covariate[drop_candidates$Panel == pnl]
+    
+    # Calculate potential sample size recovery
+    pnl_df <- decision_tbl %>% filter(Panel == pnl, Covariate %in% vars_pnl)
+    n_recovered <- max(pnl_df$`N drop covariate` - pnl_df$`N full`, na.rm = TRUE)
+    
+    cat(sprintf("  - *%s*: %s (Omitting these recovers up to **%d** complete cases)\n", 
+                pnl, paste(vars_pnl, collapse = ", "), if(is.finite(n_recovered) && n_recovered > 0) as.integer(n_recovered) else 0L))
+  }
+} else {
+  cat("- **Candidates for Omission**: No sensitivity covariates met the automated omission criteria under the default signal thresholds. However, to prevent model over-specification (overfitting) and preserve degrees of freedom, you should still evaluate whether retaining all sensitivity adjusters is justified by the clinical context. If they do not materially alter the exposure estimates, sticking to the minimal core DAG set is recommended.\n")
+}
+```
+### Covariate selection traceability
+
+```{r}
+#| label: covariate-diagnostics-06
+covariate_trace_child_diet <- data.frame(
+  variable = c(
+    "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+    "CGender", "CWeightBirth", "Bfdurationm", "MAge1", "MprepBMI",
+    "MPRSmoke", "Premature", "MModeOfDelivery_cat", "CFastingHoursBloodSample6",
+    "CFastingHoursBloodSample7", "CMed6", "CMed7", "CAb6", "CAbQ7",
+    "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7"
+  ),
+  role = c(
+    "core", "core", "core", "core",
+    "core", "core", "core", "diagnostic", "diagnostic",
+    "sensitivity", "sensitivity", "diagnostic", "diagnostic",
+    "diagnostic", "diagnostic", "diagnostic", "diagnostic", "diagnostic",
+    "sensitivity", "sensitivity", "sensitivity", "sensitivity"
+  ),
+  motivation = c(
+    "Design/control factor relevant to allocation context",
+    "Parity-related confounding control",
+    "Socioeconomic proxy",
+    "Maternal metabolic history confounding control",
+    "Child baseline characteristic",
+    "Birth anthropometric baseline",
+    "Postnatal context",
+    "Descriptive balance and missingness context",
+    "Descriptive balance and missingness context",
+    "Sensitivity lifestyle proxy",
+    "Sensitivity perinatal risk context",
+    "Descriptive delivery context",
+    "Descriptive sampling-condition context at visit 6",
+    "Descriptive sampling-condition context at visit 7",
+    "Descriptive medication context at visit 6",
+    "Descriptive medication context at visit 7",
+    "Descriptive antibiotic context at visit 6",
+    "Descriptive antibiotic context at visit 7",
+    "Birth-size sensitivity check",
+    "Birth-size sensitivity check",
+    "Potential selection/collider-sensitive context",
+    "Potential selection/collider-sensitive context"
+  ),
+  test_role = rep("Balance and missingness summary", 22),
+  stringsAsFactors = FALSE
+)
+
+show_table(
+  covariate_trace_child_diet,
+  page_len = 10,
+  title = "Covariate selection traceability",
+  caption = "Covariate selection traceability"
+)
+```
+
+### Missingness by visit
+
+Visit-specific missingness is reported as a data-quality diagnostic and to support interpretation of precision and sensitivity analyses.
+
+```{r}
+#| label: covariate-diagnostics-07
+missing_table <- function(df, vars, idx) {
+  vars <- vars[vars %in% names(df)]
+  if (length(vars) == 0) {
+    return(data.frame(
+      Covariate = character(),
+      Available_N = integer(),
+      Missing_pct = numeric()
+    ))
+  }
+  if (length(idx) == 0) {
+    return(data.frame(
+      Note = "No rows available for this visit-specific analytic panel; missingness was not calculated.",
+      stringsAsFactors = FALSE
+    ))
+  }
+  data.frame(
+    Covariate = vars,
+    Available_N = sapply(vars, function(v) sum(!is.na(df[[v]][idx]))),
+    Missing_pct = sapply(vars, function(v) round(mean(is.na(df[[v]][idx])) * 100, 1))
+  ) %>% arrange(desc(Missing_pct))
+}
+
+miss_v6 <- missing_table(clinical, unique(c(core_covars_v6, sensitivity_covars)), idx_v6)
+miss_v7 <- missing_table(clinical, unique(c(core_covars_v7_lean, sensitivity_covars)), idx_v7)
+
+show_table(
+  miss_v6,
+  page_len = 10,
+  title = "Visit 6 covariate missingness summary",
+  caption = "Visit 6 covariate missingness summary"
+)
+show_table(
+  miss_v7,
+  page_len = 10,
+  title = "Visit 7 covariate missingness summary",
+  caption = "Visit 7 covariate missingness summary"
+)
+```
+
+## Model specification
+
+### Proposed models
+
+1. Visit-specific linear models:
+   - `Y_v6 ~ E_v6 + core_covars_v6`
+   - `Y_v7 ~ E_v7 + core_covars_v7_lean`
+2. Longitudinal conditional model:
+   - `Y_v7 ~ E_v6 + Y_v6 + baseline_covariates`
+   - this model is fit separately for each metabolite pair so that visit-7 metabolite values are adjusted for the same metabolite measured at visit 6
+3. Repeated-measures mixed model:
+   - `Y_it ~ E_it + visit_t + E_it:visit_t + repeated_core_covariates + (1|child)`
+   - `E_it` is the visit-harmonized child diet exposure, allowing the same dietary construct to be evaluated across visits 6 and 7
+   - sensitivity models additionally harmonize the healthy-diet indicator
+
+### Mathematical model forms
+
+1. Visit-specific models:
+
+$$ 
+Y_{i,6} = \beta_0 + \beta_1 E_{i,6} + \sum_{k=1}^{p} \gamma_k C^{(6)}_{i,k} + \varepsilon_{i,6}
+$$
+
+$$ 
+Y_{i,7} = \beta_0 + \beta_1 E_{i,7} + \sum_{k=1}^{q} \delta_k C^{(7)}_{i,k} + \varepsilon_{i,7}
+$$
+
+2. Longitudinal conditional model:
+
+$$ 
+Y_{i,7} = \beta_0 + \beta_1 E_{i,6} + \beta_2 Y_{i,6} + \sum_{k=1}^{r} \eta_k B_{i,k} + \varepsilon_i
+$$
+
+3. Repeated-measures mixed model (child `i`, time `t`):
+
+$$ 
+Y_{i,t} = \beta_0 + \beta_1 E_{i,t} + \beta_2 t + \beta_3(E_{i,t} \times t) + \sum_{k=1}^{s} \theta_k R_{i,t,k} + u_i + \varepsilon_{i,t}
+$$
+
+with random intercept:
+
+$$ 
+u_i \sim \mathcal{N}(0, \sigma_u^2), \quad \varepsilon_{i,t} \sim \mathcal{N}(0, \sigma^2)
+$$
+
+### Data snapshot
+
+```{r}
+#| label: covariate-diagnostics-08
+dim(clinical)
+head(names(clinical), 40)
+```
+
+### Variable key
+
+<details>
+<summary>Click to expand full variable key</summary>
+
+```{r}
+#| label: covariate-diagnostics-09
+build_variable_key <- function(df) {
+  nm <- names(df)
+  make_friendly <- function(x) {
+    y <- gsub("([a-z])([A-Z])", "\\1 \\2", x)
+    y <- gsub("([A-Za-z])([0-9])", "\\1 \\2", y)
+    y <- gsub("([0-9])([A-Za-z])", "\\1 \\2", y)
+    y <- gsub("[._]+", " ", y)
+    y <- gsub("\\s+", " ", trimws(y))
+    tools::toTitleCase(tolower(y))
+  }
+  var_label <- sapply(nm, function(v) {
+    lb <- attr(df[[v]], "label")
+    if (is.null(lb) || is.na(lb) || lb == "") "" else as.character(lb)
+  })
+  value_levels <- sapply(nm, function(v) {
+    labs <- attr(df[[v]], "labels")
+    if (is.null(labs) || length(labs) == 0) return("")
+    paste(sprintf("%s = %s", names(labs), unname(labs)), collapse = "; ")
+  })
+  data.frame(
+    Friendly_Name = sapply(nm, make_friendly),
+    Variable_Code = nm,
+    Variable_Label = var_label,
+    Value_Levels = value_levels,
+    stringsAsFactors = FALSE
+  )
+}
+
+variable_key <- build_variable_key(clinical)
+show_table(
+  variable_key,
+  page_len = 10,
+  title = "Variable key",
+  caption = "Variable key"
+)
+```
+
+</details>
+
+### Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: covariate-diagnostics-10
+#| echo: false
+sessionInfo()
+```
+:::

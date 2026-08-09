@@ -1,0 +1,951 @@
+---
+title: "Secondary figures: maternal diet and child metabolites"
+---
+
+These figures show exposure-level detail, timing-window comparison, and robustness patterns for the age-specific and mutual-timing models. They are not the primary inferential summaries and should not be read as direct evidence for the warning-prone Q4 longitudinal model family unless stated explicitly.
+
+# Individual Metabolite Results
+
+These figures display results at the individual metabolite level, grouped and colored by the 5 predefined biological classifications (Inflammation, Amino Acids, Glycolysis & Energy, Fatty Acids, and Lipoproteins & Lipids).
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+# Load primary results (individual metabolite level)
+results_primary <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+age_res <- results_primary$age_specific
+long_res <- results_primary$longitudinal
+age_res_sens <- results_primary$age_specific_sensitivity
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_4", "visit_5", "visit_6", "visit_7")
+)
+mae <- analysis_obj$mae
+df_all <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+
+# Custom function to map feature names to the 5 biological group names
+get_new_feature_group <- function(feature_names) {
+  cluster_regex <- c(
+    inflammation = "GlycA|Glycoprotein",
+    amino_acids = "(^|[-.])(Ala|Gln|Gly|His|Ile|Leu|Val|Phe|Tyr)([-.]|$)|BCAA",
+    glycolysis_energy = "Glucose|Lactate|Pyruvate|Citrate|Acetate|Acetoacetate|bOHbutyrate|Acetone|Glycerol|Creatinine|Albumin",
+    fatty_acids = "Omega|Total-FA|Unsaturation|DHA|EPA|PUFA|MUFA|SFA|FAn3|FAn6|FA-ratio|\\bLA\\b|^LA$",
+    lipoproteins = "VLDL|LDL|HDL|Apo|Remnant|non-HDL|Total-C|Total-TG|Total-PL|Total-CE|Total-FC|Total-L|Total-P|IDL|Phosphoglyc|TG/PG|Cholines|Phosphatidylc|Sphingomyelins"
+  )
+  
+  feature_group <- rep("Unknown", length(feature_names))
+  names(feature_group) <- feature_names
+  
+  for (cl in names(cluster_regex)) {
+    idx <- which(feature_group == "Unknown" & grepl(cluster_regex[[cl]], feature_names, ignore.case = TRUE))
+    if (length(idx) > 0) {
+      feature_group[idx] <- cl
+    }
+  }
+  
+  # Display mapping
+  display_names <- c(
+    inflammation = "Inflammation (GlycA)",
+    amino_acids = "Amino Acids",
+    glycolysis_energy = "Glycolysis & Energy",
+    fatty_acids = "Fatty Acids",
+    lipoproteins = "Lipoproteins & Lipids",
+    Unknown = "Unknown"
+  )
+  
+  as.character(display_names[feature_group])
+}
+
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+# Use our 5 new biological groupings
+feature_meta$feature_group <- get_new_feature_group(feature_meta$feature)
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group")], by = "feature")
+}
+
+safe_logp <- function(p) {
+  p <- as.numeric(p)
+  p[p <= 0 | is.na(p)] <- NA_real_
+  -log10(p)
+}
+
+label_exposure <- function(x) {
+  gsub("_", " ", x, fixed = TRUE)
+}
+
+build_corr_heatmap_df <- function(df, feature_cols) {
+  feature_cols <- intersect(feature_cols, names(df))
+  if (length(feature_cols) < 2) return(NULL)
+
+  mat <- as.matrix(df[, feature_cols, drop = FALSE])
+  storage.mode(mat) <- "numeric"
+  keep <- colSums(is.finite(mat)) >= 20
+  mat <- mat[, keep, drop = FALSE]
+  if (ncol(mat) < 2) return(NULL)
+
+  cor_mat <- suppressWarnings(stats::cor(mat, use = "pairwise.complete.obs"))
+  cor_mat[!is.finite(cor_mat)] <- 0
+  diag(cor_mat) <- 1
+  cor_mat <- pmax(pmin(cor_mat, 1), -1)
+
+  ord <- stats::hclust(stats::as.dist(1 - cor_mat), method = "average")$order
+  cor_mat <- cor_mat[ord, ord, drop = FALSE]
+
+  expand.grid(
+    row = seq_len(nrow(cor_mat)),
+    col = seq_len(ncol(cor_mat))
+  ) %>%
+    mutate(correlation = as.vector(cor_mat))
+}
+
+strip_window_suffix <- function(x) {
+  x <- sub("_[12]$", "", x)
+  sub("[12]$", "", x)
+}
+
+pick_representative_exposure <- function(df) {
+  cand <- df %>%
+    filter(is.finite(q.value)) %>%
+    group_by(exposure) %>%
+    summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+    arrange(best_q)
+  if (nrow(cand) == 0) return(NA_character_)
+  cand$exposure[[1]]
+}
+
+early_res <- flatten_age(age_res, "early")
+late_res <- flatten_age(age_res, "late")
+mutual_res <- flatten_age(age_res, "mutual")
+early_res_sens <- flatten_age(age_res_sens, "early")
+late_res_sens <- flatten_age(age_res_sens, "late")
+
+rep_early <- pick_representative_exposure(early_res)
+rep_late <- pick_representative_exposure(late_res)
+
+rep_tbl <- data.frame(
+  window = c("Early pregnancy", "Late pregnancy"),
+  selected_exposure = c(rep_early, rep_late),
+  selection_rule = c(
+    "Best q-value in early-window age-specific models",
+    "Best q-value in late-window age-specific models"
+  ),
+  stringsAsFactors = FALSE
+)
+```
+
+Selected exposures used in this section. These are rule-based appendix exemplars, not hand-picked headline results:
+
+```{r}
+#| label: secondary-figures-01
+make_table(rep_tbl, caption = "Selected representative exposures for secondary figures")
+```
+
+## Figure B1. Global association screen
+
+```{r}
+#| label: fig-global-screen
+#| fig-cap: "Global association screen across pregnancy windows (Early/Late) and child age panels (6mo to 5-6y). Points indicate -log10(p-values) for all metabolites, colored by the new 5 biological classes."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+screen_df <- bind_rows(
+  early_res %>% filter(exposure == rep_early) %>% mutate(window = "Early pregnancy"),
+  late_res %>% filter(exposure == rep_late) %>% mutate(window = "Late pregnancy")
+) %>%
+  add_feature_meta() %>%
+  group_by(window, visit) %>%
+  arrange(p.value, .by_group = TRUE) %>%
+  mutate(rank = row_number(), logp = safe_logp(p.value)) %>%
+  ungroup()
+
+screen_df %>%
+  ggplot(aes(x = rank, y = logp, color = feature_group)) +
+  geom_point(alpha = 0.7, size = 1.4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey45") +
+  facet_grid(window ~ visit, scales = "free_x") +
+  labs(
+    x = "Ordered metabolite rank",
+    y = "-log10(p)",
+    color = "Metabolite class",
+    title = "Global association screens by pregnancy window and child age panel"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Figure B2. Main forest plot of top hits
+
+```{r}
+#| label: fig-forest-main
+#| fig-cap: "Main forest plots showing standardized beta coefficients (95% CI) for the top 10 metabolic associations by window and visit, grouped and colored by the 5 biological classes."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+forest_df <- bind_rows(
+  early_res %>% filter(exposure == rep_early) %>% mutate(window = "Early pregnancy"),
+  late_res %>% filter(exposure == rep_late) %>% mutate(window = "Late pregnancy")
+) %>%
+  add_feature_meta() %>%
+  group_by(window, visit) %>%
+  slice_min(q.value, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(feature_lab = paste0(feature_group, " | ", feature))
+
+forest_df %>%
+  ggplot(aes(x = estimate, y = fct_reorder(feature_lab, estimate), color = feature_group)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, color = "grey55") +
+  geom_point(size = 1.8) +
+  facet_grid(window ~ visit, scales = "free_y", space = "free_y") +
+  labs(
+    x = "Standardized beta (95% CI)",
+    y = NULL,
+    color = "Metabolite class",
+    title = "Main forest plots for selected exposures"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+## Figure B3. Timing comparison (early vs late)
+
+```{r}
+#| label: fig-timing-ladder
+#| fig-cap: "Timing comparison (ladder plot) of mutually adjusted beta coefficients for early vs. late pregnancy diet measurements, colored by the 5 biological classes."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 9
+timing_df <- mutual_res %>%
+  add_feature_meta() %>%
+  mutate(best_p = pmin(p_early, p_late, na.rm = TRUE)) %>%
+  group_by(visit) %>%
+  slice_min(best_p, n = 12, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(visit, feature, feature_group, estimate_early, estimate_late) %>%
+  pivot_longer(
+    cols = c(estimate_early, estimate_late),
+    names_to = "window",
+    values_to = "estimate"
+  ) %>%
+  mutate(
+    window = recode(window, estimate_early = "Early pregnancy", estimate_late = "Late pregnancy")
+  )
+
+timing_df %>%
+  ggplot(aes(x = window, y = estimate, group = feature, color = feature_group)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_line(alpha = 0.4) +
+  geom_point(size = 1.7) +
+  facet_wrap(~ visit) +
+  labs(
+    x = NULL,
+    y = "Mutually adjusted beta",
+    color = "Metabolite class",
+    title = "Timing comparison of early vs late pregnancy estimates"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Figure B4. Age-pattern comparison across child visits
+
+```{r}
+#| label: fig-longitudinal-comp
+#| fig-cap: "Age-specific comparison across child visits for one matched exposure family. This panel visualizes age-specific betas and confidence intervals, colored by class."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 11
+base_early <- unique(strip_window_suffix(early_res$exposure))
+base_late <- unique(strip_window_suffix(late_res$exposure))
+common_base <- intersect(base_early, base_late)
+
+base_rank <- bind_rows(
+  early_res %>% mutate(base = strip_window_suffix(exposure)),
+  late_res %>% mutate(base = strip_window_suffix(exposure))
+) %>%
+  filter(base %in% common_base) %>%
+  group_by(base) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(best_q)
+
+selected_base <- if (nrow(base_rank) > 0) base_rank$base[[1]] else NA_character_
+
+exp_early <- early_res %>%
+  filter(strip_window_suffix(exposure) == selected_base) %>%
+  group_by(exposure) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(best_q) %>%
+  slice_head(n = 1) %>%
+  pull(exposure)
+
+exp_late <- late_res %>%
+  filter(strip_window_suffix(exposure) == selected_base) %>%
+  group_by(exposure) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(best_q) %>%
+  slice_head(n = 1) %>%
+  pull(exposure)
+
+traj_df <- bind_rows(
+  early_res %>% filter(exposure == exp_early) %>% mutate(window = "Early pregnancy"),
+  late_res %>% filter(exposure == exp_late) %>% mutate(window = "Late pregnancy")
+) %>%
+  add_feature_meta()
+
+top_traj_feat <- traj_df %>%
+  group_by(feature) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  slice_min(best_q, n = 8, with_ties = FALSE)
+
+traj_plot <- traj_df %>%
+  semi_join(top_traj_feat, by = "feature") %>%
+  mutate(
+    visit_age = factor(visit, levels = c(4, 5, 6, 7), labels = c("6 mo", "12 mo", "24 mo", "5-6 y")),
+    feature_lab = paste0(feature_group, " | ", feature)
+  )
+
+traj_plot %>%
+  ggplot(aes(x = visit_age, y = estimate, color = window, group = window)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1, linewidth = 0.35) +
+  facet_wrap(~ feature_lab, scales = "free_y") +
+  labs(
+    x = "Child age panel",
+    y = "Standardized beta (95% CI)",
+    color = "Pregnancy window",
+    title = paste0("Age-specific longitudinal comparison for exposure family: ", selected_base)
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+## Figure B5. Sensitivity stability by window and visit
+
+```{r}
+#| label: fig-sensitivity-stability
+#| fig-cap: "Stability of age-specific study estimates under expanded covariate adjustment. Reclassification uses the q < 0.10 threshold."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 9
+stability_tbl <- bind_rows(
+  compare_primary_sensitivity(early_res, early_res_sens, c("exposure", "feature", "visit")) %>% mutate(window = "Early pregnancy"),
+  compare_primary_sensitivity(late_res, late_res_sens, c("exposure", "feature", "visit")) %>% mutate(window = "Late pregnancy")
+) %>%
+  group_by(window, visit) %>%
+  summarise(
+    pairs_compared = n(),
+    median_abs_delta = median(abs_delta, na.rm = TRUE),
+    q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    median_abs_delta = round(median_abs_delta, 3),
+    q_reclassification_fraction = round(q_reclassification_fraction, 3),
+    visit_lab = factor(visit, levels = c(4, 5, 6, 7), labels = c("6 mo", "12 mo", "24 mo", "5-6 y"))
+  )
+
+make_table(stability_tbl, caption = "Age-specific sensitivity stability summary")
+
+stability_tbl %>%
+  pivot_longer(cols = c(median_abs_delta, q_reclassification_fraction), names_to = "metric", values_to = "value") %>%
+  mutate(metric = recode(metric,
+    median_abs_delta = "Median absolute beta change",
+    q_reclassification_fraction = "Fraction reclassified at q < 0.10"
+  )) %>%
+  ggplot(aes(x = visit_lab, y = value, fill = window)) +
+  geom_col(position = "dodge", width = 0.7) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    x = "Child age panel",
+    y = "Value",
+    fill = "Window",
+    title = "Sensitivity stability across study age-specific models"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+## Figure B6. Metabolite-class composition of significant hits
+
+```{r}
+#| label: fig-class-composition
+#| fig-cap: "Metabolite-class composition of significant associations (q < 0.10) across study age-specific and mutual-timing components, grouped by the 5 biological classes."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 8
+class_comp <- bind_rows(
+  early_res %>% filter(q.value < 0.1) %>% mutate(component = paste0("Q1 early | visit ", visit)),
+  late_res %>% filter(q.value < 0.1) %>% mutate(component = paste0("Q2 late | visit ", visit)),
+  mutual_res %>% filter(q_early < 0.1) %>% mutate(component = paste0("Q3 early term | visit ", visit)),
+  mutual_res %>% filter(q_late < 0.1) %>% mutate(component = paste0("Q3 late term | visit ", visit))
+) %>%
+  add_feature_meta() %>%
+  count(component, feature_group, name = "n_hits") %>%
+  group_by(component) %>%
+  mutate(hit_fraction = n_hits / sum(n_hits)) %>%
+  ungroup()
+
+make_table(
+  class_comp %>% mutate(hit_fraction = round(hit_fraction, 3)),
+  caption = "Metabolite-class composition of significant study hits"
+)
+
+class_comp %>%
+  ggplot(aes(x = component, y = hit_fraction, fill = feature_group)) +
+  geom_col(position = "fill", width = 0.7) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    x = NULL,
+    y = "Share of significant hits",
+    fill = "Metabolite class",
+    title = "Class composition of significant study findings"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+## Figure B7. Metabolite correlation heatmap
+
+```{r}
+#| label: fig-metabolite-correlation
+#| fig-cap: "Correlation heatmap across all 250 metabolite features. Correlations are computed from the pooled standardized metabolite matrix and ordered by official NMR group."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 9
+
+mat_data <- as.matrix(df_all[, intersect(metabolite_cols, names(df_all)), drop = FALSE])
+storage.mode(mat_data) <- "numeric"
+keep_cols <- colSums(is.finite(mat_data)) >= 20
+mat_data <- mat_data[, keep_cols, drop = FALSE]
+
+if (ncol(mat_data) < 2) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "Metabolite correlation heatmap unavailable") +
+    theme_void()
+} else {
+  cor_mat <- suppressWarnings(cor(mat_data, use = "pairwise.complete.obs"))
+  cor_mat[!is.finite(cor_mat)] <- 0
+  diag(cor_mat) <- 1
+  cor_mat <- pmax(pmin(cor_mat, 1), -1)
+
+  # Fetch NMR group metadata
+  rd <- as.data.frame(rowData(experiments(mae)[["visit_all"]]), stringsAsFactors = FALSE)
+  rd$Feature <- rownames(rd)
+  rd$Group <- as.character(rd$Group)
+  rd$Group[is.na(rd$Group) | rd$Group == ""] <- "Unknown"
+
+  feature_meta_here <- rd %>%
+    filter(Feature %in% colnames(cor_mat)) %>%
+    arrange(match(Feature, colnames(cor_mat)))
+
+  group_order <- unique(feature_meta_here$Group)
+  
+  ordered_names <- unlist(lapply(group_order, function(group_nm) {
+    members <- feature_meta_here$Feature[feature_meta_here$Group == group_nm]
+    if (length(members) > 2) {
+      group_cor <- cor_mat[members, members, drop = FALSE]
+      members[hclust(as.dist(1 - abs(group_cor)))$order]
+    } else {
+      members
+    }
+  }), use.names = FALSE)
+  ordered_names <- intersect(ordered_names, colnames(cor_mat))
+
+  feature_order <- data.frame(
+    Feature = ordered_names,
+    Position = seq_along(ordered_names),
+    stringsAsFactors = FALSE
+  ) %>%
+    left_join(feature_meta_here[, c("Feature", "Group")], by = "Feature")
+
+  group_ranges <- feature_order %>%
+    group_by(Group) %>%
+    summarise(
+      start = min(Position) - 0.5,
+      end = max(Position) + 0.5,
+      center = mean(Position),
+      n_features = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(Group = factor(Group, levels = group_order)) %>%
+    arrange(Group)
+
+  group_label_df <- group_ranges %>%
+    mutate(Label = stringr::str_wrap(as.character(Group), width = 24))
+
+  boundary_pos <- sort(unique(c(group_ranges$start, group_ranges$end)))
+  boundary_pos <- boundary_pos[boundary_pos > 0.5 & boundary_pos < length(ordered_names) + 0.5]
+
+  cor_long_df <- as.data.frame(cor_mat[ordered_names, ordered_names]) %>%
+    mutate(Feature1 = rownames(cor_mat[ordered_names, ordered_names])) %>%
+    pivot_longer(-Feature1, names_to = "Feature2", values_to = "Correlation") %>%
+    left_join(feature_order %>% select(Feature1 = Feature, X = Position), by = "Feature1") %>%
+    left_join(feature_order %>% select(Feature2 = Feature, Y = Position), by = "Feature2")
+
+  ggplot(cor_long_df, aes(x = X, y = Y, fill = Correlation)) +
+    geom_tile() +
+    geom_vline(xintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+    geom_hline(yintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+    ggrepel::geom_text_repel(
+      data = group_label_df,
+      aes(x = 0.5, y = center, label = Label),
+      inherit.aes = FALSE,
+      nudge_x = -45,
+      direction = "y",
+      hjust = 1,
+      size = 2.35,
+      segment.color = "grey35",
+      segment.size = 0.18,
+      min.segment.length = 0,
+      box.padding = 0.12,
+      point.padding = 0.05,
+      max.overlaps = Inf
+    ) +
+    scale_fill_gradient2(
+      low = "#2166AC",
+      mid = "white",
+      high = "#B2182B",
+      midpoint = 0,
+      limits = c(-1, 1)
+    ) +
+    scale_x_continuous(limits = c(-70, length(ordered_names) + 0.5), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0.5, length(ordered_names) + 0.5), expand = c(0, 0)) +
+    coord_fixed(clip = "off") +
+    labs(x = NULL, y = NULL, fill = "r", title = "Metabolite correlation structure") +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      plot.margin = margin(5.5, 5.5, 5.5, 120),
+      legend.position = "right"
+    )
+}
+```
+
+
+# Biological Group Score Results
+
+These figures display the secondary analyses using the 5 predefined biological metabolite groups (Inflammation, Amino Acids, Glycolysis & Energy, Fatty Acids, and Lipoproteins & Lipids) and summarize the main effects, timing comparisons, and child sex-stratification models.
+
+::: {.callout-note collapse="true" title="Show group definitions (173 metabolites classified)"}
+The 173 individual metabolites measured in the study are classified into the 5 groups as follows:
+
+*   **Inflammation (1 metabolite):** GlycA
+*   **Amino Acids (10 metabolites):** Ala, Gln, Gly, His, Ile, Leu, Phe, Total BCAA, Tyr, Val
+*   **Glycolysis & Energy (11 metabolites):** Acetate, Acetoacetate, Acetone, Albumin, bOHbutyrate, Citrate, Creatinine, Glucose, Glycerol, Lactate, Pyruvate
+*   **Fatty Acids (18 metabolites):** DHA, DHA-ratio, LA, LA-ratio, MUFA, MUFA-ratio, Omega-3, Omega-3-ratio, Omega-6, Omega-6-ratio, Omega-6/Omega-3 ratio, PUFA, PUFA-ratio, PUFA/MUFA, SFA, SFA-ratio, Total-FA, Unsaturation
+*   **Lipoproteins & Lipids (133 metabolites):** ApoA1, ApoB, ApoB/ApoA1, Cholines, Clinical LDL-C, HDL size, HDL-C, HDL-CE, HDL-FC, HDL-L, HDL-P, HDL-PL, HDL-TG, IDL-C, IDL-C-ratio, IDL-CE, IDL-CE-ratio, IDL-FC, IDL-FC-ratio, IDL-L, IDL-P, IDL-PL, IDL-PL-ratio, IDL-TG, IDL-TG-ratio, L-HDL-C, L-HDL-C-ratio, L-HDL-CE, L-HDL-CE-ratio, L-HDL-FC, L-HDL-FC-ratio, L-HDL-L, L-HDL-P, L-HDL-PL, L-HDL-PL-ratio, L-HDL-TG, L-HDL-TG-ratio, L-LDL-C, L-LDL-C-ratio, L-LDL-CE, L-LDL-CE-ratio, L-LDL-FC, L-LDL-FC-ratio, L-LDL-L, L-LDL-P, L-LDL-PL, L-LDL-PL-ratio, L-LDL-TG, L-LDL-TG-ratio, L-VLDL-C, L-VLDL-C-ratio, L-VLDL-CE, L-VLDL-CE-ratio, L-VLDL-FC, L-VLDL-FC-ratio, L-VLDL-L, L-VLDL-P, L-VLDL-PL, L-VLDL-PL-ratio, L-VLDL-TG, L-VLDL-TG-ratio, LDL size, LDL-C, LDL-CE, LDL-FC, LDL-L, LDL-P, LDL-PL, LDL-TG, M-HDL-C, M-HDL-C-ratio, M-HDL-CE, M-HDL-CE-ratio, M-HDL-FC, M-HDL-FC-ratio, M-HDL-L, M-HDL-P, M-HDL-PL, M-HDL-PL-ratio, M-HDL-TG, M-HDL-TG-ratio, M-LDL-C, M-LDL-C-ratio, M-LDL-CE, M-LDL-CE-ratio, M-LDL-FC, M-LDL-FC-ratio, M-LDL-L, M-LDL-P, M-LDL-PL, M-LDL-PL-ratio, M-LDL-TG, M-LDL-TG-ratio, M-VLDL-C, M-VLDL-C-ratio, M-VLDL-CE, M-VLDL-CE-ratio, M-VLDL-FC, M-VLDL-FC-ratio, M-VLDL-L, M-VLDL-P, M-VLDL-PL, M-VLDL-PL-ratio, M-VLDL-TG, M-VLDL-TG-ratio, non-HDL-C, Phosphatidylc, Phosphoglyc, Remnant-C, S-HDL-C, S-HDL-C-ratio, S-HDL-CE, S-HDL-CE-ratio, S-HDL-FC, S-HDL-FC-ratio, S-HDL-L, S-HDL-P, S-HDL-PL, S-HDL-PL-ratio, S-HDL-TG, S-HDL-TG-ratio, S-LDL-C, S-LDL-C-ratio, S-LDL-CE, S-LDL-CE-ratio, S-LDL-FC, S-LDL-FC-ratio, S-LDL-L, S-LDL-P, S-LDL-PL, S-LDL-PL-ratio, S-LDL-TG, S-LDL-TG-ratio, S-VLDL-C, S-VLDL-C-ratio, S-VLDL-CE, S-VLDL-CE-ratio, S-VLDL-FC, S-VLDL-FC-ratio, S-VLDL-L, S-VLDL-P, S-VLDL-PL, S-VLDL-PL-ratio, S-VLDL-TG, S-VLDL-TG-ratio, Sphingomyelins, TG/PG, Total-C, Total-CE, Total-FC, Total-L, Total-P, Total-PL, Total-TG, VLDL size, VLDL-C, VLDL-CE, VLDL-FC, VLDL-L, VLDL-P, VLDL-PL, VLDL-TG, XL-HDL-C, XL-HDL-C-ratio, XL-HDL-CE, XL-HDL-CE-ratio, XL-HDL-FC, XL-HDL-FC-ratio, XL-HDL-L, XL-HDL-P, XL-HDL-PL, XL-HDL-PL-ratio, XL-HDL-TG, XL-HDL-TG-ratio, XL-VLDL-C, XL-VLDL-C-ratio, XL-VLDL-CE, XL-VLDL-CE-ratio, XL-VLDL-FC, XL-VLDL-FC-ratio, XL-VLDL-L, XL-VLDL-P, XL-VLDL-PL, XL-VLDL-PL-ratio, XL-VLDL-TG, XL-VLDL-TG-ratio, XS-VLDL-C, XS-VLDL-C-ratio, XS-VLDL-CE, XS-VLDL-CE-ratio, XS-VLDL-FC, XS-VLDL-FC-ratio, XS-VLDL-L, XS-VLDL-P, XS-VLDL-PL, XS-VLDL-PL-ratio, XS-VLDL-TG, XS-VLDL-TG-ratio, XXL-VLDL-C, XXL-VLDL-C-ratio, XXL-VLDL-CE, XXL-VLDL-CE-ratio, XXL-VLDL-FC, XXL-VLDL-FC-ratio, XXL-VLDL-L, XXL-VLDL-P, XXL-VLDL-PL, XXL-VLDL-PL-ratio, XXL-VLDL-TG, XXL-VLDL-TG-ratio
+:::
+
+```{r}
+#| label: group-setup
+#| include: false
+# Load secondary results (group-level scores)
+results_sec <- readRDS("../output/results/targeted/prenatal_diet_secondary_results.rds")
+
+q4_sec <- results_sec$q4_group_scores
+q5_sec <- results_sec$q5_group_scores
+q6_sec <- results_sec$q6_group_scores
+q7_sec <- results_sec$q7_group_scores
+sex_int_sec <- results_sec$sex_interaction
+sex_strat_sec <- results_sec$sex_stratified
+q7_int_sec <- results_sec$q7_sex_interaction
+q7_strat_sec <- results_sec$q7_sex_stratified
+
+# Combine Q4 + Q5 into a unified early/late dataframe for heatmaps and forests
+early_late_sec <- bind_rows(
+  q4_sec %>% mutate(window = "Early pregnancy"),
+  q5_sec %>% mutate(window = "Late pregnancy")
+) %>%
+  rename(feature = outcome) %>%
+  mutate(
+    feature = gsub("^grp_", "", feature)
+  )
+
+# Q6 mutual timing
+mutual_sec <- q6_sec %>%
+  mutate(
+    feature = gsub("^grp_", "", outcome),
+    exposure_pair = gsub("_[12]$", "", gsub("[12]$", "", exposure_early))
+  )
+
+group_labels <- c(
+  inflammation = "Inflammation (GlycA)",
+  amino_acids = "Amino Acids",
+  glycolysis_energy = "Glycolysis & Energy",
+  fatty_acids = "Fatty Acids",
+  lipoproteins_lipids = "Lipoproteins & Lipids"
+)
+
+label_group <- function(x) {
+  ifelse(x %in% names(group_labels), group_labels[x], x)
+}
+
+label_exposure_detailed <- function(x) {
+  x <- gsub("MDietaryPatterns_", "Dietary Pattern ", x)
+  x <- gsub("MDIINormalDiet", "DII (Normal Diet) ", x)
+  x <- gsub("MDIIDensityDiet", "DII (Density Diet) ", x)
+  x <- gsub("MIDQ", "Diet Quality Index ", x)
+  x <- gsub("MEPercentProDiet", "% Energy Protein ", x)
+  x <- gsub("MEPercentCHODiet", "% Energy CHO ", x)
+  x <- gsub("MEPercentFatDiet", "% Energy Fat ", x)
+  x <- gsub("MEPercentPUFADiet", "% Energy PUFA ", x)
+  x <- gsub("MEPercentMUFADiet", "% Energy MUFA ", x)
+  x <- gsub("MEPercentSFADiet", "% Energy SFA ", x)
+  x <- gsub("MEPercentFAn3Diet", "% Energy omega-3 ", x)
+  x <- gsub("MEPercentFAn6Diet", "% Energy omega-6 ", x)
+  x <- gsub("MEPercentFiballDiet", "% Energy Fiber ", x)
+  x
+}
+```
+
+## Figure B8. Global association heatmap of biological metabolite groups
+
+This heatmap displays the standardized beta coefficients of all early and late pregnancy dietary variables with the 5 biological group scores across the child visits.
+
+```{r}
+#| label: fig-group-heatmap
+#| fig-cap: "Heatmap of standardized beta coefficients between maternal diet and biological metabolite groups. Cells show beta values when p < 0.05."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+heatmap_df <- early_late_sec %>%
+  filter(note == "ok") %>%
+  mutate(
+    group_lbl = label_group(feature),
+    exposure_lbl = label_exposure_detailed(exposure),
+    visit_lbl = factor(visit, levels = c(4, 5, 6, 7), labels = c("6 mo", "12 mo", "24 mo", "5-6 y")),
+    label_sig = ifelse(p.value < 0.05, sprintf("%.3f", estimate), "")
+  )
+
+ggplot(heatmap_df, aes(x = group_lbl, y = exposure_lbl, fill = estimate)) +
+  geom_tile(color = "white", size = 0.2) +
+  geom_text(aes(label = label_sig), size = 3, color = "black") +
+  scale_fill_gradient2(
+    low = "#313695", mid = "#ffffbf", high = "#a50026",
+    midpoint = 0, name = "Beta (SD)"
+  ) +
+  facet_grid(window ~ visit_lbl) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold", size = 11),
+    axis.title = element_blank()
+  ) +
+  labs(title = "Standardized beta coefficients for biological metabolite groups")
+```
+
+## Figure B9. Group-level forest plots for representative exposures
+
+This forest plot displays the standardized beta coefficients (and 95% confidence intervals) for the associations of the representative early pregnancy (`r label_exposure_detailed(rep_early)`) and late pregnancy (`r label_exposure_detailed(rep_late)`) dietary exposures on the 5 biological metabolite groups across visits.
+
+```{r}
+#| label: fig-group-forest
+#| fig-cap: "Forest plots showing group score standardized betas (95% CI) for maternal dietary patterns."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+forest_df_sec <- early_late_sec %>%
+  filter(
+    note == "ok",
+    (window == "Early pregnancy" & exposure == rep_early) |
+    (window == "Late pregnancy" & exposure == rep_late)
+  ) %>%
+  mutate(
+    group_lbl = label_group(feature),
+    visit_lbl = factor(visit, levels = c(4, 5, 6, 7), labels = c("6 mo", "12 mo", "24 mo", "5-6 y"))
+  )
+
+ggplot(forest_df_sec, aes(x = estimate, y = group_lbl, color = group_lbl)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, linewidth = 0.8) +
+  geom_point(size = 3.5) +
+  facet_grid(window ~ visit_lbl) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 12),
+    panel.border = element_rect(fill = NA, color = "grey85")
+  ) +
+  labs(
+    x = "Standardized beta coefficient (95% CI)",
+    y = NULL,
+    title = "Associations of maternal dietary patterns with child metabolite group scores"
+  )
+```
+
+## Figure B10. Mutual timing comparison on biological group scores
+
+Ladder plot comparing mutually adjusted beta coefficients for early vs. late pregnancy diet measurements (Q6) on the 5 biological groups.
+
+```{r}
+#| label: fig-group-timing-ladder
+#| fig-cap: "Mutual-timing comparison of maternal dietary exposures on child biological metabolite groups."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 9
+timing_df_sec <- mutual_sec %>%
+  filter(note == "ok", exposure_pair == strip_window_suffix(rep_early)) %>%
+  mutate(
+    group_lbl = label_group(feature),
+    visit_lbl = factor(visit, levels = c(4, 5, 6, 7), labels = c("6 mo", "12 mo", "24 mo", "5-6 y"))
+  ) %>%
+  select(visit_lbl, group_lbl, estimate_early, estimate_late) %>%
+  pivot_longer(
+    cols = c(estimate_early, estimate_late),
+    names_to = "window",
+    values_to = "estimate"
+  ) %>%
+  mutate(
+    window = recode(window, estimate_early = "Early pregnancy", estimate_late = "Late pregnancy")
+  )
+
+ggplot(timing_df_sec, aes(x = window, y = estimate, group = group_lbl, color = group_lbl)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 3) +
+  facet_wrap(~ visit_lbl, ncol = 4) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold", size = 12)
+  ) +
+  labs(
+    x = NULL,
+    y = "Mutually adjusted beta",
+    color = "Metabolite group",
+    title = paste("Early vs. Late Pregnancy mutual timing comparison for", label_exposure_detailed(strip_window_suffix(rep_early)))
+  )
+```
+
+## Figure B11. Sex-stratified effects for significant Diet × Sex interactions
+
+Sex-stratified analyses are conducted and presented separately in boys (blue) and girls (red) ONLY for outcome-exposure pairs that demonstrated a significant Diet × Sex interaction ($p_{\text{interaction}} < 0.05$).
+
+```{r}
+#| label: fig-group-sex-stratified
+#| fig-cap: "Sex-stratified standardized beta coefficients (95% CI) in boys and girls for groups showing significant Diet x Sex interaction (p < 0.05)."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 8
+# Get significant interaction pairs
+sig_interactions <- sex_int_sec %>%
+  filter(note == "ok", !is.na(interaction_p), interaction_p < 0.05)
+
+if (nrow(sig_interactions) == 0 || nrow(sex_strat_sec) == 0) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No significant Diet x Sex interactions (p < 0.05) found in group-level models.") +
+    theme_void()
+} else {
+  # sex_strat_sec has columns: outcome, exposure, estimate, conf.low, conf.high, p.value, sex_level, visit
+  strat_plot_df <- sex_strat_sec %>%
+    filter(note == "ok") %>%
+    mutate(
+      feature = gsub("^grp_", "", outcome),
+      group_lbl = label_group(feature),
+      exposure_lbl = label_exposure_detailed(exposure),
+      label = paste0("Visit ", visit, " | ", group_lbl, "\nvs. ", exposure_lbl),
+      sex = ifelse(sex_level == "1", "Boys", "Girls")
+    )
+  
+  ggplot(strat_plot_df, aes(x = estimate, y = label, color = sex)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, linewidth = 0.9, position = position_dodge(0.4)) +
+    geom_point(size = 3.5, position = position_dodge(0.4)) +
+    scale_color_manual(values = c("Boys" = "#2c7bb6", "Girls" = "#d7191c")) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "right",
+      axis.title.y = element_blank()
+    ) +
+    labs(
+      x = "Sex-stratified standardized beta (95% CI)",
+      color = "Child sex",
+      title = "Maternal diet associations stratified by child sex (biological groups)"
+    )
+}
+```
+
+## Figure B12. Correlation heatmap of biological group scores
+
+Correlation heatmap visualising the relationships and redundancies between the 5 biological group scores at Visit 4 (6 mo).
+
+```{r}
+#| label: fig-group-correlation
+#| fig-cap: "Correlation heatmap of the 5 biological group scores at Visit 4."
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 7
+# Compute group scores for visit 4 from MAE
+source("shared/metabolomics_common.R")
+tse_v4 <- experiments(mae)[["visit_4"]]
+mat_v4 <- assay(tse_v4, "mbo")
+feat_map <- results_sec$feature_map
+feat_avail <- intersect(feat_map$feature[!is.na(feat_map$group)], rownames(mat_v4))
+
+# Z-score and average within groups
+grp_names <- unique(na.omit(feat_map$group))
+scores_v4 <- data.frame(row.names = colnames(mat_v4))
+for (grp in grp_names) {
+  members <- feat_map$feature[feat_map$group == grp & !is.na(feat_map$group)]
+  members <- intersect(members, rownames(mat_v4))
+  if (length(members) == 0) next
+  sub <- mat_v4[members, , drop = FALSE]
+  sub_z <- t(apply(sub, 1, function(x) {
+    x <- suppressWarnings(as.numeric(x))
+    sx <- sd(x, na.rm = TRUE)
+    if (!is.finite(sx) || sx == 0) return(rep(NA_real_, length(x)))
+    (x - mean(x, na.rm = TRUE)) / sx
+  }))
+  scores_v4[[grp]] <- colMeans(sub_z, na.rm = TRUE)
+}
+
+names(scores_v4) <- label_group(names(scores_v4))
+cor_v4 <- cor(scores_v4, use = "pairwise.complete.obs")
+
+cor_long_sec <- as.data.frame(cor_v4) %>%
+  mutate(group1 = rownames(.)) %>%
+  pivot_longer(cols = -group1, names_to = "group2", values_to = "correlation")
+
+ggplot(cor_long_sec, aes(x = group1, y = group2, fill = correlation)) +
+  geom_tile(color = "white", size = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 4) +
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "#f7f7f7", high = "#b2182b",
+    midpoint = 0, limits = c(-1, 1), name = "Correlation (r)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    axis.title = element_blank(),
+    panel.grid = element_blank()
+  ) +
+  labs(title = "Metabolite group correlation structure (Visit 4)")
+```
+
+# Individual Metabolite Sex-Specific Interactions
+
+To investigate whether maternal dietary exposures associate with individual child metabolites in a sex-specific manner, we tested the interaction between maternal diet and child sex (`diet * CGender`) at the level of individual metabolites. We evaluated both cross-sectional (each visit separately) and longitudinal (mixed models across all visits) relationships. 
+
+For metabolite-exposure pairs with a significant interaction ($p_{\text{interaction}} < 0.05$), we performed sex-stratified analyses to estimate the association effect size separately for boys and girls.
+
+## Table B12. Significant individual metabolite-diet interactions (Cross-sectional)
+
+The table below shows all individual metabolite-exposure pairs that demonstrated a significant Diet × Sex interaction ($p_{\text{interaction}} < 0.05$) in cross-sectional models. Estimates represent standardized beta coefficients and 95% confidence intervals.
+
+```{r}
+#| label: tbl-ind-sex-interaction
+#| tbl-cap: "Significant individual metabolite-diet interactions and sex-stratified estimates (Cross-sectional)."
+#| echo: false
+library(dplyr)
+library(tidyr)
+
+ind_int <- results_sec$ind_sex_interaction %>%
+  filter(interaction_p < 0.05) %>%
+  mutate(
+    visit_lbl = case_when(
+      visit == 4 ~ "6 mo",
+      visit == 5 ~ "12 mo",
+      visit == 6 ~ "24 mo",
+      visit == 7 ~ "5-6 y",
+      TRUE ~ as.character(visit)
+    ),
+    exposure_lbl = pretty_var(exposure)
+  )
+
+ind_strat <- results_sec$ind_sex_stratified %>%
+  mutate(
+    sex = ifelse(sex_level == 1, "Boys", "Girls"),
+    est_ci = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high)
+  ) %>%
+  select(visit, exposure, outcome, sex, est_v = estimate, est_ci)
+
+ind_strat_wide <- ind_strat %>%
+  pivot_wider(
+    names_from = sex,
+    values_from = c(est_v, est_ci)
+  )
+
+ind_table <- inner_join(
+  ind_int %>% select(visit_lbl, visit, exposure_lbl, exposure, outcome, interaction_p, n),
+  ind_strat_wide,
+  by = c("visit", "exposure", "outcome")
+) %>%
+  arrange(interaction_p) %>%
+  transmute(
+    Visit = visit_lbl,
+    Exposure = exposure_lbl,
+    Metabolite = outcome,
+    `Interaction p-value` = sprintf("%.4f", interaction_p),
+    `Boys (Beta, 95% CI)` = ifelse(is.na(est_v_Boys), "N/A (low var/n)", est_ci_Boys),
+    `Girls (Beta, 95% CI)` = ifelse(is.na(est_v_Girls), "N/A (low var/n)", est_ci_Girls),
+    N = n
+  )
+
+make_table(ind_table, page_len = 10, caption = "Individual metabolite-diet interactions by child sex (Cross-sectional)")
+```
+
+## Table B13. Significant individual metabolite-diet interactions (Longitudinal LMM)
+
+The table below shows all individual metabolite-exposure pairs that demonstrated a significant Diet × Sex interaction ($p_{\text{interaction}} < 0.05$) in longitudinal mixed-effects models across all visits. Estimates represent standardized beta coefficients and 95% confidence intervals from sex-stratified linear mixed models.
+
+```{r}
+#| label: tbl-ind-sex-interaction-lmm
+#| tbl-cap: "Significant individual metabolite-diet interactions and sex-stratified estimates (Longitudinal LMM)."
+#| echo: false
+
+q7_int <- results_sec$q7_ind_sex_interaction %>%
+  filter(interaction_p < 0.05) %>%
+  mutate(
+    exposure_lbl = pretty_var(exposure)
+  )
+
+q7_strat <- results_sec$q7_ind_sex_stratified %>%
+  mutate(
+    sex = ifelse(sex_level == 1, "Boys", "Girls"),
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error,
+    est_ci = sprintf("%.3f (%.3f, %.3f)", estimate, conf.low, conf.high)
+  ) %>%
+  select(exposure, outcome, sex, est_v = estimate, est_ci)
+
+q7_strat_wide <- q7_strat %>%
+  pivot_wider(
+    names_from = sex,
+    values_from = c(est_v, est_ci)
+  )
+
+q7_table <- inner_join(
+  q7_int %>% select(exposure_lbl, exposure, outcome, interaction_p, n_obs, n_ind),
+  q7_strat_wide,
+  by = c("exposure", "outcome")
+) %>%
+  arrange(interaction_p) %>%
+  transmute(
+    Exposure = exposure_lbl,
+    Metabolite = outcome,
+    `Interaction p-value` = sprintf("%.4f", interaction_p),
+    `Boys (Beta, 95% CI)` = ifelse(is.na(est_v_Boys), "N/A (low var/n)", est_ci_Boys),
+    `Girls (Beta, 95% CI)` = ifelse(is.na(est_v_Girls), "N/A (low var/n)", est_ci_Girls),
+    `N (obs/subjects)` = paste0(n_obs, " / ", n_ind)
+  )
+
+make_table(q7_table, page_len = 10, caption = "Individual metabolite-diet interactions by child sex (Longitudinal LMM)")
+```

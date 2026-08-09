@@ -9,7 +9,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_tenant, get_project_for_tenant
 from app.database import get_db
 from app.models.project import Project
+from app.services.edit_engine import EditBusy, EditConflict, EditEngineError, EditOperation, EditPolicy, apply_transaction, sha256_bytes
 from app.services.file_inspector import TABULAR_PREVIEW_EXTENSIONS, preview_tabular_file
 
 router = APIRouter(prefix="/api/projects/{project_id}/files", tags=["files"])
@@ -80,10 +81,11 @@ def get_file_preview(
 def get_file_content(
     project_id: str,
     file_path: str,
+    response: Response,
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Get the content of a specific project file."""
+    """Get a project file and its content hash for optimistic browser saves."""
     project = get_project_for_tenant(db, project_id, tenant_id)
 
     full_path = _resolve_project_file(project, file_path)
@@ -91,7 +93,15 @@ def get_file_content(
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     if full_path.suffix.lower() in TEXT_EXTENSIONS:
-        return {"content": full_path.read_text(errors="replace"), "path": file_path, "type": "text"}
+        raw = full_path.read_bytes()
+        digest = sha256_bytes(raw) or ""
+        response.headers["ETag"] = f'"{digest}"'
+        return {
+            "content": raw.decode("utf-8", errors="replace"),
+            "path": file_path,
+            "type": "text",
+            "sha256": digest,
+        }
 
     # For other files, serve as download
     return FileResponse(str(full_path), filename=full_path.name)
@@ -102,10 +112,12 @@ def update_file_content(
     project_id: str,
     file_path: str,
     data: FileContentUpdate,
+    response: Response,
+    if_match: str | None = Header(default=None, alias="If-Match"),
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Update an editable generated project text file."""
+    """Update an editable file through the shared CAS-protected edit engine."""
     project = get_project_for_tenant(db, project_id, tenant_id)
     if not project.project_dir:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -116,21 +128,81 @@ def update_file_content(
     if full_path.suffix.lower() not in EDITABLE_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"File type is not editable: {full_path.suffix}")
 
-    from app.services.apply_edits import is_path_locked
-    if is_path_locked(project.project_dir, file_path):
-        raise HTTPException(status_code=403, detail=f"File is locked: {file_path}")
-
     encoded = data.content.encode("utf-8")
     if len(encoded) > MAX_EDIT_BYTES:
         raise HTTPException(status_code=413, detail="File is too large to edit in the browser")
 
-    full_path.write_text(data.content)
+    current = full_path.read_bytes()
+    current_sha256 = sha256_bytes(current) or ""
+    supplied = (if_match or "").strip()
+    if not supplied or supplied == "*":
+        raise HTTPException(
+            status_code=428,
+            detail={
+                "code": "edit_precondition_required",
+                "message": "Send the file SHA-256 in If-Match before saving.",
+                "actual_sha256": current_sha256,
+            },
+        )
+    expected_sha256 = supplied.strip('"')
+    if expected_sha256 != current_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "edit_conflict",
+                "message": "The file changed since it was loaded; reload before saving.",
+                "expected_sha256": expected_sha256,
+                "actual_sha256": current_sha256,
+            },
+        )
+
+    relative_path = full_path.relative_to(Path(project.project_dir).resolve()).as_posix()
+    try:
+        result = apply_transaction(
+            project.project_dir,
+            [
+                EditOperation(
+                    path=relative_path,
+                    kind="rewrite",
+                    content=data.content,
+                    base_sha256=expected_sha256,
+                    reason="Browser editor save",
+                )
+            ],
+            origin="browser",
+            summary=f"Save {relative_path}",
+            policy=EditPolicy(
+                allowed_extensions=frozenset(EDITABLE_EXTENSIONS),
+                allow_create=False,
+                allow_delete=False,
+                require_base_for_rewrite=True,
+            ),
+            validate=True,
+            lock_timeout=0,
+        )
+    except EditBusy as exc:
+        raise HTTPException(status_code=423, detail=exc.to_dict()) from exc
+    except EditConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+    except EditEngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
 
     from app.services.agent_runtime import record_agent_action, refresh_project_memory
+    from app.services.project_edit_index import record_project_edit
+    record_project_edit(db, project, result)
     refresh_project_memory(db, project)
-    record_agent_action(db, project, "file_edit", "completed", f"Saved {file_path}", files=[file_path])
+    record_agent_action(db, project, "file_edit", "completed", f"Saved {relative_path}", files=[relative_path])
+    new_sha256 = sha256_bytes(encoded) or ""
+    response.headers["ETag"] = f'"{new_sha256}"'
 
-    return {"content": data.content, "path": file_path, "type": "text", "saved": True}
+    return {
+        "content": data.content,
+        "path": relative_path,
+        "type": "text",
+        "saved": True,
+        "sha256": new_sha256,
+        "transaction_id": result.transaction_id,
+    }
 
 
 @router.post("/run-chunk")

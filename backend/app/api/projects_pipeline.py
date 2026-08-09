@@ -31,13 +31,16 @@ def _dispatch_task(
     job: Job,
     db: Session,
     background_tasks: BackgroundTasks | None = None,
+    *,
+    task_kwargs: dict | None = None,
 ):
     """Dispatch a long-running analysis task through the configured backend."""
     task_backend = settings.task_backend.lower()
+    dispatch_kwargs = dict(task_kwargs or {})
 
     if task_backend == "celery":
         try:
-            task_func.delay(str(project.id), str(job.id))
+            task_func.delay(str(project.id), str(job.id), **dispatch_kwargs)
             return
         except Exception as exc:
             job.status = "failed"
@@ -49,7 +52,12 @@ def _dispatch_task(
     if task_backend == "background":
         if background_tasks is None:
             raise HTTPException(status_code=500, detail="Background task dispatcher unavailable")
-        background_tasks.add_task(task_func, str(project.id), str(job.id))
+        background_tasks.add_task(
+            task_func,
+            str(project.id),
+            str(job.id),
+            **dispatch_kwargs,
+        )
         return
 
     job.status = "failed"
@@ -185,9 +193,24 @@ def start_generation(
     project = get_project_for_tenant(db, project_id, tenant_id)
     if not project.analysis_plan:
         raise HTTPException(status_code=400, detail="No approved plan")
-    if project.status != "approved":
+    retrying_failed_generation = False
+    if project.status == "failed":
+        latest_failed_job = (
+            db.query(Job)
+            .filter(Job.project_id == project_id, Job.status == "failed")
+            .order_by(Job.created_at.desc())
+            .first()
+        )
+        retrying_failed_generation = bool(
+            latest_failed_job and latest_failed_job.job_type == "generate"
+        )
+    if project.status != "approved" and not retrying_failed_generation:
         raise HTTPException(
-            status_code=409, detail="The analysis plan must be approved before generation"
+            status_code=409,
+            detail=(
+                "Generation can start after plan approval or retry the latest failed generation; "
+                "retry the failed pipeline stage instead."
+            ),
         )
 
     job = Job(project_id=project_id, job_type="generate", status="pending")
@@ -242,7 +265,7 @@ def edit_project(
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Start an AI edit pass on the project source code."""
+    """Start an OmicsBase edit pass on the project source code."""
     project = get_project_for_tenant(db, project_id, tenant_id)
     if not project.project_dir:
         raise HTTPException(status_code=400, detail="No generated project directory available to edit")

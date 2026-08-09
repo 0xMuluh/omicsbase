@@ -272,6 +272,10 @@ async def workspace_agent_stream(
                 "selected_content_dirty": data.selected_content_dirty,
                 "preview_path": data.preview_path,
                 "chat_mode": getattr(data, "chat_mode", None) or "build",
+                "attachments": [
+                    attachment.model_dump(mode="json", exclude_none=True)
+                    for attachment in data.attachments
+                ],
             },
         )
 
@@ -326,12 +330,26 @@ async def workspace_agent_stream(
         )
 
         title_task = None
-        user_msg_count = len([m for m in persisted_history if m.role == "user"])
-        if user_msg_count <= 1 or not (project.name or "").strip() or project.name == "New project":
+        title_expected_name = str(project.name or "")
+        if getattr(project, "name_source", "default") == "default":
             from app.services.home_agent import generate_project_title
             title_task = asyncio.create_task(
                 generate_project_title(user_message.content or data.message)
             )
+
+        def claim_title(new_title: str) -> str | None:
+            from app.services.project_titles import claim_auto_title
+
+            title_db = worker_session_factory()
+            try:
+                return claim_auto_title(
+                    title_db,
+                    project_id=str(project.id),
+                    expected_name=title_expected_name,
+                    proposed_name=new_title,
+                )
+            finally:
+                title_db.close()
 
         def inline_action_handler(action: str, arguments: dict):
             from app.services.agent_runtime import record_agent_action
@@ -401,8 +419,9 @@ async def workspace_agent_stream(
                 usage = event.get("usage")
                 if isinstance(usage, dict):
                     for key, value in usage.items():
+                        usage_key = str(key)
                         try:
-                            provider_usage[str(key)] = int(value)
+                            provider_usage[usage_key] = provider_usage.get(usage_key, 0) + int(value)
                         except (TypeError, ValueError):
                             continue
                 continue
@@ -452,7 +471,16 @@ async def workspace_agent_stream(
                 action = event["action"]
                 arguments = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
                 instruction = event.get("instruction") or data.message.strip()
-                if project.status in {"planning", "generating", "rendering"}:
+                mutation_authorized = event.get("mutation_authorized") is True
+                if not mutation_authorized:
+                    event = {
+                        "type": "final",
+                        "message": (
+                            "I inspected the request but did not start or change the analysis "
+                            "because no explicit workspace mutation was authorized."
+                        ),
+                    }
+                elif project.status in {"planning", "generating", "rendering"}:
                     from app.services.agent_runtime import queue_pending_guidance
 
                     guidance = instruction or data.message.strip()
@@ -461,6 +489,7 @@ async def workspace_agent_stream(
                         project,
                         guidance,
                         source=f"action:{action}",
+                        mutation_authorized=True,
                     )
                     message_text = (
                         "The workspace is busy with another job, so I queued your guidance "
@@ -692,6 +721,7 @@ async def workspace_agent_stream(
                             project,
                             guidance,
                             source="agent",
+                            mutation_authorized=True,
                         )
                         message_text = (
                             f"Queued for after the current job: {queued['content']}"
@@ -798,14 +828,14 @@ async def workspace_agent_stream(
                 try:
                     new_title = title_task.result()
                     title_task = None
-                    if new_title and new_title != project.name:
-                        project.name = new_title
-                        db.commit()
+                    applied_title = claim_title(new_title)
+                    if applied_title:
                         yield _ndjson_event(
                             {
                                 "type": "title_update",
                                 "project_id": str(project.id),
-                                "name": new_title,
+                                "name": applied_title,
+                                "name_source": "auto",
                             }
                         )
                 except Exception as title_err:
@@ -814,14 +844,14 @@ async def workspace_agent_stream(
         if title_task:
             try:
                 new_title = await title_task
-                if new_title and new_title != project.name:
-                    project.name = new_title
-                    db.commit()
+                applied_title = claim_title(new_title)
+                if applied_title:
                     yield _ndjson_event(
                         {
                             "type": "title_update",
                             "project_id": str(project.id),
-                            "name": new_title,
+                            "name": applied_title,
+                            "name_source": "auto",
                         }
                     )
             except Exception as title_err:
@@ -992,7 +1022,14 @@ def _queue_agent_planning(
         "Workspace agent requested analysis planning",
         job_id=str(job.id),
     )
-    _dispatch_task(run_planning, project, job, db, background_tasks)
+    _dispatch_task(
+        run_planning,
+        project,
+        job,
+        db,
+        background_tasks,
+        task_kwargs={"allow_auto_build": False},
+    )
     return job
 
 

@@ -1,0 +1,197 @@
+---
+title: "Species-Level LimROTS Analysis"
+author: ""
+---
+
+This report performs differential abundance testing of species using **LimROTS**, which combines the linear modeling/empirical Bayes framework of `limma` with the Reproducibility-Optimized Test Statistic (`ROTS`) framework.
+
+```{r setup}
+# Source helper functions and load packages
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+taxa_name <- "species"
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Intervention" 
+correction <- "ROTS permutation-based FDR"
+niter_val <- 200 # For faster rendering while preserving statistical validity
+```
+
+Analysis information:
+
+-   **Method:** LimROTS (limma + ROTS)
+-   **Taxonomic level:** **`r taxa_name`**
+-   **Number of Bootstrap Iterations:** `r niter_val`
+-   **Detection threshold:** `r 100 * detection.th`%
+-   **Prevalence threshold:** `r 100 * prevalence.th`%
+
+---
+
+## Across-Group Comparisons (Week 8)
+
+We evaluate differences in species abundance between treatment groups at the post-intervention timepoint (Week 8).
+
+```{r across-group-run}
+# Get species altExp
+se_species <- altExp(tse, "species_prevalent")
+
+# Filter to Week 8 (after treatment)
+se_after <- se_species[, se_species$timepoint == "after"]
+
+# Helper to run pairwise comparison
+run_pairwise_limrots <- function(se_obj, gp1, gp2) {
+  # Subset to group pair
+  sub_se <- se_obj[, se_obj$Intervention %in% c(gp1, gp2)]
+  sub_se$Intervention <- factor(sub_se$Intervention, levels = c(gp1, gp2))
+  
+  # Subset the original tse to match sub_se columns
+  temp_tse <- tse[, colnames(sub_se)]
+  temp_tse$Intervention <- factor(temp_tse$Intervention, levels = c(gp1, gp2))
+  
+  res <- run_limrots_analysis(
+    tse = temp_tse, 
+    assay_name = "species_prevalent", 
+    group_col = "Intervention", 
+    formula_str = "~ 0 + Intervention",
+    niter = niter_val
+  )
+  
+  # Filter rows matching sub_se features
+  res <- res[res$feature %in% rownames(sub_se), ]
+  res$comparison <- paste(gp2, "vs", gp1)
+  return(res)
+}
+
+# Run comparisons
+res_hwp_vs_ctrl <- run_pairwise_limrots(se_after, "Control", "HWP")
+res_hwp_lgg_vs_ctrl <- run_pairwise_limrots(se_after, "Control", "HWP + LGG")
+res_hwp_lgg_vs_hwp <- run_pairwise_limrots(se_after, "HWP", "HWP + LGG")
+
+# Combine results
+across_results <- rbind(res_hwp_vs_ctrl, res_hwp_lgg_vs_ctrl, res_hwp_lgg_vs_hwp)
+```
+
+### Table of Findings (Week 8 Differences)
+
+```{r across-table}
+#| label: tbl-limrots-across-species
+if (knitr::is_html_output()) {
+  datatable(
+    across_results %>% select(feature, comparison, logFC, p.value, FDR, BH.pvalue),
+    extensions = c("Buttons"),
+    options = list(
+      pageLength = 10,
+      dom = 'Bfrtip',
+      buttons = c("copy", "csv", "excel")
+    ),
+    caption = "LimROTS Pairwise Differences at Week 8 (Species)",
+    rownames = FALSE
+  ) %>%
+    formatRound(columns = c("logFC"), digits = 3) %>%
+    formatSignif(columns = c("p.value", "FDR", "BH.pvalue"), digits = 3)
+} else {
+  kable(across_results)
+}
+```
+
+### Volcano Plot of Week 8 Comparisons
+
+```{r across-volcano}
+#| label: fig-limrots-volcano-across-species
+#| fig-width: 10
+#| fig-height: 5
+ggplot(across_results, aes(x = logFC, y = -log10(p.value), color = FDR < 0.25)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~ comparison) +
+  theme_minimal(base_size = 12) +
+  scale_color_manual(values = c("grey60", "tomato")) +
+  geom_text_repel(data = subset(across_results, FDR < 0.25), aes(label = feature), size = 3, max.overlaps = 15) +
+  labs(title = "Volcano Plot of Treatment Differences at Week 8", x = "Log2 Fold Change", y = "-Log10 P-value")
+```
+
+---
+
+## Within-Group Comparisons (Baseline vs. Week 8)
+
+We evaluate changes in species abundance over time within each of the three intervention arms.
+
+```{r within-group-run}
+# Helper to run longitudinal time comparison
+run_time_limrots <- function(se_obj, group_name) {
+  # Subset to group
+  sub_se <- se_obj[, se_obj$Intervention == group_name]
+  sub_se$time <- factor(sub_se$time, levels = c("Baseline", "Week 8"))
+  
+  # Build temporary TSE to run analysis on subset
+  temp_tse <- tse[, tse$Intervention == group_name]
+  
+  res <- run_limrots_analysis(
+    tse = temp_tse, 
+    assay_name = "species_prevalent", 
+    group_col = "time", 
+    formula_str = "~ 0 + time",
+    niter = niter_val
+  )
+  
+  res$group <- group_name
+  return(res)
+}
+
+# Run comparisons
+res_ctrl_time <- run_time_limrots(se_species, "Control")
+res_hwp_time <- run_time_limrots(se_species, "HWP")
+res_hwp_lgg_time <- run_time_limrots(se_species, "HWP + LGG")
+
+# Combine results
+within_results <- rbind(res_ctrl_time, res_hwp_time, res_hwp_lgg_time)
+```
+
+### Table of Findings (Longitudinal Shifts)
+
+```{r within-table}
+#| label: tbl-limrots-within-species
+if (knitr::is_html_output()) {
+  datatable(
+    within_results %>% select(feature, group, logFC, p.value, FDR, BH.pvalue),
+    extensions = c("Buttons"),
+    options = list(
+      pageLength = 10,
+      dom = 'Bfrtip',
+      buttons = c("copy", "csv", "excel")
+    ),
+    caption = "LimROTS Longitudinal Changes (Week 8 vs. Baseline) within Arms (Species)",
+    rownames = FALSE
+  ) %>%
+    formatRound(columns = c("logFC"), digits = 3) %>%
+    formatSignif(columns = c("p.value", "FDR", "BH.pvalue"), digits = 3)
+} else {
+  kable(within_results)
+}
+```
+
+### Volcano Plot of Longitudinal Changes
+
+```{r within-volcano}
+#| label: fig-limrots-volcano-within-species
+#| fig-width: 10
+#| fig-height: 5
+ggplot(within_results, aes(x = logFC, y = -log10(p.value), color = FDR < 0.25)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~ group) +
+  theme_minimal(base_size = 12) +
+  scale_color_manual(values = c("grey60", "tomato")) +
+  geom_text_repel(data = subset(within_results, FDR < 0.25), aes(label = feature), size = 3, max.overlaps = 15) +
+  labs(title = "Volcano Plot of Longitudinal Changes (Week 8 vs Baseline)", x = "Log2 Fold Change", y = "-Log10 P-value")
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::

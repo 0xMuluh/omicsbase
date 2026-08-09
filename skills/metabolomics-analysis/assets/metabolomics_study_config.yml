@@ -1,0 +1,54 @@
+study:
+  key: example-metabolomics
+  title: Example Metabolomics Analysis
+  domain: metabolomics
+  status: planning
+
+paths:
+  metadata: data/clinical_metadata.csv
+  metabolomics: data/metabolite_features.csv
+  derived_object: output/derived/analysis_object.rds
+  results_dir: output/results
+  report_source_dir: code
+  report_output_dir: output
+
+identifiers:
+  subject_id: StudyID
+  sample_id: null
+  visit_variable: visit_num
+  visit_labels:
+    4: 6 months
+    5: 1 year
+    6: 2 years
+    7: 5-6 years
+
+features:
+  assay_name: mbo
+  orientation: features_as_columns
+  ratio_feature_pattern: "-ratio"
+  transform: log10_with_pseudocount_if_nonpositive
+  scaling: z_score_within_visit
+
+variables:
+  exposures: []
+  outcomes: []
+  covariates_primary: []
+  covariates_sensitivity: []
+  factor_variables: []
+
+models:
+  primary_families: []
+  sensitivity_families: []
+  complete_case_rule: model_specific
+  minimum_complete_cases: 30
+  fdr_method: BH
+  fdr_family: within_model_family
+
+report:
+  pages:
+    - study_overview.qmd
+    - analysis_plan.qmd
+    - data_summary.qmd
+    - primary_results.qmd
+    - covariate_diagnostics.qmd
+  render_command: quarto render

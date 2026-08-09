@@ -1,0 +1,66 @@
+project:
+  type: website
+  output-dir: ../output
+  render:
+    - study_overview.qmd
+    - analysis_plan.qmd
+    - covariate_diagnostics.qmd
+    - primary_results.qmd
+    - figures.qmd
+    - supplementary_tables.qmd
+    - secondary_figures.qmd
+    - exposure_atlas.qmd
+    - clinical_characteristics.qmd
+    - data_summary.qmd
+    - data_quality_assumptions.qmd
+
+website:
+  title: "Analysis report"
+  navbar:
+    left:
+      - text: "Study overview"
+        file: study_overview.qmd
+      - text: "Analysis plan"
+        file: analysis_plan.qmd
+      - text: "Covariate and model specification"
+        file: covariate_diagnostics.qmd
+      - text: "Primary results"
+        file: primary_results.qmd
+      - text: "Figures"
+        file: figures.qmd
+      - text: "Supplementary tables"
+        file: supplementary_tables.qmd
+      - text: "Secondary figures"
+        file: secondary_figures.qmd
+      - text: "Exposure atlas"
+        file: exposure_atlas.qmd
+      - text: "Data"
+        menu:
+          - text: "Clinical characteristics"
+            file: clinical_characteristics.qmd
+          - text: "Data summary"
+            file: data_summary.qmd
+          - text: "Data quality and assumptions"
+            file: data_quality_assumptions.qmd
+
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: 1
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    page-layout: full
+    lightbox: true
+    fig-width: 14
+    fig-height: 10
+    fig-dpi: 300
+    fig-format: retina
+    fig-responsive: true
+
+execute:
+  echo: true
+  warning: false
+  message: false

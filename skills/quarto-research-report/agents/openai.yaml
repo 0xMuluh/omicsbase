@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quarto Research Report"
+  short_description: "Generate and maintain scientific Quarto reports"
+  default_prompt: "Use $quarto-research-report to create or improve a scientific Quarto report from an analysis plan and result objects."

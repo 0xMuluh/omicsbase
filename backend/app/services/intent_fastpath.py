@@ -139,20 +139,9 @@ def fast_path_model() -> str | None:
     """Resolve the fast model for the configured provider."""
     if settings.fast_path_model:
         return settings.fast_path_model
-    provider = settings.llm_provider.lower()
-    defaults = {
-        "qwen": "qwen-plus",
-        "groq": "llama-3.3-70b-versatile",
-        "gemini": "gemini-2.0-flash",
-        "openrouter": "anthropic/claude-3.5-haiku",
-        "anthropic": "claude-haiku-4-5",
-        "openai": "gpt-4o-mini",
-        "deepseek": "deepseek-chat",
-        "grok": "grok-2-latest",
-        "xai": "grok-2-latest",
-        "ollama": None,
-    }
-    return defaults.get(provider)
+    from app.services.providers import fast_model_for
+
+    return fast_model_for(settings.llm_provider.lower())
 
 
 async def stream_simple_answer(

@@ -43,10 +43,32 @@ def test_pending_guidance_queues_and_consumes():
     project = SimpleNamespace(id="p1", agent_memory={"state": "rendering", "summary": "Rendering"})
     db = _Db()
 
-    queued = queue_pending_guidance(db, project, "Switch distance to Jaccard")
+    queued = queue_pending_guidance(
+        db,
+        project,
+        "Switch distance to Jaccard",
+        mutation_authorized=True,
+    )
     assert queued["content"] == "Switch distance to Jaccard"
+    assert queued["mutation_authorized"] is True
     assert len(project.agent_memory["pending_guidance"]) == 1
 
     pending = consume_pending_guidance(db, project)
     assert len(pending) == 1
+    assert project.agent_memory["pending_guidance"] == []
+
+
+def test_pending_guidance_rejects_and_discards_unauthorized_entries():
+    project = SimpleNamespace(id="p1", agent_memory={})
+    db = _Db()
+
+    with pytest.raises(ValueError, match="explicit mutation authorization"):
+        queue_pending_guidance(db, project, "Why did the report fail?")
+
+    project.agent_memory = {
+        "pending_guidance": [
+            {"content": "Why did the report fail?", "status": "queued"},
+        ]
+    }
+    assert consume_pending_guidance(db, project) == []
     assert project.agent_memory["pending_guidance"] == []

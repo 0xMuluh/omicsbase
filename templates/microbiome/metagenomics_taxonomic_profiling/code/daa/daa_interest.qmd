@@ -1,0 +1,115 @@
+---
+title: "Differential abundance analysis"
+author: ""
+---
+
+```{r setup}
+# Source group-assignment
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+tse <- tse[, tse$paired=="yes"]
+taxa_levels <- c("species","genus")
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Intervention" 
+formula_used <- "~ Intervention"
+correction <- "Benjamini-Hochberg FDR adjustment"
+
+```
+
+Analysis information:
+
+-   Method: maaslin3
+-   Taxonomic level: `r taxa_levels`
+-   Group variable: `r variable`
+-   Formula used across groups: **`r formula_used`**
+-   Correction: **`r correction`**
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+```{r tsesub}
+genus_of_interest <- c("Lacticaseibacillus")
+species_of_interest <- c("Lacticaseibacillus_rhamnosus")
+
+taxa_of_interest <- c(genus_of_interest, species_of_interest)
+
+file_path1 <- file.path("../../output/daa/daa_taxa/species/all_results.tsv")
+file_path2 <- file.path("../../output/daa/daa_taxa/genus/all_results.tsv")
+daa_tab1 <- read_tsv(file_path1, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% taxa_of_interest) %>%
+      select(feature,metadata, value, qval_joint) 
+daa_tab2 <- read_tsv(file_path2, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% taxa_of_interest) %>%
+      select(feature,metadata, value, qval_joint)
+
+daa_tab <- rbind(daa_tab1, daa_tab2) %>%
+  mutate(qval_joint = signif(qval_joint, digits = 3)) 
+
+```
+
+```{r}
+plots_list <- setNames(lapply(species_of_interest, function(taxon_name) {
+
+  p1 <- plotBoxplot( altExp(tse, "species_prevalent"), assay.type = "relabundance", x = "Intervention",  fill.by = "time", pair.by = "subject", features = c(taxon_name), facet.by = "rownames", add.change = T, add.significance = T, ncol = 1, label.size = 5) +
+    theme_minimal(base_size = 15) +
+    theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  )
+  
+  p2 <- plotBoxplot(altExp(tse, "species_prevalent"), assay.type = "relabundance", x = "time",  fill.by = "Intervention", features = c(taxon_name), facet.by = "rownames", add.significance = T, ncol = 1, label.size = 5) +
+    scale_fill_viridis_d(option = "D") +
+    theme_minimal(base_size = 15) +
+    theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  )
+  
+  p12 <- wrap_plots(p1, p2, axes = "collect") 
+    
+    return(p12)
+}
+), species_of_interest)
+
+```
+
+
+```{r hits}
+#| label: fig-figure-of-highlights
+#| layout-ncol: 1
+#| fig-width: 15 
+#| fig-height: 5 
+
+ordered_plots <- plots_list[order(names(plots_list))]
+
+for (plot_name in names(ordered_plots)) {
+  print(ordered_plots[[plot_name]])
+}
+```
+
+```{r}
+file_path <- file.path("../../output/daa/daa_taxa/species/all_results.tsv")
+daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+daa_tab <- daa_tab %>%
+  filter(feature %in% species_of_interest)
+kable(daa_tab)
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::
+
+

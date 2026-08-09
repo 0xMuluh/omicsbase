@@ -54,7 +54,7 @@ def test_fast_path_model_resolution(monkeypatch):
 
     monkeypatch.setattr(settings, "fast_path_model", "")
     monkeypatch.setattr(settings, "llm_provider", "qwen")
-    assert intent_fastpath.fast_path_model() == "qwen-plus"
+    assert intent_fastpath.fast_path_model() == "qwen3.7-plus-2026-05-26"
     monkeypatch.setattr(settings, "llm_provider", "groq")
     assert intent_fastpath.fast_path_model() == "llama-3.3-70b-versatile"
     monkeypatch.setattr(settings, "fast_path_model", "qwen-plus-fast")

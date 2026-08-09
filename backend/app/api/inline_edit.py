@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import json
-from fastapi import APIRouter, Depends
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_tenant, get_project_for_tenant
 from app.database import get_db
+from app.services.edit_engine import sha256_bytes
 from app.services.llm import stream_llm_text
 
 router = APIRouter(prefix="/api/inline-edit", tags=["inline-edit"])
 
 
 class InlineEditRequest(BaseModel):
-    project_id: str = Field(default="", description="Project that owns the file being edited")
+    project_id: str = Field(min_length=1, description="Project that owns the file being edited")
     path: str = Field(min_length=1)
     prompt: str = Field(min_length=1, max_length=4000)
     selection: str | None = None
     content: str = Field(default="")
+    base_sha256: str = Field(min_length=64, max_length=128, description="Hash of the saved file the draft was based on")
     project_context: str | None = None
     error_context: str | None = None
 
@@ -47,9 +50,27 @@ async def inline_edit(
     tenant_id: str = Depends(get_current_tenant),
 ):
     """Stream inline code replacements directly for Monaco editor with rich context."""
-    # Validate project ownership if project_id is provided
-    if data.project_id:
-        get_project_for_tenant(db, data.project_id, tenant_id)
+    project = get_project_for_tenant(db, data.project_id, tenant_id)
+    if not project.project_dir:
+        raise HTTPException(status_code=404, detail="Project workspace is not generated")
+    from app.services.apply_edits import safe_resolve_path
+
+    base = Path(project.project_dir).resolve()
+    target = safe_resolve_path(base, data.path)
+    if target is None or not target.is_file():
+        raise HTTPException(status_code=404, detail="Inline edit target is not a project file")
+    if target.suffix.lower() not in {".r", ".qmd", ".yml", ".yaml", ".md", ".txt", ".csv", ".tsv", ".json", ".html", ".css", ".js", ".ts", ".tsx"}:
+        raise HTTPException(status_code=400, detail="Inline AI editing is restricted to text source files")
+    actual_sha256 = sha256_bytes(target.read_bytes()) or ""
+    if data.base_sha256 != actual_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "edit_conflict",
+                "message": "The file changed since this inline draft was loaded.",
+                "actual_sha256": actual_sha256,
+            },
+        )
 
     target_context = f"Selected snippet to replace:\n{data.selection}\n\n" if data.selection else ""
     proj_ctx = f"Project Domain Context:\n{data.project_context}\n\n" if data.project_context else ""
@@ -57,6 +78,7 @@ async def inline_edit(
 
     user_prompt = (
         f"Target File: {data.path}\n"
+        f"Saved File SHA-256: {data.base_sha256}\n"
         f"User Edit Request: {data.prompt}\n\n"
         f"{proj_ctx}"
         f"{err_ctx}"

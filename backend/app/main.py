@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.project_edits import router as project_edits_router
 from app.api.files import router as files_router
 from app.api.inline_edit import router as inline_edit_router
 from app.api.projects_notes import note_agent_router, standalone_router as standalone_notes_router
@@ -13,6 +14,7 @@ from app.api.knowledge import router as knowledge_router
 from app.api.runs import router as runs_router
 from app.api.input_contract import router as input_contract_router
 from app.api.datasets import router as datasets_router
+from app.api.report_packs import router as report_packs_router
 from app.api.projects import router as projects_router
 from app.config import settings
 from app.middleware.auth import ApiKeyMiddleware
@@ -80,7 +82,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="OmicsBase",
-    description="AI-powered microbiome analysis with transparent, reproducible Quarto reports.",
+    description="OmicsBase-powered omics analysis with transparent, reproducible Quarto reports.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -99,6 +101,7 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(files_router)
+app.include_router(project_edits_router)
 app.include_router(inline_edit_router)
 app.include_router(standalone_notes_router)
 app.include_router(note_agent_router)
@@ -107,6 +110,7 @@ app.include_router(knowledge_router)
 app.include_router(runs_router)
 app.include_router(input_contract_router)
 app.include_router(datasets_router)
+app.include_router(report_packs_router)
 
 
 @app.get("/api/health")

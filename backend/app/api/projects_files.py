@@ -17,28 +17,6 @@ from app.services.file_inspector import inspect_file
 router = APIRouter()
 
 
-def _guess_file_role(filename: str, summary: dict) -> str:
-    """Guess the role of a file based on its name and content."""
-    name_lower = filename.lower()
-
-    if any(kw in name_lower for kw in ["plan", "workflow", "protocol", "proposal", "analysis_plan"]):
-        return "analysis_plan"
-    if any(kw in name_lower for kw in ["metadata", "sample", "clinical", "phenotype", "coldata"]):
-        return "metadata"
-    if any(kw in name_lower for kw in ["taxonomy", "taxa", "tax"]):
-        return "taxonomy"
-    if any(kw in name_lower for kw in ["feature", "otu", "asv", "abundance", "count", "biom"]):
-        return "feature_table"
-    if any(kw in name_lower for kw in ["metaphlan", "profile"]):
-        return "feature_table"
-
-    fmt = summary.get("format", "")
-    if fmt in {"qiime2_qza", "biom"}:
-        return "feature_table"
-
-    return "other"
-
-
 @router.post("/{project_id}/files", response_model=UploadedFileOut, status_code=201)
 async def upload_file(
     project_id: str,
@@ -61,8 +39,9 @@ async def upload_file(
 
     file_summary = inspect_file(str(file_path))
 
+    # Roles are agent-assigned during planning; "auto" has no heuristic.
     if file_role == "auto":
-        file_role = _guess_file_role(safe_filename, file_summary)
+        file_role = "other"
 
     detected_format = file_summary.get("format", "unknown")
     if detected_format == "error":
@@ -70,12 +49,6 @@ async def upload_file(
         raise HTTPException(
             status_code=422,
             detail=f"Could not inspect {safe_filename}: {file_summary.get('error', 'unknown error')}",
-        )
-    if detected_format == "unknown" and file_role != "analysis_plan":
-        file_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported file format for {safe_filename}",
         )
 
     uploaded = UploadedFile(
@@ -127,6 +100,59 @@ def list_note_results(
         }
         for path in list_project_result_artifacts(project)
     ]
+
+
+@router.get("/{project_id}/files/tree")
+def list_project_tree(
+    project_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Live listing of the generated project's code tree.
+
+    Reads the project directory directly so files stream in while generation
+    is still running (the memory refresh only happens at completion).
+    Returns a nested tree of {name, path, type, size, extension, children}.
+    """
+    project = get_project_for_tenant(db, project_id, tenant_id)
+    if not project.project_dir:
+        return []
+    base = Path(project.project_dir) / "code"
+    if not base.exists():
+        return []
+
+    root: dict[str, dict] = {}
+
+    def node_for(name: str, path: str, is_dir: bool) -> dict:
+        return {
+            "name": name,
+            "path": path,
+            "type": "directory" if is_dir else "file",
+            "extension": Path(name).suffix.lstrip(".") if not is_dir and Path(name).suffix else None,
+            "children": {} if is_dir else None,
+        }
+
+    for path in sorted(base.rglob("*")):
+        relative_parts = path.relative_to(Path(project.project_dir)).parts  # includes "code"
+        cursor = root
+        for index, part in enumerate(relative_parts):
+            is_last = index == len(relative_parts) - 1
+            relative_path = "/".join(relative_parts[: index + 1])
+            if is_last and path.is_file():
+                cursor.setdefault(part, node_for(part, relative_path, False))
+                cursor[part]["size"] = path.stat().st_size
+            else:
+                cursor.setdefault(part, node_for(part, relative_path, True))
+                cursor = cursor[part]["children"]
+
+    def to_list(nodes: dict[str, dict]) -> list[dict]:
+        entries = list(nodes.values())
+        for entry in entries:
+            if entry["children"] is not None:
+                entry["children"] = to_list(entry["children"])
+        return entries
+
+    return to_list(root)
 
 
 @router.get("/{project_id}/locks")

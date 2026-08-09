@@ -10,6 +10,7 @@ import { ActionEvent, AgentActionCard } from "@/components/AgentActionCard";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { SidebarProjectItem } from "@/components/ProjectsSidebar";
+import PlanReviewPanel from "@/components/PlanReviewPanel";
 import { Project } from "@/lib/api";
 import {
   ArrowUp,
@@ -18,11 +19,28 @@ import {
   ChevronsRight,
   ChevronsUpDown,
   Code2,
+  FileImage,
+  FileText,
   Loader2,
   MessageSquare,
   Plus,
   RotateCw,
+  X,
 } from "lucide-react";
+
+function formatBytes(bytes: number | null | undefined): string | null {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
+}
 
 interface WorkspaceChatPanelProps {
   project?: Project | null;
@@ -184,6 +202,17 @@ export function WorkspaceChatPanel({
               )}
             </div>
           ))}
+
+          {/* Inline plan review when the plan is ready for approval */}
+          {project &&
+            project.analysis_plan &&
+            (project.status === "planned" ||
+              project.status === "needs_user" ||
+              project.status === "needs_clarification") && (
+              <div className="py-2">
+                <PlanReviewPanel projectId={project.id} />
+              </div>
+            )}
 
           {/* Pending Assistant Indicator */}
           {assistantPending && (

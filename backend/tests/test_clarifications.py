@@ -233,6 +233,70 @@ def test_run_planning_persists_pending_clarifications(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
+def test_chat_origin_planning_never_auto_builds(monkeypatch):
+    from app.tasks import analysis as tasks_module
+    from app.services import agent_runtime, document_classify
+
+    async def fake_generate_plan(**kwargs):
+        return planner._build_default_plan(
+            kwargs["question"],
+            kwargs["file_summaries"],
+            study_manifest=kwargs["study_manifest"],
+        )
+
+    async def no_plan_sources(files):
+        return []
+
+    monkeypatch.setattr(planner, "generate_plan", fake_generate_plan)
+    monkeypatch.setattr(document_classify, "agentic_plan_sources", no_plan_sources)
+    monkeypatch.setattr(tasks_module, "_get_db_session", lambda: TestingSessionLocal())
+    monkeypatch.setattr(tasks_module, "_update_job", lambda db, job_id, **kwargs: None)
+    monkeypatch.setattr(agent_runtime, "set_agent_state", lambda *a, **k: None)
+    monkeypatch.setattr(agent_runtime, "record_agent_action", lambda *a, **k: None)
+    monkeypatch.setattr(agent_runtime, "refresh_project_memory", lambda *a, **k: None)
+
+    from app.models.project import Job
+
+    Base.metadata.create_all(bind=engine)
+    db = TestingSessionLocal()
+    try:
+        project = Project(
+            name="Chat plan",
+            question="Compare groups",
+            status="planning",
+            tenant_id="default_tenant",
+            owner_id="default_user",
+            auto_build=True,
+            study_manifest=MANIFEST_WITH_GROUPS,
+        )
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        job = Job(project_id=str(project.id), job_type="plan", status="running")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        result = tasks_module.run_planning(
+            str(project.id),
+            str(job.id),
+            allow_auto_build=False,
+        )
+
+        db.refresh(project)
+        assert project.status == "planned"
+        assert result["auto_build"] is False
+        assert (
+            db.query(Job)
+            .filter(Job.project_id == str(project.id), Job.job_type == "generate")
+            .count()
+            == 0
+        )
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+
+
 def json_dumps(data: dict) -> str:
     import json
     return json.dumps(data)

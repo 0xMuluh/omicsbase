@@ -1,0 +1,30 @@
+project:
+  type: website
+  output-dir: ../html
+
+website:
+  title: "ANALYSIS_TITLE"
+  navbar:
+    left:
+      - text: Overview
+        href: index.qmd
+      - text: Analysis Plan
+        href: analysis-plan.qmd
+      - text: Data Summary
+        href: data-summary.qmd
+      - text: Diversity
+        href: diversity-results.qmd
+      - text: Differential Abundance
+        href: differential-abundance.qmd
+      - text: Diagnostics
+        href: diagnostics.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    number-sections: true
+
+execute:
+  warning: false
+  message: false

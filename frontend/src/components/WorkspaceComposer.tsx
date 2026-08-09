@@ -2,11 +2,25 @@
 
 import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, ChevronDown, Database, Loader2, Mic, Plus, Upload } from "lucide-react";
+import { ArrowUp, ChevronDown, Database, FileImage, FileText, Loader2, Mic, Plus, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { PendingQuestion } from "@/lib/api";
+
+function formatBytes(bytes: number | null | undefined): string | null {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
+}
 
 export function WorkspaceComposer({
   pendingQuestion,
@@ -15,17 +29,17 @@ export function WorkspaceComposer({
   onSend,
   onAnswer,
   onModeChange,
-  onAddFiles,
 }: {
   pendingQuestion: PendingQuestion | null;
   chatMode: "build" | "discuss";
   disabled: boolean;
-  onSend: (message: string, mode: "build" | "discuss") => void;
+  onSend: (message: string, mode: "build" | "discuss", files?: File[]) => void;
   onAnswer: (answer: string) => void;
   onModeChange: (mode: "build" | "discuss") => void;
-  onAddFiles: (files: File[]) => void;
+  onAddFiles?: (files: File[]) => void;
 }) {
   const [promptText, setPromptText] = useState("");
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [modeOpen, setModeOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,12 +50,19 @@ export function WorkspaceComposer({
     onModeChange(mode);
   };
 
+  const removeStagedFile = (indexToRemove: number) => {
+    setStagedFiles((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  };
+
   const submit = (event?: React.FormEvent) => {
     event?.preventDefault();
     const message = promptText.trim();
-    if (!message || disabled) return;
+    const hasFiles = stagedFiles.length > 0;
+    if ((!message && !hasFiles) || disabled) return;
+    const finalFiles = [...stagedFiles];
     setPromptText("");
-    onSend(message, chatMode);
+    setStagedFiles([]);
+    onSend(message, chatMode, finalFiles.length ? finalFiles : undefined);
   };
 
   return (
@@ -77,6 +98,39 @@ export function WorkspaceComposer({
           )}
         </div>
       ) : null}
+
+      {/* Staged File Attachments Preview (ChatGPT style pre-flight draft) */}
+      {stagedFiles.length > 0 ? (
+        <div className="mb-1.5 flex flex-wrap gap-1.5 px-2 pt-1">
+          {stagedFiles.map((file, idx) => {
+            const Icon = isImageFile(file) ? FileImage : FileText;
+            const sizeStr = formatBytes(file.size);
+            return (
+              <div
+                key={`${file.name}-${idx}`}
+                className="group flex min-w-0 max-w-60 items-center gap-2 rounded-xl border border-border bg-background/80 px-2.5 py-1.5 text-left shadow-sm backdrop-blur"
+                title={file.name}
+              >
+                <Icon className="h-4 w-4 shrink-0 text-red-500" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-foreground">{file.name}</span>
+                  {sizeStr ? <span className="block text-[10px] uppercase text-muted-foreground">{sizeStr}</span> : null}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeStagedFile(idx)}
+                  className="rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  title="Remove attachment"
+                  aria-label={`Remove ${file.name}`}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       <input
         ref={fileInputRef}
         type="file"
@@ -86,7 +140,9 @@ export function WorkspaceComposer({
           const files = Array.from(event.target.files || []);
           event.target.value = "";
           setAddOpen(false);
-          if (files.length) onAddFiles(files);
+          if (files.length) {
+            setStagedFiles((prev) => [...prev, ...files]);
+          }
         }}
       />
       <div className="flex items-end gap-1.5">
@@ -208,7 +264,7 @@ export function WorkspaceComposer({
           <Button
             type="submit"
             size="sm"
-            disabled={!promptText.trim() || disabled}
+            disabled={(!promptText.trim() && !stagedFiles.length) || disabled}
             className="h-10 w-10 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
             title="Send"
           >

@@ -1,0 +1,186 @@
+---
+title: "Study overview"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+library(dplyr)
+library(tidyr)
+
+results <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = paste0("visit_", 4:7)
+)
+
+raw_df <- extract_long_from_mae(
+  analysis_obj$mae,
+  visits = paste0("visit_", 4:7)
+)
+```
+
+## Research aim
+
+Maternal prenatal diet exposures measured in early and late pregnancy are evaluated against the child plasma metabolome across infancy and childhood.
+
+Questions:
+
+1. Q1: early-pregnancy diet associations across child ages
+2. Q2: late-pregnancy diet associations across child ages
+3. Q3: mutual timing models comparing early and late pregnancy in the same regression
+4. Q4: longitudinal diet-by-age interaction models across childhood
+
+## Analytic panels
+
+```{r}
+#| label: study-overview-01
+panel_tbl <- raw_df %>%
+  distinct(StudyID, visit_num) %>%
+  count(visit_num, name = "n_children") %>%
+  mutate(
+    child_age = visit_label(visit_num),
+    metabolite_features = length(analysis_obj$metabolite_cols)
+  ) %>%
+  select(child_age, n_children, metabolite_features)
+
+make_table(panel_tbl, caption = "Analytic child-age panels", table_mode = "compact")
+```
+
+## Exposure timing and families
+
+```{r}
+#| label: study-overview-02
+q4_fams <- unique(model_status$exposure[model_status$question == "Q4"])
+q5_fams <- unique(model_status$exposure[model_status$question == "Q5"])
+
+exposure_tbl <- tibble(
+  component = c(
+    "Q1: Early-Pregnancy Age-Specific Models",
+    "Q2: Late-Pregnancy Age-Specific Models",
+    "Q3: Mutual Timing Model",
+    "Q4: Longitudinal Interaction Model"
+  ),
+  exposure_timing = c(
+    "Early pregnancy",
+    "Late pregnancy",
+    "Early and late pregnancy entered together",
+    "Early or late pregnancy exposure carried across repeated child ages"
+  ),
+  exposure_families = c(
+    paste(pretty_var(q4_fams), collapse = "; "),
+    paste(pretty_var(q5_fams), collapse = "; "),
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q6"])), collapse = "; "),
+    paste(pretty_var(unique(model_status$exposure[model_status$question == "Q7"])), collapse = "; ")
+  )
+)
+
+make_table(exposure_tbl, caption = "Exposure timing and families", table_mode = "wide")
+```
+
+## Covariate strategy
+
+```{r}
+#| label: study-overview-03
+covar_tbl <- tibble(
+  analysis_component = c(
+    "Q1/Q2: Age-Specific Models",
+    "Q3: Mutual Timing Model",
+    "Q4: Longitudinal Interaction Model"
+  ),
+  primary_covariates = c(
+    "Intervention; child sex/gender; maternal ethnicity; maternal disease; visit-specific fasting time",
+    "Intervention; child sex/gender; maternal ethnicity; maternal disease; visit-specific fasting time",
+    "Intervention; child sex/gender; maternal ethnicity; maternal disease; visit-specific fasting time"
+  ),
+  sensitivity_additions = c(
+    "Pre-pregnancy BMI; maternal age; prior GDM; breastfeeding duration; maternal smoking; university education; child birth weight",
+    "Pre-pregnancy BMI; maternal age; prior GDM; breastfeeding duration; maternal smoking; university education; child birth weight",
+    "Pre-pregnancy BMI; maternal age; prior GDM; breastfeeding duration; maternal smoking; university education; child birth weight"
+  )
+)
+
+make_table(covar_tbl, caption = "Primary and sensitivity covariate strategy", table_mode = "wide")
+```
+
+## Model families
+
+```{r}
+#| label: study-overview-04
+model_tbl <- tibble(
+  component = c(
+    "Q1: Early-Pregnancy Age-Specific Models",
+    "Q2: Late-Pregnancy Age-Specific Models",
+    "Q3: Mutual Timing Model",
+    "Q4: Longitudinal Interaction Model"
+  ),
+  model_family = c(
+    "Feature-wise linear model at each child age",
+    "Feature-wise linear model at each child age",
+    "Feature-wise linear model with early and late pregnancy terms together",
+    "Feature-wise mixed model with diet-by-age interaction"
+  ),
+  outcome = c(
+    "Child metabolite at 6 months, 12 months, 24 months, and 5-6 years",
+    "Child metabolite at 6 months, 12 months, 24 months, and 5-6 years",
+    "Child metabolite at 6 months, 12 months, 24 months, and 5-6 years",
+    "Repeated child metabolite across all available ages"
+  )
+)
+
+make_table(model_tbl, caption = "Primary model families", table_mode = "wide")
+```
+
+## Multiple testing
+
+False-discovery control is based on Benjamini-Hochberg adjustment across metabolites, but the adjustment scope differs by model family.
+
+- Age-specific outputs apply BH within each visit-specific exposure model.
+- Mutual timing outputs apply BH separately to the early-term and late-term coefficients within each visit-specific exposure pair.
+- Longitudinal outputs apply BH separately within each exposure and coefficient family.
+
+## Result inventory
+
+```{r}
+#| label: study-overview-05
+inventory_tbl <- build_result_inventory_prenatal_diet(results)
+
+make_table(inventory_tbl, caption = "Returned result inventory", table_mode = "compact")
+```
+
+## Execution status
+
+```{r}
+#| label: study-overview-06
+status_tbl <- model_status %>%
+  mutate(
+    question = dplyr::case_when(
+      question == "Q4" ~ "Q1: Early-Pregnancy Age-Specific Models",
+      question == "Q5" ~ "Q2: Late-Pregnancy Age-Specific Models",
+      question == "Q6" ~ "Q3: Mutual Timing Model",
+      question == "Q7" ~ "Q4: Longitudinal Interaction Model",
+      TRUE ~ question
+    ),
+    child_age = ifelse(is.na(visit), NA_character_, visit_label(as.integer(visit))),
+    exposure = pretty_var(exposure),
+    n_complete = ifelse(
+      is.na(n_complete_min) | !is.finite(n_complete_min),
+      NA_character_,
+      ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+    )
+  ) %>%
+  select(question, analysis, child_age, timing, exposure, status, reason, n_complete, n_features_tested, term_family)
+
+make_table(status_tbl, caption = "Saved execution-status inventory", table_mode = "wide")
+```
+
+## Interpretation notes
+
+1. The age-specific and mutual-timing models carry the clearest inferential weight in the current Study 2 package.
+2. Prenatal exposures are baseline pregnancy-window variables; child-age rows represent linked analytic panels, not repeated prenatal measurements.
+3. The longitudinal interaction model is part of the target question set and now returns coefficient-level output across all attempted exposures, but it should still be interpreted more cautiously than the age-specific models because the fits generated substantial warnings.
+4. Detailed coefficient tables, sensitivity comparisons, and supporting figures are reported elsewhere in the site; this page is the study-level map.

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
+import socket
 import subprocess
 import tempfile
 import urllib.error
@@ -23,6 +25,71 @@ MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 DOWNLOAD_TIMEOUT_S = 60
 ALLOWED_URL_SCHEMES = {"http", "https"}
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+BLOCKED_METADATA_HOSTS = {
+    "metadata",
+    "metadata.aws.internal",
+    "metadata.google.internal",
+}
+
+
+def _validate_public_http_url(url: str) -> None:
+    """Reject URL targets that are not unambiguously public HTTP(S) hosts."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("URL has an invalid host or port") from exc
+
+    if parsed.scheme.lower() not in ALLOWED_URL_SCHEMES:
+        raise ValueError("Only http/https URLs are allowed")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("URL is missing a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL credentials are not allowed")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if (
+        hostname in BLOCKED_METADATA_HOSTS
+        or hostname == "localhost"
+        or hostname.endswith(".localhost")
+    ):
+        raise ValueError("URL host is not a public destination")
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    try:
+        addresses.add(ipaddress.ip_address(hostname.split("%", 1)[0]))
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(
+                hostname.encode("idna").decode("ascii"),
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        except (socket.gaierror, UnicodeError) as exc:
+            raise ValueError("URL host could not be resolved") from exc
+        for item in resolved:
+            candidate = str(item[4][0]).split("%", 1)[0]
+            try:
+                addresses.add(ipaddress.ip_address(candidate))
+            except ValueError as exc:
+                raise ValueError("URL host resolved to an invalid address") from exc
+
+    if not addresses:
+        raise ValueError("URL host did not resolve to an address")
+    if any(not address.is_global for address in addresses):
+        raise ValueError("URL host resolves to a non-public address")
+
+
+class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Apply the same public-network policy to every redirect hop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            _validate_public_http_url(newurl)
+        except ValueError as exc:
+            raise urllib.error.URLError(f"Unsafe redirect blocked: {exc}") from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
 
 # Known package datasets the agent may import without free-form network/write R.
 PACKAGE_DATASETS: dict[tuple[str, str], dict[str, Any]] = {
@@ -129,11 +196,12 @@ def fetch_url_into_study(
     role: str = "auto",
 ) -> dict[str, Any]:
     """Download a remote file into project uploads (size- and scheme-limited)."""
-    parsed = urlparse(url.strip())
-    if parsed.scheme.lower() not in ALLOWED_URL_SCHEMES:
-        return {"status": "error", "error": "Only http/https URLs are allowed"}
-    if not parsed.netloc:
-        return {"status": "error", "error": "URL is missing a host"}
+    target_url = url.strip()
+    try:
+        _validate_public_http_url(target_url)
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
+    parsed = urlparse(target_url)
 
     safe_name = Path(filename or Path(parsed.path).name or "download.bin").name
     safe_name = SAFE_NAME_RE.sub("_", safe_name) or "download.bin"
@@ -143,11 +211,12 @@ def fetch_url_into_study(
 
     try:
         request = urllib.request.Request(
-            url,
+            target_url,
             headers={"User-Agent": "OmicsBaseAgent/1.0"},
             method="GET",
         )
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_S) as response:
+        opener = urllib.request.build_opener(_PublicOnlyRedirectHandler())
+        with opener.open(request, timeout=DOWNLOAD_TIMEOUT_S) as response:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
                 return {
@@ -183,7 +252,7 @@ def fetch_url_into_study(
     manifest = _refresh_manifest(db, project)
     return {
         "status": "ok",
-        "url": url,
+        "url": target_url,
         "file": record,
         "study_manifest": {
             "status": manifest.get("status"),
@@ -209,9 +278,8 @@ def _register_uploaded_file(db, project, path: Path, *, file_role: str) -> dict[
             "error": f"Could not inspect {path.name}: {summary.get('error', 'unknown error')}",
         }
     if file_role == "auto":
-        file_role = _guess_role(path.name, summary)
-    if detected_format == "unknown" and file_role != "analysis_plan":
-        return {"status": "error", "error": f"Unsupported file format for {path.name}"}
+        # Roles are agent-assigned during planning; "auto" has no heuristic.
+        file_role = "other"
 
     # Replace prior upload with same name for this project.
     existing = (
@@ -269,20 +337,6 @@ def _role_from_export_name(name: str) -> str:
     if "otu" in lower or "feature" in lower or "counts" in lower or "abundance" in lower:
         return "feature_table"
     return "other"
-
-
-def _guess_role(filename: str, summary: dict[str, Any]) -> str:
-    lower = filename.lower()
-    if any(token in lower for token in ("meta", "sample", "phenotype", "clinical")):
-        return "metadata"
-    if any(token in lower for token in ("tax", "taxonomy", "taxa")):
-        return "taxonomy"
-    if any(token in lower for token in ("otu", "asv", "feature", "count", "abundance", "biom")):
-        return "feature_table"
-    columns = [str(c).lower() for c in (summary.get("columns") or [])]
-    if any("sample" in c for c in columns) and len(columns) <= 40:
-        return "metadata"
-    return "feature_table"
 
 
 def _package_export_script(package: str, dataset: str, out_dir: Path) -> str:

@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from app.services.llm import call_llm
+from app.services.provider_errors import LLMProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ async def decide_guidance_action(project, guidance: str) -> dict[str, Any]:
         decision = json.loads(text.strip())
         if isinstance(decision, dict):
             return prefer_recipe_over_edit(project, guidance, decision)
+    except LLMProviderError:
+        raise
     except Exception as exc:
         logger.warning("Guidance decision failed, falling back to recipe heuristic or edit: %s", exc)
 

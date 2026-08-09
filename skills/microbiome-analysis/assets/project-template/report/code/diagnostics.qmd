@@ -1,0 +1,43 @@
+---
+title: "Diagnostics"
+---
+
+```{r}
+#| include: false
+setup_file <- if (file.exists("_report_setup.R")) "_report_setup.R" else file.path("report", "code", "_report_setup.R")
+source(setup_file)
+package_status <- read_if_exists(file.path(plan$paths$results_dir, "r_package_status.tsv"))
+function_contract <- read_if_exists(file.path(plan$paths$results_dir, "package_function_contract.tsv"))
+validation_summary <- read_if_exists(file.path(plan$paths$results_dir, "validation_summary.tsv"))
+decision_log <- read_if_exists("config/decision_log.tsv")
+```
+
+## Package Status
+
+```{r}
+table_out(package_status, "R package status", n = 100)
+```
+
+## Function Contract
+
+```{r}
+table_out(function_contract, "Package function contract", n = 100)
+```
+
+## Validation Summary
+
+```{r}
+table_out(validation_summary, "Validation summary")
+```
+
+## Decision Log
+
+```{r}
+table_out(decision_log, "Decision log", n = 100)
+```
+
+## Session Info
+
+```{r}
+utils::sessionInfo()
+```

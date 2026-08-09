@@ -1,0 +1,513 @@
+---
+title: "Child metabolites and neurodevelopment"
+---
+
+Child serum metabolite concentrations at 6 months, 1 year, and 2 years of age are tested for association with neurodevelopmental outcomes at 2 years. Continuous outcomes (Bayley-III Composite and subscale scores, and the HINE Hammersmith global score) are modelled using OLS linear regression. The binary outcome (HINE optimality status, with preterm children excluded) is modelled using logistic regression.
+
+Primary models adjust for child sex (`CGender`), breastfeeding duration (`Bfdurationm`), intervention group (`InterventionGroup`), maternal pre-pregnancy BMI (`MprepBMI`), maternal education (`MUniEdu`), maternal smoking (`MPRSmoke`), and maternal primiparity (`MPrimipara`). Sensitivity models additionally adjust for child age at testing:
+* **Bayley scales:** Adjusted for **both** age at psychologist visit (`CAgePsychologist6`) and age at physiotherapist visit (`CAgePhysiotherapist6`).
+* **HINE outcomes:** Adjusted only for age at physiotherapist visit (`CAgePhysiotherapist6`).
+
+All metabolite exposures are log-transformed and Z-score standardized within each visit. Continuous outcomes are modeled in their raw units, but to facilitate comparisons across different scales, the tables below display standardized estimates (representing the outcome change in standard deviations per 1 SD increase in log-metabolite concentration). For the logistic HINE models, estimates are reported as Odds Ratios predicting the probability of **suboptimal** neurological status (so an Odds Ratio > 1 indicates increased risk).
+
+Multiple comparison correction is performed using the Benjamini-Hochberg False Discovery Rate (FDR) method applied independently within each outcome, visit, and model family. Associations reaching $q < 0.10$ are considered significant.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+library(dplyr)
+library(tidyr)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+# Load regression results
+res_path <- "../output/results/neurocognition_study_results.rds"
+if (!file.exists(res_path)) {
+  stop("Required regression result object not found: ", res_path)
+}
+results_obj <- readRDS(res_path)
+required_objects <- c("primary_results", "sensitivity_results", "covariates_used", "metabolites")
+missing_objects <- setdiff(required_objects, names(results_obj))
+if (length(missing_objects) > 0) {
+  stop("Regression result object missing required element(s): ", paste(missing_objects, collapse = ", "))
+}
+primary_df <- results_obj[["primary_results"]]
+sens_df <- results_obj[["sensitivity_results"]]
+required_result_cols <- c("outcome", "exposure", "analysis_type", "n", "estimate", "std.error", "conf.low", "conf.high", "p.value", "q.value", "visit", "note")
+missing_primary_cols <- setdiff(required_result_cols, names(primary_df))
+missing_sens_cols <- setdiff(required_result_cols, names(sens_df))
+if (length(missing_primary_cols) > 0) {
+  stop("Primary result table missing required column(s): ", paste(missing_primary_cols, collapse = ", "))
+}
+if (length(missing_sens_cols) > 0) {
+  stop("Sensitivity result table missing required column(s): ", paste(missing_sens_cols, collapse = ", "))
+}
+if (nrow(primary_df) == 0 || nrow(sens_df) == 0) {
+  stop("Regression result tables must not be empty.")
+}
+
+# Pretty printing outcome helper
+pretty_outcome <- function(x) {
+  dplyr::case_when(
+    x == "CCognition_indexpoints6" ~ "Bayley Cognitive Score",
+    x == "CLanguage_indexpoints6" ~ "Bayley Language Score",
+    x == "CExpressivelanguage_standardpoints6" ~ "Bayley Expressive Language",
+    x == "CReceptivelanguage_standardpoints6" ~ "Bayley Receptive Language",
+    x == "CMotor_indexpoints6" ~ "Bayley Motor Score",
+    x == "CFinemotor_standardpoints6" ~ "Bayley Fine Motor",
+    x == "CGrossmotor_standardpoints6" ~ "Bayley Gross Motor",
+    x == "Hammersmith6" ~ "HINE Global Score",
+    x == "HINE_optimal" ~ "HINE Optimality Status",
+    TRUE ~ x
+  )
+}
+
+continuous_outcomes <- c(
+  "CCognition_indexpoints6",
+  "CLanguage_indexpoints6",
+  "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6",
+  "CMotor_indexpoints6",
+  "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6",
+  "Hammersmith6"
+)
+
+sensitivity_map <- list(
+  CCognition_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CLanguage_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CExpressivelanguage_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CReceptivelanguage_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CMotor_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CFinemotor_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CGrossmotor_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  Hammersmith6 = "CAgePhysiotherapist6",
+  HINE_optimal = "CAgePhysiotherapist6"
+)
+
+core_covars_used <- results_obj[["covariates_used"]]
+metabolite_cols <- results_obj[["metabolites"]]
+mae_path <- "../data/MAE.rds"
+if (!file.exists(mae_path)) {
+  stop("Required MAE object not found: ", mae_path)
+}
+mae <- readRDS(mae_path)
+analysis_visits <- c(4L, 5L, 6L)
+visit_data <- lapply(analysis_visits, function(v) {
+  vn <- paste0("visit_", v)
+  tse <- experiments(mae)[[vn]]
+  if (is.null(tse)) {
+    stop("MAE missing expected experiment: ", vn)
+  }
+  cd <- as.data.frame(colData(tse), stringsAsFactors = FALSE)
+  if (!("Visit" %in% names(cd))) {
+    stop("MAE colData for ", vn, " is missing required Visit column.")
+  }
+  cd[["sample_id"]] <- rownames(cd)
+  mat <- as.data.frame(t(assay(tse, "mbo")), check.names = FALSE)
+  mat[["sample_id"]] <- rownames(mat)
+  df <- left_join(cd, mat, by = "sample_id")
+  df[["visit"]] <- v
+  df
+})
+names(visit_data) <- as.character(analysis_visits)
+
+model_covars_for <- function(outcome, analysis_type) {
+  covars <- core_covars_used
+  if (identical(analysis_type, "sensitivity")) {
+    sens_vars <- sensitivity_map[[outcome]]
+    if (!is.null(sens_vars)) {
+      covars <- unique(c(covars, sens_vars))
+    }
+  }
+  covars
+}
+
+complete_case_data_for_qmd <- function(row_outcome, row_analysis_type, row_visit, row_exposure, row_n) {
+  v_key <- as.character(row_visit)
+  df <- visit_data[[v_key]]
+  if (is.null(df)) {
+    stop("No analysis data found for visit ", v_key)
+  }
+  covars <- model_covars_for(row_outcome, row_analysis_type)
+  needed <- unique(c(row_outcome, row_exposure, covars))
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Cannot reconstruct complete cases; missing column(s): ", paste(missing_cols, collapse = ", "))
+  }
+  dd <- df[, needed, drop = FALSE]
+  dd <- dd[complete.cases(dd), , drop = FALSE]
+  expected_n <- as.integer(row_n)
+  if (nrow(dd) != expected_n) {
+    stop(
+      "Complete-case n mismatch for visit ", row_visit,
+      ", outcome ", row_outcome,
+      ", exposure ", row_exposure,
+      ", analysis ", row_analysis_type,
+      ": saved n=", expected_n, ", reconstructed n=", nrow(dd)
+    )
+  }
+  dd
+}
+
+calc_outcome_sd_qmd <- function(row_outcome, row_analysis_type, row_visit, row_exposure, row_n) {
+  if (!(row_outcome %in% continuous_outcomes)) {
+    return(NA_real_)
+  }
+  dd <- complete_case_data_for_qmd(row_outcome, row_analysis_type, row_visit, row_exposure, row_n)
+  y <- as.numeric(dd[[row_outcome]])
+  sd_y <- stats::sd(y, na.rm = TRUE)
+  if (!is.finite(sd_y) || sd_y <= 0) {
+    stop("Invalid outcome SD for standardized effect calculation: ", row_outcome)
+  }
+  sd_y
+}
+
+add_standardized_outcome_effects <- function(res_df) {
+  sd_lookup <- res_df %>%
+    filter(outcome %in% continuous_outcomes) %>%
+    distinct(analysis_type, visit, outcome, exposure, n)
+  sd_lookup[["outcome_sd"]] <- vapply(seq_len(nrow(sd_lookup)), function(i) {
+    row <- sd_lookup[i, , drop = FALSE]
+    calc_outcome_sd_qmd(row$outcome, row$analysis_type, row$visit, row$exposure, row$n)
+  }, numeric(1))
+  res_df %>%
+    left_join(sd_lookup, by = c("analysis_type", "visit", "outcome", "exposure", "n")) %>%
+    mutate(
+      std.estimate = ifelse(outcome %in% continuous_outcomes, estimate / outcome_sd, NA_real_),
+      std.conf.low = ifelse(outcome %in% continuous_outcomes, conf.low / outcome_sd, NA_real_),
+      std.conf.high = ifelse(outcome %in% continuous_outcomes, conf.high / outcome_sd, NA_real_)
+    )
+}
+
+primary_df <- add_standardized_outcome_effects(primary_df)
+sens_df <- add_standardized_outcome_effects(sens_df)
+
+results_column_widths <- c(
+  Model = "90px",
+  Metabolite = "120px",
+  `Effect Type` = "100px",
+  Estimate = "105px",
+  `95% CI` = "125px",
+  `p-value` = "75px",
+  `q-value` = "75px",
+  N = "45px"
+)
+
+# Formatter for DT tables by specific outcome and visit
+show_results_table_for_outcome <- function(outcome_nm, v_num) {
+  p_tbl <- primary_df %>%
+    filter(outcome == outcome_nm & visit == v_num) %>%
+    mutate(Model = "Primary")
+    
+  s_tbl <- sens_df %>%
+    filter(outcome == outcome_nm & visit == v_num) %>%
+    mutate(Model = "Sensitivity")
+    
+  tbl_df <- bind_rows(p_tbl, s_tbl) %>%
+    mutate(
+      Metabolite = exposure,
+      `Effect Type` = ifelse(outcome == "HINE_optimal", "Odds Ratio", "Std. Beta"),
+      Estimate = ifelse(outcome == "HINE_optimal", estimate, std.estimate),
+      `95% CI` = sprintf("[%.3f, %.3f]", ifelse(outcome == "HINE_optimal", conf.low, std.conf.low), ifelse(outcome == "HINE_optimal", conf.high, std.conf.high)),
+      `p-value` = p.value,
+      `q-value` = q.value,
+      N = n
+    ) %>%
+    select(Model, Metabolite, `Effect Type`, Estimate, `95% CI`, `p-value`, `q-value`, N)
+  
+  if (nrow(tbl_df) == 0) {
+    stop("No result rows available for outcome ", outcome_nm, " at visit ", v_num)
+  }
+  
+  make_table(tbl_df, page_len = 10, export = TRUE, column_widths = results_column_widths)
+}
+```
+
+## Q1. Predictive 6-month model
+
+Associations between child serum metabolites measured at 6 months of age and neurodevelopmental outcomes at 2 years.
+
+::: {.panel-tabset}
+
+### Bayley Cognitive Score
+
+```{r}
+#| label: q1-cognitive
+show_results_table_for_outcome("CCognition_indexpoints6", 4L)
+```
+
+### Bayley Language Score
+
+```{r}
+#| label: q1-language
+show_results_table_for_outcome("CLanguage_indexpoints6", 4L)
+```
+
+### Bayley Expressive Language
+
+```{r}
+#| label: q1-expressive
+show_results_table_for_outcome("CExpressivelanguage_standardpoints6", 4L)
+```
+
+### Bayley Receptive Language
+
+```{r}
+#| label: q1-receptive
+show_results_table_for_outcome("CReceptivelanguage_standardpoints6", 4L)
+```
+
+### Bayley Motor Score
+
+```{r}
+#| label: q1-motor
+show_results_table_for_outcome("CMotor_indexpoints6", 4L)
+```
+
+### Bayley Fine Motor
+
+```{r}
+#| label: q1-finemotor
+show_results_table_for_outcome("CFinemotor_standardpoints6", 4L)
+```
+
+### Bayley Gross Motor
+
+```{r}
+#| label: q1-grossmotor
+show_results_table_for_outcome("CGrossmotor_standardpoints6", 4L)
+```
+
+### HINE Global Score
+
+```{r}
+#| label: q1-hine-global
+show_results_table_for_outcome("Hammersmith6", 4L)
+```
+
+### HINE Optimality Status
+
+```{r}
+#| label: q1-hine-optimal
+show_results_table_for_outcome("HINE_optimal", 4L)
+```
+
+:::
+
+## Q2. Predictive 1-year model
+
+Associations between child serum metabolites measured at 1 year of age and neurodevelopmental outcomes at 2 years.
+
+::: {.panel-tabset}
+
+### Bayley Cognitive Score
+
+```{r}
+#| label: q2-cognitive
+show_results_table_for_outcome("CCognition_indexpoints6", 5L)
+```
+
+### Bayley Language Score
+
+```{r}
+#| label: q2-language
+show_results_table_for_outcome("CLanguage_indexpoints6", 5L)
+```
+
+### Bayley Expressive Language
+
+```{r}
+#| label: q2-expressive
+show_results_table_for_outcome("CExpressivelanguage_standardpoints6", 5L)
+```
+
+### Bayley Receptive Language
+
+```{r}
+#| label: q2-receptive
+show_results_table_for_outcome("CReceptivelanguage_standardpoints6", 5L)
+```
+
+### Bayley Motor Score
+
+```{r}
+#| label: q2-motor
+show_results_table_for_outcome("CMotor_indexpoints6", 5L)
+```
+
+### Bayley Fine Motor
+
+```{r}
+#| label: q2-finemotor
+show_results_table_for_outcome("CFinemotor_standardpoints6", 5L)
+```
+
+### Bayley Gross Motor
+
+```{r}
+#| label: q2-grossmotor
+show_results_table_for_outcome("CGrossmotor_standardpoints6", 5L)
+```
+
+### HINE Global Score
+
+```{r}
+#| label: q2-hine-global
+show_results_table_for_outcome("Hammersmith6", 5L)
+```
+
+### HINE Optimality Status
+
+```{r}
+#| label: q2-hine-optimal
+show_results_table_for_outcome("HINE_optimal", 5L)
+```
+
+:::
+
+## Q3. Concurrent 2-year model
+
+Associations between child serum metabolites and neurodevelopmental outcomes measured concurrently at 2 years of age.
+
+::: {.panel-tabset}
+
+### Bayley Cognitive Score
+
+```{r}
+#| label: q3-cognitive
+show_results_table_for_outcome("CCognition_indexpoints6", 6L)
+```
+
+### Bayley Language Score
+
+```{r}
+#| label: q3-language
+show_results_table_for_outcome("CLanguage_indexpoints6", 6L)
+```
+
+### Bayley Expressive Language
+
+```{r}
+#| label: q3-expressive
+show_results_table_for_outcome("CExpressivelanguage_standardpoints6", 6L)
+```
+
+### Bayley Receptive Language
+
+```{r}
+#| label: q3-receptive
+show_results_table_for_outcome("CReceptivelanguage_standardpoints6", 6L)
+```
+
+### Bayley Motor Score
+
+```{r}
+#| label: q3-motor
+show_results_table_for_outcome("CMotor_indexpoints6", 6L)
+```
+
+### Bayley Fine Motor
+
+```{r}
+#| label: q3-finemotor
+show_results_table_for_outcome("CFinemotor_standardpoints6", 6L)
+```
+
+### Bayley Gross Motor
+
+```{r}
+#| label: q3-grossmotor
+show_results_table_for_outcome("CGrossmotor_standardpoints6", 6L)
+```
+
+### HINE Global Score
+
+```{r}
+#| label: q3-hine-global
+show_results_table_for_outcome("Hammersmith6", 6L)
+```
+
+### HINE Optimality Status
+
+```{r}
+#| label: q3-hine-optimal
+show_results_table_for_outcome("HINE_optimal", 6L)
+```
+
+:::
+
+## Significant associations ($q < 0.10$)
+
+Summary of all metabolite–outcome associations reaching statistical significance after FDR adjustment ($q < 0.10$).
+
+::: {.panel-tabset}
+
+### Primary analysis
+
+```{r}
+#| label: primary-hits-table
+primary_hits <- primary_df %>%
+  filter(!is.na(q.value) & q.value < 0.10) %>%
+  mutate(
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    Visit = paste0("Visit ", visit),
+    `Effect Type` = ifelse(outcome == "HINE_optimal", "Odds Ratio", "Std. Beta"),
+    Estimate = ifelse(outcome == "HINE_optimal", estimate, std.estimate),
+    `95% CI` = sprintf("[%.3f, %.3f]", ifelse(outcome == "HINE_optimal", conf.low, std.conf.low), ifelse(outcome == "HINE_optimal", conf.high, std.conf.high)),
+    `p-value` = p.value,
+    `q-value` = q.value
+  ) %>%
+  select(Visit, Outcome, Metabolite, `Effect Type`, Estimate, `95% CI`, `p-value`, `q-value`)
+
+if (nrow(primary_hits) > 0) {
+  make_table(primary_hits, page_len = 10, export = TRUE, column_widths = results_column_widths)
+} else {
+  cat("No significant associations found at q < 0.10 in the primary models.")
+}
+```
+
+### Sensitivity analysis
+
+```{r}
+#| label: sensitivity-hits-table
+sens_hits <- sens_df %>%
+  filter(!is.na(q.value) & q.value < 0.10) %>%
+  mutate(
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    Visit = paste0("Visit ", visit),
+    `Effect Type` = ifelse(outcome == "HINE_optimal", "Odds Ratio", "Std. Beta"),
+    Estimate = ifelse(outcome == "HINE_optimal", estimate, std.estimate),
+    `95% CI` = sprintf("[%.3f, %.3f]", ifelse(outcome == "HINE_optimal", conf.low, std.conf.low), ifelse(outcome == "HINE_optimal", conf.high, std.conf.high)),
+    `p-value` = p.value,
+    `q-value` = q.value
+  ) %>%
+  select(Visit, Outcome, Metabolite, `Effect Type`, Estimate, `95% CI`, `p-value`, `q-value`)
+
+if (nrow(sens_hits) > 0) {
+  make_table(sens_hits, page_len = 10, export = TRUE, column_widths = results_column_widths)
+} else {
+  cat("No significant associations found at q < 0.10 in the sensitivity models.")
+}
+```
+
+:::
+
+## Limitations and interpretation
+
+* **FDR Correction:** No associations survived false discovery rate correction ($q < 0.10$) in either the primary or sensitivity analyses. Individual nominal signals should be interpreted as exploratory rather than robust findings.
+* **Complete-Case Analysis:** The models rely on complete-case datasets. Complete-case sample sizes range from $n=84$ to $n=207$ across the primary and sensitivity result rows, depending on visit, outcome, metabolite missingness, and covariate availability.
+* **Model Framework:** Each metabolite is modeled in an independent regression model rather than a joint multivariable framework or a moderated variance framework (such as limma), meaning variance is not shared across metabolite features.
+* **HINE Instability:** HINE optimality has low events per variable. The raw Visit 6 HINE distribution contains 34 suboptimal term children, while per-metabolite complete-case HINE models include fewer events for some metabolites. Adjusted logistic regression models therefore have a low events-per-variable ratio and convergence warning notes for a few metabolites. These odds ratios must be interpreted with caution.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::

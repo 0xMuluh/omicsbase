@@ -3,20 +3,46 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import html
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Callable
+from contextlib import asynccontextmanager
 
 import yaml
 
 import shutil
 from app.config import settings
+from app.services.execution_contract import (
+    ExecutionContractError,
+    load_execution_contract,
+)
+from app.services.capability_contract import (
+    CapabilityContractError,
+    load_capability_contract,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_SUBPROCESS_OUTPUT_CHARS = 10_000_000
 SUBPROCESS_TRUNCATION_MARKER = "\n[output truncated]"
+
+
+@asynccontextmanager
+async def _project_execution_lock(project_path: Path):
+    """Serialize mutating R/Quarto runs across workers for one project."""
+    lock_dir = project_path / ".omicsbase"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    handle = (lock_dir / "execution.lock").open("a+")
+    try:
+        await asyncio.to_thread(fcntl.flock, handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        await asyncio.to_thread(fcntl.flock, handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 async def run_project(
@@ -25,6 +51,74 @@ async def run_project(
     start_page: str | None = None,
     run_data: bool | None = None,
     target_pages: list[str] | None = None,
+    resume_from_step: str | None = None,
+) -> dict:
+    """Run a project under its cross-process execution lock."""
+    project_path = Path(project_dir).resolve()
+    async with _project_execution_lock(project_path):
+        # Read the advisory file only after acquiring the same lock used by
+        # edits. This avoids missing a change written while a run was waiting.
+        pending = _read_pending_invalidation(project_path) if resume_from_step is None else None
+        effective_resume = resume_from_step or (pending or {}).get("resume_from_step")
+        effective_target_pages = target_pages
+        if effective_target_pages is None and not effective_resume and pending is not None:
+            raw_pages = pending.get("targeted_pages")
+            if isinstance(raw_pages, list):
+                effective_target_pages = [
+                    str(page) for page in raw_pages
+                    if isinstance(page, str) and page.strip()
+                ] or None
+        # A pending page-only invalidation is a render task, not a data task.
+        # Preserve explicit run_data choices, but default the advisory path to
+        # skipping execution steps so editing a QMD never reruns the workflow.
+        effective_run_data = run_data
+        if (
+            effective_run_data is None
+            and pending is not None
+            and effective_target_pages
+            and not effective_resume
+        ):
+            effective_run_data = False
+        result = await _run_project_unlocked(
+            project_dir=str(project_path),
+            progress_callback=progress_callback,
+            start_page=start_page,
+            run_data=effective_run_data,
+            target_pages=effective_target_pages,
+            resume_from_step=effective_resume,
+        )
+        # A completed run has consumed the pending source invalidation. Keep it
+        # on failures so a later retry resumes from the same safe boundary.
+        pending_step = (pending or {}).get("resume_from_step") if pending is not None else None
+        consumed_pending = pending is not None and (not pending_step or run_data is not False)
+        if result.get("status") == "completed" and consumed_pending:
+            (project_path / ".omicsbase" / "invalidation.json").unlink(missing_ok=True)
+        return result
+
+
+def _read_pending_invalidation(project_path: Path) -> dict[str, object] | None:
+    """Read advisory edit invalidation metadata without trusting it as code."""
+
+    target = project_path / ".omicsbase" / "invalidation.json"
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    resume = raw.get("resume_from_step")
+    if resume is not None and (not isinstance(resume, str) or not resume.strip()):
+        return None
+    return raw
+
+
+async def _run_project_unlocked(
+    project_dir: str,
+    progress_callback: Callable[[str, str, str], None] | None = None,
+    start_page: str | None = None,
+    run_data: bool | None = None,
+    target_pages: list[str] | None = None,
+    resume_from_step: str | None = None,
 ) -> dict:
     """Execute the analysis project incrementally.
 
@@ -43,14 +137,195 @@ async def run_project(
         if line:
             result["logs"].append(line)
 
-    if not code_dir.exists():
-        message = f"Generated code directory not found: {code_dir}"
+    try:
+        execution_contract = load_execution_contract(project_path)
+    except ExecutionContractError as exc:
+        message = f"Invalid ReportPack execution contract: {exc}"
+        _report("execution_contract", "failed", message)
+        result["status"] = "failed"
+        result["errors"].append(
+            {"step": "execution_contract", "file": "execution_contract.json", "error": message}
+        )
+        return result
+
+    capability_path = project_path / ".omicsbase" / "capabilities.json"
+    if capability_path.exists():
+        try:
+            capability_contract = load_capability_contract(project_path)
+            if execution_contract is not None:
+                known_steps = {step.step_id for step in execution_contract.steps}
+                unknown_steps = sorted({
+                    step_id
+                    for item in capability_contract.selected
+                    for step_id in item.capability.execution_steps
+                    if step_id not in known_steps
+                })
+                if unknown_steps:
+                    raise CapabilityContractError(
+                        "Capability contract references unknown execution step(s): "
+                        + ", ".join(unknown_steps)
+                    )
+        except CapabilityContractError as exc:
+            message = f"Invalid capability contract: {exc}"
+            _report("capabilities", "failed", message)
+            result["status"] = "failed"
+            result["errors"].append(
+                {"step": "capabilities", "file": ".omicsbase/capabilities.json", "error": message}
+            )
+            return result
+
+    source_dir = (
+        execution_contract.working_path
+        if execution_contract is not None
+        else code_dir
+    )
+    source_root = (
+        execution_contract.working_directory
+        if execution_contract is not None
+        else "code"
+    )
+    if not source_dir.exists():
+        message = f"Generated source directory not found: {source_dir}"
         _report("setup", "failed", message)
         result["status"] = "failed"
         result["errors"].append({"step": "setup", "error": message})
         return result
 
-    all_pages = _load_quarto_pages(code_dir)
+    if execution_contract is not None:
+        artifact_baseline = _artifact_snapshot(execution_contract)
+        working_path = execution_contract.working_path
+        if run_data is not False:
+            resume_index = next((index for index, step in enumerate(execution_contract.steps) if step.step_id == resume_from_step), 0) if resume_from_step else 0
+            for index, step in enumerate(execution_contract.steps):
+                step_id = f"pack_{step.step_id}"
+                if resume_from_step and index < resume_index:
+                    _report(step_id, "skipped", f"Resuming from {resume_from_step}; {step.path} remains current")
+                    continue
+                command_path = os.path.relpath(
+                    execution_contract.step_path(step),
+                    start=working_path,
+                )
+                _report(step_id, "running", f"Running {step.path} ({step.role})...")
+                success, output = await _run_command(
+                    ["Rscript", command_path],
+                    cwd=str(working_path),
+                    progress_callback=lambda line, current=step_id: _report(
+                        current, "running", line
+                    ),
+                    timeout=_timeout_for_execution_role(step.role),
+                    sandbox_root=str(project_path),
+                )
+                if not success:
+                    summary = _extract_error_summary(output)
+                    _report(step_id, "failed", f"{step.path} failed: {summary}")
+                    result["status"] = "failed"
+                    result["errors"].append(
+                        {
+                            "step": step.role,
+                            "step_id": step.step_id,
+                            "file": step.path,
+                            "error": output,
+                            "timeout": "timed out" in output.lower(),
+                        }
+                    )
+                    return result
+                _report(step_id, "completed", f"Completed {step.path}")
+        elif execution_contract.steps:
+            _report(
+                "pack_steps",
+                "completed",
+                "ReportPack analysis steps skipped for this render",
+            )
+
+        # Entrypoints are the pack's own orchestration surface. Targeted recipe
+        # and repair runs retain incremental rendering so a single requested
+        # page does not force a complete site rebuild.
+        use_entrypoint = (
+            execution_contract.render == "entrypoint"
+            and target_pages is None
+            and start_page is None
+        )
+        if use_entrypoint:
+            entrypoint_path = execution_contract.entrypoint_path
+            if entrypoint_path is None:  # guarded by strict contract parsing
+                raise AssertionError("Validated entrypoint contract has no entrypoint")
+            command_path = os.path.relpath(entrypoint_path, start=working_path)
+            _report(
+                "pack_entrypoint",
+                "running",
+                f"Running ReportPack entrypoint {execution_contract.entrypoint}...",
+            )
+            success, output = await _run_command(
+                ["Rscript", command_path],
+                cwd=str(working_path),
+                progress_callback=lambda line: _report("pack_entrypoint", "running", line),
+                timeout=7200,
+                sandbox_root=str(project_path),
+            )
+            if not success:
+                summary = _extract_error_summary(output)
+                _report(
+                    "pack_entrypoint",
+                    "failed",
+                    f"{execution_contract.entrypoint} failed: {summary}",
+                )
+                result["status"] = "failed"
+                result["errors"].append(
+                    {
+                        "step": "entrypoint",
+                        "file": execution_contract.entrypoint,
+                        "error": output,
+                        "timeout": "timed out" in output.lower(),
+                    }
+                )
+                return result
+            _report(
+                "pack_entrypoint",
+                "completed",
+                f"Completed {execution_contract.entrypoint}",
+            )
+            artifact_errors = _declared_artifact_errors(
+                execution_contract,
+                baseline=artifact_baseline,
+            )
+            if artifact_errors:
+                message = "; ".join(artifact_errors)
+                _report("verify", "failed", message)
+                result["status"] = "failed"
+                result["errors"].append(
+                    {"step": "artifacts", "error": message}
+                )
+                return result
+            _report(
+                "verify",
+                "completed",
+                "Verified fresh declared report artifact(s): "
+                + ", ".join(execution_contract.artifacts),
+            )
+            return result
+
+    data_r = code_dir / "data.R"
+    if execution_contract is None and data_r.exists():
+        should_run_data = _should_run_data(project_path, data_r) if run_data is None else run_data
+        if should_run_data:
+            _report("data_r_exec", "running", "Running data.R...")
+            success, output = await _run_command(
+                ["Rscript", "data.R"],
+                cwd=str(code_dir),
+                progress_callback=lambda line: _report("data_r_exec", "running", line),
+                sandbox_root=str(project_path),
+            )
+            if not success:
+                summary = _extract_error_summary(output)
+                _report("data_r_exec", "failed", f"data.R failed: {summary}")
+                result["status"] = "failed"
+                result["errors"].append({"step": "data_r", "file": "code/data.R", "error": output})
+                return result
+            _report("data_r_exec", "completed", "data.R completed successfully")
+        else:
+            _report("data_r_exec", "completed", "data.R cache current")
+
+    all_pages = _load_quarto_pages(source_dir)
     if target_pages is not None:
         requested = set(target_pages)
         pages = [
@@ -73,26 +348,6 @@ async def run_project(
         completed_pages=_existing_rendered_pages(output_dir, all_pages),
     )
 
-    data_r = code_dir / "data.R"
-    if data_r.exists():
-        should_run_data = _should_run_data(project_path, data_r) if run_data is None else run_data
-        if should_run_data:
-            _report("data_r_exec", "running", "Running data.R...")
-            success, output = await _run_command(
-                ["Rscript", "data.R"],
-                cwd=str(code_dir),
-                progress_callback=lambda line: _report("data_r_exec", "running", line),
-            )
-            if not success:
-                summary = _extract_error_summary(output)
-                _report("data_r_exec", "failed", f"data.R failed: {summary}")
-                result["status"] = "failed"
-                result["errors"].append({"step": "data_r", "file": "code/data.R", "error": output})
-                return result
-            _report("data_r_exec", "completed", "data.R completed successfully")
-        else:
-            _report("data_r_exec", "completed", "data.R cache current")
-
     completed_pages = _existing_rendered_pages(output_dir, all_pages)
 
     # Distinguish leaf analysis pages from final assembly pages (e.g. index.qmd)
@@ -104,35 +359,37 @@ async def run_project(
     async def _render_single(page: str) -> bool:
         async with semaphore:
             step_id = _page_step_id(page)
-            page_path = code_dir / page
+            page_path = source_dir / page
             output_file = _html_path_for_page(output_dir, page)
+            source_file = f"{source_root}/{page}"
 
             if not page_path.exists():
-                message = f"QMD file is missing: code/{page}"
+                message = f"QMD file is missing: {source_file}"
                 _report(step_id, "failed", message)
                 result["status"] = "failed"
                 result["failed_page"] = page
-                result["errors"].append({"step": "qmd", "file": f"code/{page}", "error": message})
+                result["errors"].append({"step": "qmd", "file": source_file, "error": message})
                 _write_incremental_index(output_dir, all_pages, completed_pages, failed_page=page)
                 return False
 
             _report(step_id, "running", f"Rendering {page}")
             success, output = await _run_command(
                 ["quarto", "render", page],
-                cwd=str(code_dir),
+                cwd=str(source_dir),
                 progress_callback=lambda line: _report(step_id, "running", line),
                 timeout=_timeout_for_page(page),
+                sandbox_root=str(project_path),
             )
             if not success:
                 summary = _extract_error_summary(output)
                 _report(step_id, "failed", f"{page} failed: {summary}")
                 result["status"] = "failed"
                 result["failed_page"] = page
-                result["pages"].append({"file": f"code/{page}", "status": "failed"})
+                result["pages"].append({"file": source_file, "status": "failed"})
                 result["errors"].append(
                     {
                         "step": "qmd",
-                        "file": f"code/{page}",
+                        "file": source_file,
                         "page": page,
                         "error": output,
                         "timeout": "timed out" in output.lower(),
@@ -143,7 +400,7 @@ async def run_project(
 
             if page not in completed_pages:
                 completed_pages.append(page)
-            result["pages"].append({"file": f"code/{page}", "status": "completed", "output": str(output_file)})
+            result["pages"].append({"file": source_file, "status": "completed", "output": str(output_file)})
             _write_incremental_index(output_dir, all_pages, completed_pages)
             _report(step_id, "completed", f"Rendered {page}")
             return True
@@ -161,11 +418,29 @@ async def run_project(
         if not ok:
             return result
 
-    index_html = output_dir / "index.html"
-    if index_html.exists():
-        _report("verify", "completed", f"Output verified: {index_html}")
+    if execution_contract is not None:
+        artifact_errors = _declared_artifact_errors(
+            execution_contract,
+            baseline=artifact_baseline,
+        )
+        if artifact_errors:
+            message = "; ".join(artifact_errors)
+            _report("verify", "failed", message)
+            result["status"] = "failed"
+            result["errors"].append({"step": "artifacts", "error": message})
+            return result
+        _report(
+            "verify",
+            "completed",
+            "Verified fresh declared report artifact(s): "
+            + ", ".join(execution_contract.artifacts),
+        )
     else:
-        _report("verify", "warning", "Warning: index.html not found in output directory")
+        index_html = output_dir / "index.html"
+        if index_html.exists():
+            _report("verify", "completed", f"Output verified: {index_html}")
+        else:
+            _report("verify", "warning", "Warning: index.html not found in output directory")
 
     return result
 
@@ -222,6 +497,25 @@ def _should_run_data(project_dir: Path, data_r: Path) -> bool:
     return any(path.exists() and path.stat().st_mtime > cache_mtime for path in tracked_inputs)
 
 
+def repairs_require_analysis_rerun(
+    project_dir: str | Path,
+    repaired_paths: list[str],
+) -> bool:
+    """Decide whether repaired source invalidates the analysis stage.
+
+    Legacy projects key this decision to data.R. A declared ReportPack can
+    source any R helper from any execution step, so an R-source repair
+    conservatively invalidates its full ordered analysis workflow.
+    """
+    try:
+        contract = load_execution_contract(project_dir)
+    except ExecutionContractError:
+        return True
+    if contract is not None:
+        return any(Path(path).suffix.lower() == ".r" for path in repaired_paths)
+    return any(Path(path).name.lower() == "data.r" for path in repaired_paths)
+
+
 def _existing_rendered_pages(output_dir: Path, pages: list[str]) -> list[str]:
     return [page for page in pages if _html_path_for_page(output_dir, page).exists()]
 
@@ -249,6 +543,36 @@ def _extract_error_summary(output: str) -> str:
             return line[:500]
 
     return lines[-1][:500]
+
+
+def _artifact_snapshot(contract) -> dict[str, tuple[int, int] | None]:
+    snapshot: dict[str, tuple[int, int] | None] = {}
+    for relative in contract.artifacts:
+        path = contract.artifact_path(relative)
+        if not path.is_file():
+            snapshot[relative] = None
+            continue
+        stat = path.stat()
+        snapshot[relative] = (stat.st_mtime_ns, stat.st_size)
+    return snapshot
+
+
+def _declared_artifact_errors(
+    contract,
+    *,
+    baseline: dict[str, tuple[int, int] | None],
+) -> list[str]:
+    errors: list[str] = []
+    for relative in contract.artifacts:
+        path = contract.artifact_path(relative)
+        if not path.is_file():
+            errors.append(f"Declared artifact was not produced: {relative}")
+            continue
+        stat = path.stat()
+        current = (stat.st_mtime_ns, stat.st_size)
+        if baseline.get(relative) is not None and current == baseline.get(relative):
+            errors.append(f"Declared artifact was not refreshed by this run: {relative}")
+    return errors
 
 
 def _write_incremental_index(
@@ -310,7 +634,6 @@ def _write_incremental_index(
     (output_dir / "index.html").write_text(index_html, encoding="utf-8")
 
 
-import os
 import signal
 import concurrent.futures
 
@@ -321,6 +644,7 @@ async def _run_command(
     timeout: int = 1800,
     cancel_check: Callable[[], bool] | None = None,
     _bypass_docker: bool = False,
+    sandbox_root: str | None = None,
 ) -> tuple[bool, str]:
     """Run a command in a hardened Docker sandbox container or subprocess, streaming output.
 
@@ -329,6 +653,14 @@ async def _run_command(
     """
     exec_cmd = list(cmd)
     exec_cwd = cwd
+    abs_cwd_path = Path(cwd).resolve()
+    mount_root = Path(sandbox_root).resolve() if sandbox_root else abs_cwd_path
+    try:
+        relative_cwd = abs_cwd_path.relative_to(mount_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Command cwd {abs_cwd_path} is outside sandbox root {mount_root}"
+        ) from exc
 
     if not settings.use_docker_sandbox and not settings.dev_mode and not _bypass_docker:
         raise RuntimeError(
@@ -345,7 +677,7 @@ async def _run_command(
                 )
             logger.warning("Docker binary missing on PATH; falling back to unsandboxed host execution under ALLOW_UNSANDBOXED_EXECUTION=true override.")
         else:
-            abs_cwd = str(Path(cwd).resolve())
+            container_cwd = Path("/workspace") / relative_cwd
             exec_cmd = [
                 "docker", "run", "--rm",
                 "--network", "none",
@@ -354,8 +686,8 @@ async def _run_command(
                 "--pids-limit", str(getattr(settings, "docker_pids_limit", 100)),
                 "--user", "1000:1000",
                 "--security-opt", "no-new-privileges:true",
-                "-v", f"{abs_cwd}:/workspace",
-                "-w", "/workspace",
+                "-v", f"{mount_root}:/workspace",
+                "-w", container_cwd.as_posix(),
                 settings.docker_image,
             ] + cmd
             exec_cwd = None
@@ -441,7 +773,15 @@ async def _run_command(
 
         if not success and os.getenv("ALLOW_UNSANDBOXED_EXECUTION", "").lower() == "true" and "docker" in exec_cmd[0]:
             logger.warning("Docker execution failed (exit %d); falling back to unsandboxed host execution under ALLOW_UNSANDBOXED_EXECUTION=true override.", process.returncode)
-            return await _run_command(cmd, cwd, progress_callback=progress_callback, timeout=timeout, cancel_check=cancel_check, _bypass_docker=True)
+            return await _run_command(
+                cmd,
+                cwd,
+                progress_callback=progress_callback,
+                timeout=timeout,
+                cancel_check=cancel_check,
+                _bypass_docker=True,
+                sandbox_root=sandbox_root,
+            )
 
         if not success:
             logger.error("Command failed (exit %d): %s", process.returncode, full_output[-500:])
@@ -486,6 +826,14 @@ def _timeout_for_page(page: str) -> int:
     )
     if any(marker in name for marker in heavy_markers):
         return 7200
+    return 1800
+
+
+def _timeout_for_execution_role(role: str) -> int:
+    if role == "analysis":
+        return 7200
+    if role == "data_loader":
+        return 3600
     return 1800
 
 

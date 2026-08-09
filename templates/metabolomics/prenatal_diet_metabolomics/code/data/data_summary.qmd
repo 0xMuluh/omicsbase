@@ -1,0 +1,446 @@
+---
+title: "Data summary"
+---
+
+## Setup
+
+```{r}
+#| label: data-summary-01
+source("analysis_data_utils.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+has_venn <- requireNamespace("ggVennDiagram", quietly = TRUE)
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = paste0("visit_", 4:7)
+)
+
+df <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+cluster_map <- analysis_obj$cluster_map
+raw_df <- extract_long_from_mae(
+  analysis_obj$mae,
+  visits = paste0("visit_", 4:7)
+)
+
+first_non_missing <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) == 0) return(NA)
+  x[[idx[1]]]
+}
+
+visit_label <- function(v) dplyr::case_when(
+  v == 4L ~ "6 Months",
+  v == 5L ~ "12 Months",
+  v == 6L ~ "24 Months",
+  v == 7L ~ "5-6 Years",
+  TRUE ~ paste("Visit", v)
+)
+
+pretty_var <- function(x) {
+  x <- sub("^M", "", x)
+  x <- gsub("DietaryPatterns", "Dietary Patterns ", x)
+  x <- gsub("DIINormalDiet", "Dietary Inflammatory Index ", x)
+  x <- gsub("DIIDensityDiet", "Dietary Inflammatory Index Density ", x)
+  x <- gsub("^IDQ1$", "IDQ", x)
+  x <- gsub("^IDQ2$", "IDQ", x)
+  x <- gsub("EPercent", "Percent ", x)
+  x <- gsub("Fiball", "Fibre ", x)
+  x <- gsub("CHO", "Carbohydrate", x)
+  x <- gsub("Pro", "Protein", x)
+  x <- gsub("FAn3", "n-3 fatty acids", x)
+  x <- gsub("FAn6", "n-6 fatty acids", x)
+  x <- gsub("SFA", "SFA", x)
+  x <- gsub("MUFA", "MUFA", x)
+  x <- gsub("PUFA", "PUFA", x)
+  x <- sub("[12]$", "", x)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+```
+
+## Sample coverage
+
+```{r}
+#| label: data-summary-02
+coverage_tbl <- raw_df %>%
+  distinct(StudyID, visit_num) %>%
+  count(visit_num, name = "n_children") %>%
+  mutate(child_age = visit_label(visit_num)) %>%
+  select(child_age, n_children)
+
+make_table(coverage_tbl, caption = "Children contributing metabolomics panels by child age")
+```
+
+## Maternal baseline characteristics
+
+```{r}
+#| label: data-summary-02b
+maternal_vars <- c(
+  "Intervention", "CGender", "MEthnicity", "MDise",
+  "MprepBMI", "MAge1", "MprevGDM_new", "Bfdurationm",
+  "MPRSmoke", "MUniEdu", "CWeightBirth"
+)
+maternal_vars <- maternal_vars[maternal_vars %in% names(df)]
+
+maternal_df <- df %>%
+  arrange(StudyID, visit_num) %>%
+  group_by(StudyID) %>%
+  summarise(across(all_of(maternal_vars), first_non_missing), .groups = "drop")
+
+if (length(maternal_vars) == 0) {
+  maternal_summary_tbl <- data.frame(message = "Maternal baseline summary unavailable")
+} else {
+  maternal_summary_tbl <- bind_rows(lapply(maternal_vars, function(var_nm) {
+    x <- maternal_df[[var_nm]]
+    x_num <- suppressWarnings(as.numeric(as.character(x)))
+    is_continuous <- sum(is.finite(x_num)) >= 20L && length(unique(x_num[is.finite(x_num)])) >= 8L
+
+    if (is_continuous) {
+      data.frame(
+        variable = pretty_var(var_nm),
+        variable_code = var_nm,
+        type = "continuous",
+        non_missing = sum(!is.na(x_num)),
+        summary = paste0(
+          round(mean(x_num, na.rm = TRUE), 3),
+          " (sd ", round(sd(x_num, na.rm = TRUE), 3), "); median ",
+          round(stats::median(x_num, na.rm = TRUE), 3),
+          " [", round(stats::quantile(x_num, 0.25, na.rm = TRUE), 3),
+          ", ", round(stats::quantile(x_num, 0.75, na.rm = TRUE), 3), "]"
+        ),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      lev <- sort(table(as.character(x)), decreasing = TRUE)
+      top_level <- if (length(lev) == 0) NA_character_ else names(lev)[1]
+      top_n <- if (length(lev) == 0) 0 else unname(lev[1])
+      data.frame(
+        variable = pretty_var(var_nm),
+        variable_code = var_nm,
+        type = "categorical",
+        non_missing = sum(!is.na(x)),
+        summary = paste0("most common: ", top_level, " (", top_n, ")"),
+        stringsAsFactors = FALSE
+      )
+    }
+  }))
+}
+
+make_table(maternal_summary_tbl, caption = "Maternal baseline characteristics")
+```
+
+## Visit overlap
+
+```{r}
+#| label: fig-visit-overlap
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 5
+id_sets <- split(df$StudyID, df$visit_num)
+id_sets <- lapply(id_sets, function(x) sort(unique(as.character(x))))
+id_sets <- id_sets[order(as.integer(names(id_sets)))]
+names(id_sets) <- vapply(as.integer(names(id_sets)), visit_label, character(1))
+
+if (!has_venn || length(id_sets) < 2) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "Visit-overlap plot unavailable") +
+    theme_void()
+} else {
+  ggVennDiagram::ggVennDiagram(id_sets, label = "both") +
+    ggplot2::scale_fill_distiller(palette = "RdBu") +
+    ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.18)) +
+    ggplot2::theme_void(base_size = 12) +
+    ggplot2::theme(
+      plot.margin = ggplot2::margin(5.5, 5.5, 5.5, 28)
+    ) +
+    ggplot2::labs(
+      title = "Child overlap across ages",
+      fill = "Count"
+    )
+}
+```
+
+## Exposure coverage
+
+```{r}
+#| label: data-summary-03
+exposure_vars <- c(
+  "MDietaryPatterns_1", "MDIINormalDiet1", "MDIIDensityDiet1", "MIDQ1",
+  "MEPercentProDiet1", "MEPercentCHODiet1", "MEPercentFatDiet1",
+  "MEPercentPUFADiet1", "MEPercentMUFADiet1", "MEPercentSFADiet1",
+  "MEPercentFAn3Diet1", "MEPercentFAn6Diet1", "MEPercentFiballDiet1",
+  "MDietaryPatterns_2", "MDIINormalDiet2", "MDIIDensityDiet2", "MIDQ2",
+  "MEPercentProDiet2", "MEPercentCHODiet2", "MEPercentFatDiet2",
+  "MEPercentPUFADiet2", "MEPercentMUFADiet2", "MEPercentSFADiet2",
+  "MEPercentFAn3Diet2", "MEPercentFAn6Diet2", "MEPercentFiballDiet2"
+)
+
+prenatal_df <- df %>%
+  arrange(StudyID, visit_num) %>%
+  group_by(StudyID) %>%
+  summarise(across(all_of(exposure_vars), first_non_missing), .groups = "drop")
+
+exposure_tbl <- bind_rows(lapply(c("1", "2"), function(w) {
+  current_exposures <- exposure_vars[grepl(paste0(w, "$"), exposure_vars)]
+  window_lab <- if (w == "1") "Early Pregnancy" else "Late Pregnancy"
+
+  bind_rows(lapply(current_exposures, function(var_nm) {
+    x <- prenatal_df[[var_nm]]
+    x_num <- suppressWarnings(as.numeric(as.character(x)))
+    is_continuous <- sum(is.finite(x_num)) >= 20L && length(unique(x_num[is.finite(x_num)])) >= 8L
+
+    if (is_continuous) {
+      data.frame(
+        pregnancy_window = window_lab,
+        exposure = pretty_var(var_nm),
+        variable = var_nm,
+        type = "continuous",
+        non_missing = sum(!is.na(x_num)),
+        summary = paste0(
+          round(mean(x_num, na.rm = TRUE), 3),
+          " (sd ", round(sd(x_num, na.rm = TRUE), 3), "); median ",
+          round(stats::median(x_num, na.rm = TRUE), 3)
+        ),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      lev <- sort(table(as.character(x)), decreasing = TRUE)
+      top_level <- names(lev)[1]
+      top_n <- if (length(lev) == 0) 0 else unname(lev[1])
+      data.frame(
+        pregnancy_window = window_lab,
+        exposure = pretty_var(var_nm),
+        variable = var_nm,
+        type = "categorical",
+        non_missing = sum(!is.na(x)),
+        summary = paste0("most common: ", top_level, " (", top_n, ")"),
+        stringsAsFactors = FALSE
+      )
+    }
+  }))
+}))
+
+make_table(exposure_tbl, caption = "Maternal prenatal exposure distributions by pregnancy window")
+```
+
+## Metabolite coverage
+
+```{r}
+#| label: data-summary-04
+metabolite_missing <- bind_rows(lapply(sort(unique(df$visit_num)), function(v) {
+  dv <- df %>% filter(visit_num == v)
+  miss <- colMeans(is.na(dv[, metabolite_cols, drop = FALSE]))
+
+  data.frame(
+    child_age = visit_label(v),
+    metabolites = length(metabolite_cols),
+    median_missing_fraction = median(miss),
+    p90_missing_fraction = as.numeric(quantile(miss, 0.90, na.rm = TRUE, names = FALSE)),
+    max_missing_fraction = max(miss),
+    stringsAsFactors = FALSE
+  )
+}))
+
+make_table(round_numeric(metabolite_missing, 3), caption = "Metabolite missingness by child age")
+```
+
+## Global structure (PCA) with top loadings
+
+```{r}
+#| label: fig-pca
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+pca_details <- compute_pca_details(
+  df = df,
+  feature_cols = metabolite_cols,
+  group_cols = c("visit"),
+  min_feature_obs = 0.7,
+  top_n_loadings = 5L
+)
+
+if (is.null(pca_details)) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "PCA unavailable: insufficient complete feature matrix") +
+    theme_void()
+} else {
+  scores <- pca_details$scores
+  scores$visit <- factor(gsub("_", " ", scores$visit), levels = sort(unique(gsub("_", " ", scores$visit))))
+  visit_counts <- scores %>%
+    count(visit, name = "n") %>%
+    mutate(label = paste0(visit, " (n=", n, ")"))
+  label_map <- setNames(visit_counts$label, as.character(visit_counts$visit))
+  legend_labels <- unname(label_map[levels(scores$visit)])
+  top_loadings_plot <- pca_details$top_loadings
+  score_scale <- max(abs(scores$PC1), abs(scores$PC2), na.rm = TRUE)
+
+  has_ellipse <- scores %>%
+    count(visit, name = "n") %>%
+    summarise(ok = all(n >= 3) & n() >= 2) %>%
+    pull(ok)
+
+  p <- ggplot(scores, aes(x = PC1, y = PC2, color = visit)) +
+    geom_point(alpha = 0.7, size = 1.7) +
+    theme_minimal(base_size = 11) +
+    coord_equal() +
+    scale_color_brewer(palette = "Set1", labels = legend_labels, drop = FALSE) +
+    labs(
+      title = "PCA across child ages",
+      x = paste0("PC1 (", round(100 * pca_details$var_explained[1], 1), "%)"),
+      y = paste0("PC2 (", round(100 * pca_details$var_explained[2], 1), "%)"),
+      color = "Visit"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "top",
+      panel.grid.minor = element_blank()
+    )
+
+  if (isTRUE(has_ellipse)) {
+    p <- p + stat_ellipse(linewidth = 0.8, alpha = 0.7)
+  }
+
+  p +
+    geom_segment(
+      data = top_loadings_plot,
+      aes(x = 0, y = 0, xend = PC1_scaled, yend = PC2_scaled),
+      inherit.aes = FALSE,
+      color = "black",
+      linewidth = 0.45,
+      arrow = arrow(length = grid::unit(0.18, "cm"))
+    ) +
+    geom_text(
+      data = top_loadings_plot,
+      aes(x = PC1_scaled, y = PC2_scaled, label = feature),
+      inherit.aes = FALSE,
+      size = 2.8,
+      color = "black",
+      check_overlap = TRUE,
+      nudge_y = 0.02 * score_scale
+    )
+}
+```
+
+```{r}
+#| label: data-summary-05
+if (is.null(pca_details)) {
+  loading_tbl <- data.frame(message = "Top loadings unavailable: insufficient complete feature matrix")
+} else {
+  loading_tbl <- pca_details$loadings %>%
+    slice_head(n = 15)
+}
+
+make_table(round_numeric(loading_tbl, 3), caption = "Top PCA loadings (PC1+PC2)")
+```
+
+```{r}
+#| label: fig-pca-loadings
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+if (!is.null(pca_details)) {
+  loading_plot_tbl <- pca_details$loadings %>%
+    select(feature, PC1, PC2) %>%
+    pivot_longer(cols = c(PC1, PC2), names_to = "component", values_to = "loading") %>%
+    group_by(component) %>%
+    slice_max(order_by = abs(loading), n = 10, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      effect = ifelse(loading >= 0, "positive", "negative"),
+      feature = reorder(feature, abs(loading))
+    )
+
+  ggplot(loading_plot_tbl, aes(x = abs(loading), y = feature, fill = effect)) +
+    geom_col(width = 0.85) +
+    facet_wrap(~component, scales = "free_y") +
+    scale_fill_manual(values = c(negative = "#4B00FF", positive = "#FF1A1A")) +
+    theme_minimal(base_size = 10) +
+    labs(
+      title = "Top PCA loadings by component",
+      x = "Value",
+      y = "Feature",
+      fill = "Effect"
+    )
+}
+```
+
+## Cluster composition
+
+```{r}
+#| label: data-summary-06
+cluster_tbl <- cluster_map %>%
+  mutate(cluster = ifelse(is.na(cluster), "unassigned", cluster)) %>%
+  count(cluster, name = "n_metabolites") %>%
+  mutate(proportion = n_metabolites / sum(n_metabolites)) %>%
+  arrange(desc(n_metabolites))
+
+make_table(round_numeric(cluster_tbl, 3), caption = "Cluster assignment summary")
+```
+
+## Clinical snapshot
+
+```{r}
+#| label: data-summary-07
+snapshot_vars <- c(
+  "Intervention", "CGender", "MEthnicity", "MDise",
+  "MprepBMI", "MAge1", "MprevGDM_new", "Bfdurationm",
+  "MPRSmoke", "MUniEdu", "CWeightBirth"
+)
+snapshot_vars <- snapshot_vars[snapshot_vars %in% names(df)]
+
+if (length(snapshot_vars) == 0) {
+  snapshot_tbl <- data.frame(message = "Clinical snapshot unavailable")
+} else {
+  snapshot_tbl <- bind_rows(lapply(sort(unique(df$visit_num)), function(v) {
+    dv <- df %>% filter(visit_num == v)
+
+    bind_rows(lapply(snapshot_vars, function(var_nm) {
+      x <- dv[[var_nm]]
+      x_num <- suppressWarnings(as.numeric(as.character(x)))
+
+      if (all(!is.na(x_num))) {
+        data.frame(
+          child_age = visit_label(v),
+          variable = pretty_var(var_nm),
+          variable_code = var_nm,
+          type = "numeric",
+          n_non_missing = sum(!is.na(x_num)),
+          summary = paste0(round(mean(x_num, na.rm = TRUE), 2), " (sd ", round(sd(x_num, na.rm = TRUE), 2), ")"),
+          stringsAsFactors = FALSE
+        )
+      } else {
+        top_level <- names(sort(table(x), decreasing = TRUE))[1]
+        top_n <- max(table(x), na.rm = TRUE)
+        data.frame(
+          child_age = visit_label(v),
+          variable = pretty_var(var_nm),
+          variable_code = var_nm,
+          type = "categorical",
+          n_non_missing = sum(!is.na(x)),
+          summary = paste0("top: ", top_level, " (", top_n, ")"),
+          stringsAsFactors = FALSE
+        )
+      }
+    }))
+  }))
+}
+
+make_table(snapshot_tbl, caption = "Compact clinical snapshot by child age")
+```
+
+For full covariate distributions and testing, see the Clinical Characteristics page.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: data-summary-08
+#| echo: false
+sessionInfo()
+```
+:::

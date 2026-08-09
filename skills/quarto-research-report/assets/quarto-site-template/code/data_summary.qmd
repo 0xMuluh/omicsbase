@@ -1,0 +1,53 @@
+---
+title: "Data summary"
+---
+
+```{r}
+#| label: report-context
+#| include: false
+find_first <- function(paths) {
+  hits <- paths[file.exists(paths)]
+  if (length(hits)) hits[[1]] else NA_character_
+}
+load_plan <- function() {
+  path <- find_first(c("config/analysis_plan.R", "../config/analysis_plan.R", "../../config/analysis_plan.R"))
+  if (is.na(path)) return(NULL)
+  env <- new.env(parent = baseenv())
+  sys.source(path, envir = env)
+  if (exists("analysis_plan", envir = env, inherits = FALSE)) get("analysis_plan", envir = env) else NULL
+}
+read_optional_table <- function(paths) {
+  path <- find_first(paths)
+  if (is.na(path)) return(NULL)
+  ext <- tolower(tools::file_ext(path))
+  if (ext %in% c("tsv", "txt")) read.delim(path, check.names = FALSE, stringsAsFactors = FALSE) else read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+}
+plan <- load_plan()
+```
+
+
+## Sample availability
+
+```{r}
+sample_summary <- read_optional_table(c("results/sample_summary.tsv", "../results/sample_summary.tsv", "../../results/sample_summary.tsv", "results/data_summary.tsv", "../results/data_summary.tsv", "../../results/data_summary.tsv"))
+if (is.null(sample_summary)) {
+  cat("Sample summary is pending. Run the domain preparation script first.")
+} else {
+  sample_summary
+}
+```
+
+## Feature availability
+
+```{r}
+feature_summary <- read_optional_table(c("results/feature_summary.tsv", "../results/feature_summary.tsv", "../../results/feature_summary.tsv"))
+if (is.null(feature_summary)) {
+  cat("Feature summary is pending or included in the general data summary.")
+} else {
+  feature_summary
+}
+```
+
+## Missingness and exclusions
+
+Summarize missing metadata, dropped samples, dropped features, and the reason each exclusion occurred. Exclusions must trace to config, script output, or decision log.

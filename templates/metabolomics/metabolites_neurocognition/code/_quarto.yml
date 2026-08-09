@@ -1,0 +1,74 @@
+project:
+  execute-dir: project
+  type: website
+  output-dir: "../output"
+  render:
+    - "design/study_overview.qmd"
+    - "design/analysis_plan.qmd"
+    - "design/covariate_diagnostics.qmd"
+    - "primary/primary_results.qmd"
+    - "primary/figures.qmd"
+    - "secondary/secondary_results.qmd"
+    - "secondary/secondary_figures.qmd"
+    - "data/clinical_characteristics.qmd"
+    - "data/data_summary.qmd"
+
+website:
+  title: "FOPP"
+  navbar:
+    left:
+      - text: "Setup & Design"
+        menu:
+          - text: "Study overview"
+            file: design/study_overview.qmd
+          - text: "Analysis plan"
+            file: design/analysis_plan.qmd
+          - text: "Covariate and model specification"
+            file: design/covariate_diagnostics.qmd
+      - text: "Primary Analysis"
+        menu:
+          - text: "Primary results"
+            file: primary/primary_results.qmd
+          - text: "Figures"
+            file: primary/figures.qmd
+      - text: "Secondary Analysis"
+        menu:
+          - text: "Secondary results"
+            file: secondary/secondary_results.qmd
+          - text: "Secondary figures"
+            file: secondary/secondary_figures.qmd
+      - text: "Data"
+        menu:
+          - text: "Clinical characteristics"
+            file: data/clinical_characteristics.qmd
+          - text: "Data summary"
+            file: data/data_summary.qmd
+
+format:
+  html:
+    css: toc-toggle.css
+    toc: true
+    toc-depth: 3
+    toc-expand: 1
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    page-layout: full
+    lightbox: true
+    fig-width: 14
+    fig-height: 10
+    fig-dpi: 300
+    fig-format: retina
+    fig-responsive: true
+    include-in-header:
+      text: |
+        <script async src="https://hypothes.is/embed.js"></script>
+    include-after-body:
+      text: |
+        <script src="toc-toggle.js"></script>
+
+execute:
+  echo: true
+  warning: false
+  message: false

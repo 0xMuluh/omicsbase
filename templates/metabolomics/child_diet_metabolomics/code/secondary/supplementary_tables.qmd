@@ -1,0 +1,300 @@
+---
+title: "Supplementary tables"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+library(dplyr)
+library(tidyr)
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+
+raw_df <- extract_long_from_mae(
+  analysis_obj$mae,
+  visits = c("visit_6", "visit_7")
+)
+
+q1 <- results$q1
+q2 <- results$q2
+q3 <- results$q3
+q4 <- results$q4
+q4_split <- split_q4_terms(q4)
+q4_main <- q4_split$main
+q4_interaction <- q4_split$interaction
+q1_sens <- results$q1_sensitivity
+q2_sens <- results$q2_sensitivity
+q3_sens <- results$q3_sensitivity
+q4_sens <- results$q4_sensitivity
+
+q1_expos <- sort(unique(model_status$exposure[model_status$question == "Q1"]))
+q2_expos <- sort(unique(model_status$exposure[model_status$question == "Q2"]))
+q4_pairs <- tibble(
+  exposure_2y = q1_expos,
+  exposure_56y = sub("6$", "7", q1_expos),
+  exposure_family = sub("6$", "", gsub("_6$", "", q1_expos))
+)
+
+v6 <- raw_df %>%
+  filter(visit_num == 6) %>%
+  select(StudyID, all_of(q1_expos))
+v6$has_q1_exposure <- has_any_nonmissing(v6, q1_expos)
+v6 <- v6 %>% select(StudyID, has_q1_exposure, all_of(q1_expos))
+
+v7 <- raw_df %>%
+  filter(visit_num == 7) %>%
+  select(StudyID, all_of(q2_expos))
+v7$has_q2_exposure <- has_any_nonmissing(v7, q2_expos)
+v7 <- v7 %>% select(StudyID, has_q2_exposure, all_of(q2_expos))
+
+both_visits <- inner_join(v6, v7, by = "StudyID", suffix = c("_2y", "_56y"))
+
+has_paired_exposure <- function(df, pairs) {
+  keep <- pairs$exposure_2y %in% names(df) & pairs$exposure_56y %in% names(df)
+  pairs <- pairs[keep, , drop = FALSE]
+  if (nrow(pairs) == 0) return(rep(FALSE, nrow(df)))
+  Reduce(`|`, lapply(seq_len(nrow(pairs)), function(i) {
+    !is.na(df[[pairs$exposure_2y[i]]]) & !is.na(df[[pairs$exposure_56y[i]]])
+  }))
+}
+
+q4_eligible <- has_paired_exposure(both_visits, q4_pairs)
+```
+
+## Supplementary Table S1. Analytic sample derivation
+
+```{r}
+#| label: supplementary-tables-01
+sample_tbl <- tibble(
+  analytic_step = c(
+    "Children with at least one metabolomics panel",
+    "Children with a 2-year metabolomics panel",
+    "Children with a 5-6-year metabolomics panel",
+    "Children with metabolomics at both 2 years and 5-6 years",
+    "Children with any analyzed 2-year diet exposure in the 2-year panel",
+    "Children with any analyzed 5-6-year diet exposure in the 5-6-year panel",
+    "Children contributing to the prospective question set",
+    "Children with paired diet exposure data across both ages for repeated-measures models"
+  ),
+  n_children = c(
+    n_distinct(raw_df$StudyID),
+    n_distinct(raw_df$StudyID[raw_df$visit_num == 6]),
+    n_distinct(raw_df$StudyID[raw_df$visit_num == 7]),
+    nrow(both_visits),
+    sum(v6$has_q1_exposure, na.rm = TRUE),
+    sum(v7$has_q2_exposure, na.rm = TRUE),
+    sum(both_visits$has_q1_exposure, na.rm = TRUE),
+    sum(q4_eligible, na.rm = TRUE)
+  )
+)
+
+make_table(sample_tbl, caption = "Supplementary Table S1. Analytic sample derivation")
+```
+
+## Supplementary Table S2. Exposure definitions
+
+```{r}
+#| label: supplementary-tables-02
+exposure_tbl <- bind_rows(
+  tibble(
+    component = "Concurrent at 2 Years",
+    exposure_timing = "2-year child diet",
+    exposure_code = q1_expos
+  ),
+  tibble(
+    component = "Concurrent at 5-6 Years",
+    exposure_timing = "5-6-year child diet",
+    exposure_code = q2_expos
+  ),
+  tibble(
+    component = "Prospective 2-Year to 5-6-Year Models",
+    exposure_timing = "2-year child diet",
+    exposure_code = q1_expos
+  ),
+  q4_pairs %>%
+    transmute(
+      component = "Repeated-Measures Models",
+      exposure_timing = "Paired 2-year and 5-6-year child diet",
+      exposure_code = exposure_family,
+      paired_codes = paste0(exposure_2y, " / ", exposure_56y)
+    )
+) %>%
+  mutate(
+    exposure_label = pretty_var(exposure_code),
+    scale = case_when(
+      grepl("classes", exposure_code, ignore.case = TRUE) ~ "Categorical class variable",
+      grepl("points", exposure_code, ignore.case = TRUE) ~ "Continuous score",
+      TRUE ~ "Continuous percentage or intake metric"
+    )
+  ) %>%
+  relocate(exposure_label, .after = exposure_code)
+
+make_table(exposure_tbl, caption = "Supplementary Table S2. Exposure definitions and coding")
+```
+
+## Supplementary Table S3. Primary model specifications
+
+```{r}
+#| label: supplementary-tables-03
+model_tbl <- tibble(
+  analysis_component = c(
+    "Concurrent at 2 Years",
+    "Concurrent at 5-6 Years",
+    "Prospective: 2-Year Diet to 5-6-Year Metabolites",
+    "Repeated-Measures Across 2 Years and 5-6 Years"
+  ),
+  outcome = c(
+    "2-year metabolite",
+    "5-6-year metabolite",
+    "5-6-year metabolite with baseline metabolite adjustment",
+    "Repeated metabolite across 2 years and 5-6 years"
+  ),
+  model_family = c(
+    "Feature-wise linear model",
+    "Feature-wise linear model",
+    "Feature-wise linear model",
+    "Feature-wise mixed model"
+  ),
+  primary_covariates = c(
+    "Intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "Intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "2-year exposure; 2-year baseline metabolite; intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration",
+    "Paired diet exposure across child ages; intervention; primiparity; university education; GDM status; child sex; birthweight; breastfeeding duration"
+  ),
+  sensitivity_additions = c(
+    "Small-for-gestational-age; macrosomy; healthy-diet score at 2 years",
+    "Maternal smoking; prematurity; small-for-gestational-age; macrosomy; healthy-diet score at 5-6 years",
+    "Primary prospective block plus small-for-gestational-age; macrosomy; healthy-diet score at 2 years",
+    "Primary repeated-measures block plus small-for-gestational-age; macrosomy; time-varying healthy-diet score"
+  ),
+  multiple_testing = c(
+    "Benjamini-Hochberg across metabolites within each exposure-specific concurrent model",
+    "Benjamini-Hochberg across metabolites within each exposure-specific concurrent model",
+    "Benjamini-Hochberg across metabolites within each exposure-specific prospective model",
+    "Benjamini-Hochberg across metabolites applied separately within each repeated-measures exposure and coefficient family"
+  )
+)
+
+make_table(model_tbl, caption = "Supplementary Table S3. Primary model specifications")
+```
+
+## Supplementary Table S4. Returned result inventory
+
+```{r}
+#| label: supplementary-tables-04
+inventory_tbl <- build_result_inventory(results)
+
+make_table(inventory_tbl, caption = "Supplementary Table S4. Returned result inventory")
+```
+
+## Supplementary Table S5. Candidate associations with q < 0.10
+
+```{r}
+#| label: supplementary-tables-05
+candidate_linear <- bind_rows(
+  q1 %>% mutate(component = "Concurrent at 2 Years"),
+  q2 %>% mutate(component = "Concurrent at 5-6 Years"),
+  q3 %>% mutate(component = "Prospective: 2-Year Diet to 5-6-Year Metabolites")
+) %>%
+  filter(q.value < 0.10) %>%
+  mutate(multilevel_factor = grepl("\\|", term)) %>%
+  transmute(
+    component,
+    exposure_family = exposure_family(exposure),
+    exposure = pretty_var(exposure),
+    feature,
+    term = if_else(multilevel_factor, "Omnibus multi-level factor test", NA_character_),
+    n,
+    beta = if_else(multilevel_factor, NA_real_, estimate),
+    conf_low = if_else(multilevel_factor, NA_real_, conf.low),
+    conf_high = if_else(multilevel_factor, NA_real_, conf.high),
+    p_value = p.value,
+    q_value = q.value
+  )
+
+candidate_q4 <- bind_rows(
+  q4_main %>% mutate(component = "Repeated-Measures Main Effect"),
+  q4_interaction %>% mutate(component = "Repeated-Measures Diet-by-Time Interaction")
+) %>%
+  filter(q.value < 0.10) %>%
+  transmute(
+    component,
+    exposure_family = as.character(exposure_family(exposure)),
+    exposure = pretty_var(exposure),
+    feature,
+    term,
+    n_obs,
+    n_ind,
+    beta = estimate,
+    conf_low = estimate - 1.96 * std.error,
+    conf_high = estimate + 1.96 * std.error,
+    p_value = p.value,
+    q_value = q.value
+  )
+
+candidate_tbl <- bind_rows(
+  candidate_linear %>% mutate(n_obs = n, n_ind = NA_real_),
+  candidate_q4 %>% rename(n = n_obs)
+) %>%
+  mutate(exposure_family = factor(exposure_family, levels = family_order)) %>%
+  arrange(exposure_family, q_value, p_value)
+
+make_table(candidate_tbl, caption = "Supplementary Table S5. Candidate associations meeting q < 0.10")
+```
+
+## Supplementary Table S6. Primary-vs-sensitivity stability summary
+
+```{r}
+#| label: supplementary-tables-06
+stability_tbl <- bind_rows(
+  compare_primary_sensitivity(q1, q1_sens, c("exposure", "feature", "visit")) %>% mutate(component = "Concurrent at 2 Years"),
+  compare_primary_sensitivity(q2, q2_sens, c("exposure", "feature", "visit")) %>% mutate(component = "Concurrent at 5-6 Years"),
+  compare_primary_sensitivity(q3, q3_sens, c("exposure", "feature", "visit_exposure", "visit_outcome")) %>% mutate(component = "Prospective: 2-Year Diet to 5-6-Year Metabolites"),
+  compare_primary_sensitivity(q4, q4_sens, c("exposure", "feature", "term")) %>% mutate(component = "Repeated-Measures")
+) %>%
+  mutate(exposure_family = exposure_family(exposure)) %>%
+  group_by(component, exposure_family) %>%
+  summarise(
+    matched_rows = n(),
+    median_abs_beta_change = median(abs_delta, na.rm = TRUE),
+    p90_abs_beta_change = quantile(abs_delta, 0.90, na.rm = TRUE),
+    direction_flip_fraction = mean(direction_flip, na.rm = TRUE),
+    q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+make_table(stability_tbl, caption = "Supplementary Table S6. Primary-vs-sensitivity stability summary")
+```
+
+## Supplementary Table S7. Saved execution status inventory
+
+```{r}
+#| label: supplementary-tables-07
+status_tbl <- model_status %>%
+  mutate(
+    component = case_when(
+      question == "Q1" ~ "Concurrent at 2 Years",
+      question == "Q2" ~ "Concurrent at 5-6 Years",
+      question == "Q3" ~ "Prospective: 2-Year Diet to 5-6-Year Metabolites",
+      question == "Q4" ~ "Repeated-Measures",
+      TRUE ~ question
+    ),
+    exposure = pretty_var(exposure),
+    complete_case_n = ifelse(
+      is.na(n_complete_min) | !is.finite(n_complete_min),
+      NA_character_,
+      ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+    )
+  ) %>%
+  select(component, analysis, exposure, term_family, status, reason, complete_case_n, n_features_tested)
+
+make_table(status_tbl, caption = "Supplementary Table S7. Saved execution-status inventory")
+```

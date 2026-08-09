@@ -1,0 +1,52 @@
+study:
+  key: example-microbiome
+  title: Example Microbiome Analysis
+  domain: microbiome
+  status: planning
+
+paths:
+  feature_table: data/microbiome_features.tsv
+  taxonomy_table: data/taxonomy.tsv
+  metadata: data/sample_metadata.csv
+  derived_object: output/derived/microbiome_object.rds
+  results_dir: output/results
+  report_source_dir: code
+  report_output_dir: output
+
+identifiers:
+  sample_id: SampleID
+  subject_id: null
+  visit_variable: null
+
+features:
+  input_scale: counts
+  orientation: features_as_rows
+  taxonomy_rank: genus
+  prevalence_threshold: 0.10
+  abundance_threshold: null
+  zero_handling: method_specific
+  transformation: method_specific
+
+variables:
+  groups: []
+  exposures: []
+  outcomes: []
+  covariates: []
+  paired_or_random_effects: []
+
+analyses:
+  alpha_diversity_metrics: [Shannon, Simpson, observed]
+  beta_diversity_distances: [Bray-Curtis]
+  ordination_methods: [PCoA]
+  permanova_formula: null
+  differential_abundance_method: null
+  fdr_method: BH
+
+report:
+  pages:
+    - study_overview.qmd
+    - analysis_plan.qmd
+    - data_summary.qmd
+    - diversity_results.qmd
+    - differential_abundance.qmd
+  render_command: quarto render

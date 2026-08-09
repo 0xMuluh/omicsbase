@@ -1,0 +1,435 @@
+---
+title: "Bacteroidetes/Firmicutes ratio"
+---
+
+```{r data}
+# Set Cairo to enable transparency in all devices
+knitr::opts_chunk$set(dev = "png", 
+                      dev.args = list(type = "cairo"))
+source("../funct.R")
+# devtools::load_all("~/Rpackages/microbiome/miaverse/miaViz")
+tse <- readRDS("../../data/tse.Rds")
+```
+
+```{r setup, include=FALSE}
+# Define variables
+tax.level     <- "Phylum"
+variable      <- "group"  
+adjust.method <- "FDR"
+test          <- "Wilcoxon"
+index         <- "bact_firm_ratio"
+```
+
+## Group-wise comparisons
+
+-   **Taxonomic level:** `r tax.level`
+-   **Group variable:** `r variable`
+-   **Multiple testing correction:** `r adjust.method`
+-   **Statistical test** `r test`
+
+```{r bact-firm}
+# We only need phylum level tse in this report, so let's pick
+# that as tse to keep things simple.
+tse <- altExp(tse, "phylum")
+
+# Calculate the Bacteroidetes/Firmicutes ratio and add to colData
+# using the chosen name
+ratio <- "bact_firm_ratio"
+bact <- assay(tse, "relabundance")["Bacteroidetes", ]
+firm <- assay(tse, "relabundance")["Firmicutes", ]
+pseudo <- 1e-5
+colData(tse)[[ratio]] <- (bact + pseudo) / (firm + pseudo)
+```
+
+
+
+
+```{r pvalues-before}
+# Calculate statistical results
+results_before <- run_diversity_tests(tse, comparisons_before, 
+                                      variable, index = "bact_firm_ratio", 
+                                      adjust.method)
+results_before$p.adj <- p.adjust(results_before$p.value, method = "fdr")
+# Format results for display
+final_results_before <- results_before %>%
+  mutate(
+    mean1 = round(mean1, 2),
+    mean2 = round(mean2, 2),
+    logFC = round(logFC, 2),
+    p.adj = round(p.adj, 3)
+  ) %>%
+  select(group1, group2, mean1, mean2, logFC, p.adj)
+
+# Calculate y-positions for p-value annotations
+final_results_before <- final_results_before %>%
+  mutate(y.position = sapply(1:nrow(final_results_before), function(i) {
+    vals1 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group1[i]]
+    vals2 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.2
+  }))
+colnames(final_results_before)[colnames(final_results_before) == "logFC"] <- "log2FC"
+```
+
+```{r pvalues-after}
+# Calculate statistical results
+results_after <- run_diversity_tests(tse, comparisons_after, 
+                                     variable, index = "bact_firm_ratio", 
+                                     adjust.method)
+results_after$p.adj <- p.adjust(results_after$p.value, method = "fdr")
+# Format results for display
+final_results_after <- results_after %>%
+  mutate(
+    mean1 = round(mean1, 2),
+    mean2 = round(mean2, 2),
+    logFC = round(logFC, 2),
+    p.adj = round(p.adj, 3)
+  ) %>%
+  select(group1, group2, mean1, mean2, logFC, p.adj)
+
+# Calculate y-positions for p-value annotations
+final_results_after <- final_results_after %>%
+  mutate(y.position = sapply(1:nrow(final_results_after), function(i) {
+    vals1 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group1[i]]
+    vals2 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.2
+  }))
+colnames(final_results_after)[colnames(final_results_after) == "logFC"] <- "log2FC"
+```
+
+```{r}
+final_results_before$time <- rep("Baseline", nrow(final_results_before))
+final_results_after$time <- rep("Week 8", nrow(final_results_after))
+final_results_comb <- rbind(final_results_before, final_results_after)
+final_results_comb$group1 <- gsub("\\.before$|\\.after$", "", final_results_comb$group1)
+final_results_comb$group2 <- gsub("\\.before$|\\.after$", "", final_results_comb$group2)
+
+final_results_comb$group1 <- ifelse(final_results_comb$group1  == "4", "Control", 
+                    ifelse(final_results_comb$group1  == "B", "HWP", "HWP + LGG"))
+final_results_comb$group2 <- ifelse(final_results_comb$group2  == "4", "Control", 
+                    ifelse(final_results_comb$group2  == "B", "HWP", "HWP + LGG"))
+
+final_results_comb <- final_results_comb %>%
+  dplyr::mutate(
+    y.position = case_when(
+      time == "Baseline" ~ y.position + 0.1,  
+      time == "Week 8" ~ y.position + 0.1
+    )
+  )
+
+final_results_comb$time <- factor(final_results_comb$time, levels = c("Baseline", "Week 8"))
+```
+
+
+```{r pvalues-paired}
+# Calculate statistical results
+results_paired <- run_diversity_tests(tse, comparisons_paired, 
+                                      variable, index = "bact_firm_ratio", 
+                                      adjust.method, paired = TRUE)
+results_paired$p.adj <- p.adjust(results_paired$p.value, method = "fdr")
+# Format results for display
+final_results_paired <- results_paired %>%
+  mutate(
+    mean1 = round(mean1, 2),
+    mean2 = round(mean2, 2),
+    logFC = round(logFC, 2),
+    p.adj = round(p.adj, 3)
+  ) %>%
+  select(group1, group2, mean1, mean2, logFC, p.adj)
+
+# Calculate y-positions for p-value annotations
+final_results_paired <- final_results_paired %>%
+  mutate(y.position = sapply(1:nrow(final_results_paired), function(i) {
+    vals1 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group1[i]]
+    vals2 <- colData(tse)[[ratio]][colData(tse)[[variable]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.2
+  }))
+Intervention <- c("Control", "HWP", "HWP + LGG")
+final_results_paired <- data.frame(Intervention = Intervention, final_results_paired)
+final_results_paired$group1 <- NULL
+final_results_paired$group2 <- NULL
+colnames(final_results_paired)[colnames(final_results_paired) == "logFC"] <- "log2FC"
+```
+
+```{r visualize-plot}
+#| label: fig-figure-of-findings-before-after
+#| fig-width: 6
+#| fig-height: 5
+#| fig.align: "center"
+plotBoxplot(tse, col.var = "bact_firm_ratio", x = "time", 
+            fill.by = "Intervention", add.significance = T,
+            point.shape = 19) +
+  scale_fill_manual(values = c("#F1F5F9", "#CBD5E1", "#64748B")) +
+  scale_color_manual(values = c("black", "black", "black")) +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.title = element_text(size = 15, face = "bold"),
+    axis.text = element_text(size = 13),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.text = element_text(size = 12)
+  )
+```
+
+## Table of the top findings
+
+### Across-group
+
+#### Week 0
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **`r test`**
+
+```{r table-of-findings-before}
+#| label: tbl-table-of-findings-before
+final_results_before[] <- lapply(final_results_before, function(x) gsub(".before|.after", "", x))
+final_results_before$group1 <- ifelse(final_results_before$group1  == "4", "Control", 
+                    ifelse(final_results_before$group1  == "B", "HWP", "HWP + LGG"))
+final_results_before$group2 <- ifelse(final_results_before$group2  == "4", "Control", 
+                    ifelse(final_results_before$group2  == "B", "HWP", "HWP + LGG"))
+  datatable(
+      final_results_before %>% select(c(-y.position, -time)), 
+      extensions = c("Buttons"),
+      options = list(
+        pageLength = 3,
+        dom = 'Bfrtip',
+        buttons = c("copy", "csv", "excel")
+      ),
+      caption = "Table of  Bacteroidetes/Firmicutes before Treatment",
+      rownames = FALSE
+  ) %>%
+    formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+    formatSignif(columns = "p.adj", digits = 3)
+
+```
+
+#### Week 8
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **`r test`**
+
+```{r table-of-findings-after}
+#| label: tbl-table-of-findings-after
+
+final_results_after[] <- lapply(final_results_after, function(x) gsub(".before|.after", "", x))
+final_results_after$group1 <- ifelse(final_results_after$group1  == "4", "Control", 
+                    ifelse(final_results_after$group1  == "B", "HWP", "HWP + LGG"))
+final_results_after$group2 <- ifelse(final_results_after$group2  == "4", "Control", 
+                    ifelse(final_results_after$group2  == "B", "HWP", "HWP + LGG"))
+  datatable(
+    final_results_after %>% select(c(-y.position, -time)), 
+    extensions = c("Buttons"),
+    options = list(
+      pageLength = 3,
+      dom = 'Bfrtip',
+      buttons = c("copy", "csv", "excel")
+    ),
+    caption = "Table of Bacteroidetes/Firmicutes after Treatment",
+    rownames = FALSE
+) %>%
+  formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+  formatSignif(columns = "p.adj", digits = 3)
+
+```
+
+
+
+### Within-group- Paired treatment
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **paired `r test`**
+
+```{r table-of-findings-paired}
+#| label: tbl-table-of-findings-paired
+
+  datatable(
+    final_results_paired %>% select(-y.position), 
+    extensions = c("Buttons"),
+    options = list(
+      pageLength = 3,
+      dom = 'Bfrtip',
+      buttons = c("copy", "csv", "excel")
+    ),
+    caption = "Table of Bacteroidetes/Firmicutes paired between timepoint (1 and 2)",
+    rownames = FALSE
+) %>%
+  formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+  formatSignif(columns = "p.adj", digits = 3)
+
+```
+
+### Linear Mixed Model
+
+Research Question 1: How does each treatment influence gut microbiota composition over time?
+
+-   The interaction term (Treatment:Timepoint) tests whether the effect of time on B/F ratio depends on the treatment group.
+
+-   Post-hoc analysis within each treatment group identifies specific changes in B/F ratio over time.
+
+Research Question 2: Are there significant differences between treatments?
+
+-   The main effect of Treatment tests for differences in B/F ratio between treatment groups at baseline.
+
+-   Post-hoc analysis across treatment groups at each timepoint identifies specific differences between treatments.
+
+Interpret the Results
+
+-   Main Fixed Effects:
+    -   Treatment: Tests for differences in B/F ratio between treatment groups at baseline.
+
+    -   Timepoint: Tests for changes in B/F ratio over time across all treatments.
+
+    -   Treatment:Timepoint: Tests whether the effect of Timepoint on B/F ratio depends on the Treatment group.
+
+-   Random Effects:
+    -   (1|SubjectID): Accounts for within-subject variability.
+
+```{r lmer-stuff}
+adjust.method <- "FDR"
+test <- "paired Wilcoxon"
+formula_used <- "~ Intervention * time + (1 | subject)"
+
+tse$bfratio <- log2(tse$bact_firm_ratio)
+res <- run_lmer(tse, "bfratio")
+
+```
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **Linear Mixed-Effects Model (LMM)**
+-   Formula used: **`r formula_used`**
+
+```{r table-fixed-fx}
+#| label: tbl-table-of-interaction
+sjPlot::tab_model(res)
+```
+
+```{r}
+#| label: fig-figure-of-interaction
+sjPlot::plot_model(res)
+```
+
+
+#### Post-Hoc Analysis
+
+**Within-Group Comparisons**
+```{r}
+#| label: tbl-table-of-interaction-within
+ref_grid <- emmeans(res, ~ Intervention * time)
+within_group_comps <- contrast(ref_grid, method = "revpairwise", by = "Intervention")
+kable(as.data.frame(within_group_comps), caption = "Estimates for Treatments")
+# Add confidence intervals
+within_group_comps_ci <- confint(within_group_comps)
+```
+
+
+```{r}
+#| label: fig-figure-of-interaction-within
+#| fig-width: 12
+#| fig-height: 5
+#| layout-ncol: 2
+#| fig-cap: "Within-group changes over time from Baseline to Week 8."
+#| fig-subcap: 
+#|   - "Individual subject trajectories."
+#|   - "Linear mixed model post-hoc estimates (Week 8 - Baseline)."
+
+# A. Raw trajectory boxplot
+plotBoxplot(tse, col.var = "bact_firm_ratio", x = "Intervention", fill.by = "time", pair.by = "subject", add.change = T, add.significance = T,
+            point.shape = 19) +
+  scale_color_manual(values = c("black", "black")) +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.title = element_text(size = 15, face = "bold"),
+    axis.text = element_text(size = 13),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.text = element_text(size = 12)
+  )
+
+# B. LMM estimates plot
+within_group_df <- as.data.frame(within_group_comps_ci)
+ggplot(within_group_df, aes(x = Intervention, y = estimate)) +
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL), color = "#4A5568", size = 1.0, linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Intervention", y = paste("Difference in B/F ratio (Week 8 - Baseline)"), 
+       title = "LMM Within-Group Comparisons") +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.title = element_text(size = 15, face = "bold"),
+    axis.text = element_text(size = 13),
+    plot.title = element_text(size = 15, face = "bold")
+  )
+```
+
+**Across-Group Comparisons**
+
+> [!NOTE]
+> **Interpretation Guide:** The following section shows examples of how to read the statistical tables based on baseline values. These are illustrative examples and may not reflect the exact updated statistics in your tables below.
+
+* For Marginal Means (emmeans):
+  * Negative emmean: A negative value indicates Firmicutes dominance (e.g. log2(B/F ratio) < 0).
+  * Positive emmean: A positive value indicates Bacteroidetes dominance (e.g. log2(B/F ratio) > 0).
+
+* For Contrasts:
+  * Negative estimate: Indicates that the first group has a lower ratio than the second group.
+  * Positive estimate: Indicates that the first group has a higher ratio than the second group.
+
+```{r}
+#| label: tbl-table-of-interaction-across-emmeans
+posthoc <- emmeans(res, pairwise ~ Intervention | time)
+# sjPlot::tab_model(as.data.frame(posthoc$contrasts)) 
+data_emmean <- as.data.frame(posthoc$emmeans)
+data_emmean <- data_emmean %>%
+  # rename(emmeans = "coef") %>% 
+  mutate(
+    `2 ^ coef` = 2 ^ emmean, 
+    lower.CL_actual = 2 ^ lower.CL,     
+    upper.CL_actual = 2 ^ upper.CL
+  )
+some_order <- c("Intervention", "time", 
+             "emmean", "2 ^ coef",
+             "SE", "df", "lower.CL", "lower.CL_actual", 
+             "upper.CL", "upper.CL_actual")
+data_emmean <- data_emmean %>%
+  select(all_of(some_order))  %>%
+  rename(emmean = "coef")
+kable(data_emmean, caption = "Estimated Marginal Means for Treatments")
+
+```
+
+```{r}
+#| label: tbl-table-of-interaction-across-contrasts
+kable(as.data.frame(posthoc$contrasts), caption = "Estimated contrasts for Treatments")
+```
+
+
+```{r}
+#| label: fig-figure-of-interaction-across
+#| fig-width: 12
+#| fig-height: 3
+#| fig.align: "center"
+posthoc_ci <- confint(posthoc$contrasts)
+
+# Convert to a data frame
+posthoc_df <- as.data.frame(posthoc_ci)
+#posthoc_df <- as.data.frame(posthoc$contrasts)
+ggplot(posthoc_df, aes(x = contrast, y = estimate, color = time)) +
+ geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    facet_wrap(~ time) +
+  labs(x = "Comparison", y =  paste("Differences B/F"), 
+       title = "Comparisons of B/F ratios") +
+  theme_minimal()
+```
+
+## Data Summary
+
+```{r data-summary}
+tse
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::
+

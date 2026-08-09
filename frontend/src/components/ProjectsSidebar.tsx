@@ -491,8 +491,15 @@ export function SidebarProjectItem({ project }: { project: Project }) {
     const clean = name.trim();
     if (!clean) return;
     try {
-      await api.updateProject(project.id, { name: clean });
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      const updatedProject = await api.updateProject(project.id, { name: clean });
+      queryClient.setQueryData<Project>(["project", project.id], updatedProject);
+      queryClient.setQueryData<Project[]>(["projects"], (projects) =>
+        projects?.map((item) => (item.id === project.id ? updatedProject : item))
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["project", project.id] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
     } catch {
       // ignore transient failures
     }

@@ -1,0 +1,135 @@
+---
+title: "Correlation analysis"
+author: ""
+params: 
+  tax.level: default
+---
+
+```{r setup}
+# load packages
+library(mia)
+library(dplyr)
+library(DT)
+library(shadowtext)
+library(ComplexHeatmap)
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse_delta.Rds")
+
+# Define variables and formulas
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+# Other taxonomic levels can be checked with altExpNames(tse)
+```
+
+# Taxonomic level: `r tax.level`
+
+Taxa that are less prevalent than this (in relabundance) have been agglomerated:
+
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+-   Number of taxonomic groups: `r nrow(tse)`
+-   Transformation: _clr_
+
+```{r}
+# Get the variables to be correlated
+# These are computed differences of the vvariables. 
+scfa_vars <- c("acetic_delta", "propionic_delta", "butyric_delta", 
+                 "isobutyr_delta", "succinic_delta",
+                 "valeric_delta", "isovaler_delta", "lactic_delta", 
+                 "indolelactic_delta", "indolebutyric_delta",
+                 "indolepropionic_delta", "heptanoic_delta")
+  
+  inflamm_markers <- c("IL1B_delta", "MMP12_delta", 
+                       "TNFSF12_delta", "EGF_delta")
+  
+  diet_vars <- c("fat_delta", "carb_delta", "prot_delta", "fiber_delta", 
+                 "SFA_delta", "MUFA_delta", "PUFA_delta")
+  diet_vars <- c(
+  # Macronutrients (absolute)
+  "fat_delta", "carb_delta", "prot_delta", "fiber_delta",
+  # Fatty acids (absolute)
+  "SFA_delta", "MUFA_delta", "PUFA_delta",
+  # Macronutrient percentages
+  "fat_p_delta", "carb_p_delta", "prot_p_delta",
+  # Fatty acid percentages
+  "SFA_p_delta", "MUFA_p_delta", "PUFA_p_delta",
+  # Fiber subtype
+  "fiber_e_delta",
+  # Micronutrients
+  "Mg_delta", "Fe_delta", "Zn_delta"
+)
+  
+  bio_vars <- c("waist_delta", "Kol_delta", "LDLkol_delta", 
+                "HDLkol_delta", "Trigly_delta")
+```
+## Calculate correlations
+```{r}
+all_vars <- list(scfa_vars = c(scfa_vars), 
+                 inflamm_markers = c(inflamm_markers), 
+                 diet_vars = c(diet_vars), 
+                 bio_vars = c(bio_vars))
+cross_assoc_results <- list()
+
+# Run getCrossAssociation for each variable and store the full result
+results_list <- lapply(all_vars, function(some_var) {
+getCrossAssociation(
+    tse, 
+    assay.type1 = "clr_delta", 
+    mode = "matrix",
+    col.var2 = some_var,  
+    method = "kendall", 
+    p_adj_method = "fdr",
+    test.signif = TRUE, 
+    show.warnings = FALSE, 
+    verbose = FALSE
+  )
+})
+```
+## Plot heatmaps
+```{r}
+## healper to create heatmaps
+create_heatmap <- function(res) {
+      add_signif <- function(j, i, x, y, width, height, fill) {
+        # If the p-value is under threshold
+        if( !is.na(res$p_adj[i, j]) & res$p_adj[i, j] < 0.05 ){
+            # Print "X"
+            grid.shadowtext(
+                sprintf("%s", "X"), x, y, gp = gpar(fontsize = 8, col = "#f5f5f5"))
+        }
+    }
+  
+  Heatmap(
+    res$cor,
+    name = "correlation",
+    cell_fun = add_signif,
+    heatmap_legend_param = list(title = "Correlation", legend_height = unit(5, "cm")),
+    column_names_rot = 45
+  )
+}
+```
+
+## microbiota vs. Short-chain fatty acids (12 SCFAs in total)
+```{r}
+heatmap_scfa <- create_heatmap(results_list$scfa_vars)
+heatmap_scfa
+```
+
+## microbiota vs. significant inflammation markers (IL-1B, MMP12, TNSF-12, EGF)
+```{r}
+heatmap_inflamm_markers <- create_heatmap(results_list$inflamm_markers)
+heatmap_inflamm_markers
+```
+
+## ## microbiota vs. dietary intake (total fat, carbohydrates, protein, fiber, SFA, MUFA, PUFA)
+```{r}
+heatmap_diet_vars <- create_heatmap(results_list$diet_vars)
+heatmap_diet_vars
+```
+
+## microbiota vs. biochem/antrop. (waist circumference, total cholesterol, LDL, HDL, Triglycerides)
+```{r}
+heatmap_bio_vars <- create_heatmap(results_list$bio_vars)
+heatmap_bio_vars
+```
+
+

@@ -1,0 +1,396 @@
+---
+title: "Data summary"
+---
+
+## Setup
+
+```{r}
+#| label: data-summary-01
+source("analysis_data_utils.R")
+source("../../scripts/metabolomics_common.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+has_venn <- requireNamespace("ggVennDiagram", quietly = TRUE)
+
+analysis_obj <- extract_analysis_data("../data/MAE_original.rds")
+mae <- analysis_obj$mae
+df <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+
+visit_label <- function(v) {
+  case_when(
+    v == 4L ~ "6 Months",
+    v == 5L ~ "1 Year",
+    v == 6L ~ "2 Years",
+    TRUE ~ paste("Visit", v)
+  )
+}
+
+pretty_var <- function(x) {
+  x <- gsub("MModeOfDeliv.1", "Mode of delivery (Vaginal vs Cesarean)", x, fixed = TRUE)
+  x <- gsub("MBMIOverwOrObese", "Overweight or Obese", x, fixed = TRUE)
+  x <- gsub("MGDMOGTT1OR2Fi", "GDM OGTT 1 or 2", x, fixed = TRUE)
+  x <- gsub("PRWLabor", "Gestational weeks at delivery", x, fixed = TRUE)
+  x <- gsub("Bfdurationm", "Breastfeeding duration (months)", x, fixed = TRUE)
+  x <- gsub("CAgePsychologist6", "Age at psychologist visit (years)", x, fixed = TRUE)
+  x <- gsub("CAgePhysiotherapist6", "Age at physiotherapist visit (years)", x, fixed = TRUE)
+  x <- gsub("CFastingHoursBloodSample", "Fasting time before blood sampling", x, fixed = TRUE)
+  x <- gsub("CCognition_indexpoints6", "Bayley Composite Cognitive", x, fixed = TRUE)
+  x <- gsub("CLanguage_indexpoints6", "Bayley Composite Language", x, fixed = TRUE)
+  x <- gsub("CMotor_indexpoints6", "Bayley Composite Motor", x, fixed = TRUE)
+  x <- gsub("CExpressivelanguage_standardpoints6", "Bayley Expressive Language", x, fixed = TRUE)
+  x <- gsub("CReceptivelanguage_standardpoints6", "Bayley Receptive Language", x, fixed = TRUE)
+  x <- gsub("CFinemotor_standardpoints6", "Bayley Fine Motor", x, fixed = TRUE)
+  x <- gsub("CGrossmotor_standardpoints6", "Bayley Gross Motor", x, fixed = TRUE)
+  x <- gsub("Hammersmith6", "HINE Global Score", x, fixed = TRUE)
+  x <- gsub("HINE_optimal", "HINE Optimal Score", x, fixed = TRUE)
+  x <- gsub("CGender", "Child sex", x, fixed = TRUE)
+  x <- gsub("CBW", "Birth weight (g)", x, fixed = TRUE)
+  x <- gsub("Height.0", "Birth height (cm)", x, fixed = TRUE)
+  x <- gsub("Head.0", "Birth head circumference (cm)", x, fixed = TRUE)
+  x <- gsub("MprepBMI", "Maternal prepregnancy BMI", x, fixed = TRUE)
+  x <- gsub("MAge1", "Maternal age", x, fixed = TRUE)
+  x <- gsub("MUniEdu", "Maternal education", x, fixed = TRUE)
+  x <- gsub("MPrimipara", "Primiparity", x, fixed = TRUE)
+  x <- gsub("InterventionGroup", "Intervention group", x, fixed = TRUE)
+  x <- gsub("MLIVE1", "Maternal living arrangement", x, fixed = TRUE)
+  x <- gsub("MPRSmoke", "Maternal smoking during pregnancy", x, fixed = TRUE)
+  x <- gsub("Premature", "Born preterm", x, fixed = TRUE)
+  x <- gsub("CSGA", "Small for gestational age", x, fixed = TRUE)
+  x <- gsub("CMacrosomy", "Macrosomia", x, fixed = TRUE)
+  x <- gsub("CApgar1", "Apgar score at 1 min", x, fixed = TRUE)
+  x <- gsub("CApgar5", "Apgar score at 5 min", x, fixed = TRUE)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+```
+
+## Sample coverage
+
+```{r}
+#| label: data-summary-02
+coverage_tbl <- df %>%
+  distinct(StudyID, visit_num) %>%
+  count(visit_num, name = "n_children") %>%
+  mutate(visit = visit_label(visit_num)) %>%
+  select(visit, n_children)
+
+make_table(coverage_tbl, caption = "Children contributing metabolomics panels by child age")
+```
+
+## Visit overlap
+
+```{r fig.height=6, fig.width=8}
+id_sets <- split(df$StudyID, df$visit_num)
+id_sets <- lapply(id_sets, function(x) sort(unique(as.character(x))))
+id_sets <- id_sets[order(as.integer(names(id_sets)))]
+names(id_sets) <- vapply(as.integer(names(id_sets)), visit_label, character(1))
+
+# Keep only visits 4, 5, 6 for overlap visualization
+id_sets <- id_sets[names(id_sets) %in% c("6 Months", "1 Year", "2 Years")]
+
+if (!has_venn || length(id_sets) < 2) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "Visit-overlap plot unavailable") +
+    theme_void()
+} else {
+  ggVennDiagram::ggVennDiagram(id_sets, label = "both") +
+    ggplot2::scale_fill_distiller(palette = "RdBu") +
+    ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.18)) +
+    ggplot2::theme_void(base_size = 12) +
+    ggplot2::theme(
+      plot.margin = ggplot2::margin(5.5, 5.5, 5.5, 28)
+    ) +
+    ggplot2::labs(
+      title = "Child overlap across metabolomics sampling ages",
+      fill = "Count"
+    )
+}
+```
+
+## Outcome and Fasting coverage
+
+```{r}
+#| label: data-summary-03
+outcome_vars <- c(
+  "CCognition_indexpoints6", "CLanguage_indexpoints6", "CMotor_indexpoints6",
+  "CExpressivelanguage_standardpoints6", "CReceptivelanguage_standardpoints6",
+  "CFinemotor_standardpoints6", "CGrossmotor_standardpoints6", "Hammersmith6", "HINE_optimal"
+)
+
+fasting_vars <- c(
+  "CFastingHoursBloodSample4", "CFastingHoursBloodSample5", "CFastingHoursBloodSample6"
+)
+
+all_vars <- c(outcome_vars, fasting_vars)
+
+coverage_summary_tbl <- bind_rows(lapply(sort(unique(df$visit_num)), function(v) {
+  dv <- df %>% filter(visit_num == v)
+  
+  # Select variables relevant for that visit
+  current_vars <- if (v == 4L) {
+    "CFastingHoursBloodSample4"
+  } else if (v == 5L) {
+    "CFastingHoursBloodSample5"
+  } else {
+    c(outcome_vars, "CFastingHoursBloodSample6")
+  }
+  
+  bind_rows(lapply(current_vars, function(var_nm) {
+    if (!var_nm %in% names(dv)) return(NULL)
+    
+    x <- dv[[var_nm]]
+    x_num <- suppressWarnings(as.numeric(as.character(x)))
+    
+    # Force cognitive / fasting to show numeric average if continuous
+    is_continuous <- var_nm != "HINE_optimal"
+    
+    if (is_continuous) {
+      non_na_x <- x_num[!is.na(x_num)]
+      summary_str <- if (length(non_na_x) > 0) {
+        paste0(
+          round(mean(non_na_x), 2),
+          " (sd ", round(sd(non_na_x), 2), "); median ",
+          round(stats::median(non_na_x), 2)
+        )
+      } else {
+        "Not available"
+      }
+      data.frame(
+        child_age = visit_label(v),
+        variable = pretty_var(var_nm),
+        variable_code = var_nm,
+        type = "continuous",
+        non_missing = sum(!is.na(x_num)),
+        summary = summary_str,
+        stringsAsFactors = FALSE
+      )
+    } else {
+      # HINE optimal
+      lev <- table(as.character(x))
+      summary_str <- if (length(lev) > 0) {
+        paste0("Optimal: ", sum(x == "Optimal", na.rm = TRUE), " (", round(100 * mean(x == "Optimal", na.rm = TRUE), 1), "%)")
+      } else {
+        "Not available"
+      }
+      data.frame(
+        child_age = visit_label(v),
+        variable = pretty_var(var_nm),
+        variable_code = var_nm,
+        type = "categorical",
+        non_missing = sum(!is.na(x)),
+        summary = summary_str,
+        stringsAsFactors = FALSE
+      )
+    }
+  }))
+}))
+
+make_table(coverage_summary_tbl, caption = "Neurocognitive outcomes and fasting hours coverage by child age")
+```
+
+## Metabolite coverage
+
+```{r}
+#| label: data-summary-04
+metabolite_missing <- bind_rows(lapply(sort(unique(df$visit_num)), function(v) {
+  dv <- df %>% filter(visit_num == v)
+  miss <- colMeans(is.na(dv[, metabolite_cols, drop = FALSE]))
+
+  data.frame(
+    child_age = visit_label(v),
+    metabolites = length(metabolite_cols),
+    median_missing_fraction = median(miss),
+    p90_missing_fraction = as.numeric(quantile(miss, 0.90, na.rm = TRUE, names = FALSE)),
+    max_missing_fraction = max(miss),
+    stringsAsFactors = FALSE
+  )
+}))
+
+make_table(round_numeric(metabolite_missing, 3), caption = "Metabolite missingness by child age")
+```
+
+## Global structure (PCA) with top loadings
+
+We log-transform and z-score normalize the metabolites within each visit before computing PCA scores.
+
+```{r fig.height=5, fig.width=8}
+# Log-z transform metabolites before PCA
+df_log_z <- log_z_by_visit(df, metabolite_cols = metabolite_cols, visit_col = "visit_num")
+
+# Run PCA only on the visits with metabolomics
+df_pca <- df_log_z %>% filter(visit_num %in% c(4L, 5L, 6L))
+
+pca_details <- compute_pca_details(
+  df = df_pca,
+  feature_cols = metabolite_cols,
+  group_cols = c("visit"),
+  min_feature_obs = 0.7,
+  top_n_loadings = 5L
+)
+
+if (is.null(pca_details)) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "PCA unavailable: insufficient complete feature matrix") +
+    theme_void()
+} else {
+  scores <- pca_details$scores
+  scores$visit <- factor(gsub("visit_", "Visit ", scores$visit), levels = c("Visit 4", "Visit 5", "Visit 6"))
+  
+  visit_counts <- scores %>%
+    count(visit, name = "n") %>%
+    mutate(label = paste0(visit_label(as.integer(gsub("Visit ", "", visit))), " (n=", n, ")"))
+  label_map <- setNames(visit_counts$label, as.character(visit_counts$visit))
+  legend_labels <- unname(label_map[levels(scores$visit)])
+  top_loadings_plot <- pca_details$top_loadings
+  score_scale <- max(abs(scores$PC1), abs(scores$PC2), na.rm = TRUE)
+
+  has_ellipse <- scores %>%
+    count(visit, name = "n") %>%
+    summarise(ok = all(n >= 3) & n() >= 2) %>%
+    pull(ok)
+
+  p <- ggplot(scores, aes(x = PC1, y = PC2, color = visit)) +
+    geom_point(alpha = 0.7, size = 1.7) +
+    theme_minimal(base_size = 11) +
+    coord_equal() +
+    scale_color_brewer(palette = "Set1", labels = legend_labels, drop = FALSE) +
+    labs(
+      title = "PCA across child ages",
+      x = paste0("PC1 (", round(100 * pca_details$var_explained[1], 1), "%)"),
+      y = paste0("PC2 (", round(100 * pca_details$var_explained[2], 1), "%)"),
+      color = "Visit"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "top",
+      panel.grid.minor = element_blank()
+    )
+
+  if (isTRUE(has_ellipse)) {
+    p <- p + stat_ellipse(linewidth = 0.8, alpha = 0.7)
+  }
+
+  p +
+    geom_segment(
+      data = top_loadings_plot,
+      aes(x = 0, y = 0, xend = PC1_scaled, yend = PC2_scaled),
+      inherit.aes = FALSE,
+      color = "black",
+      linewidth = 0.45,
+      arrow = arrow(length = grid::unit(0.18, "cm"))
+    ) +
+    geom_text(
+      data = top_loadings_plot,
+      aes(x = PC1_scaled, y = PC2_scaled, label = feature),
+      inherit.aes = FALSE,
+      size = 2.8,
+      color = "black",
+      check_overlap = TRUE,
+      nudge_y = 0.02 * score_scale
+    )
+}
+```
+
+```{r}
+#| label: data-summary-05
+if (is.null(pca_details)) {
+  loading_tbl <- data.frame(message = "Top loadings unavailable: insufficient complete feature matrix")
+} else {
+  loading_tbl <- pca_details$loadings %>%
+    slice_head(n = 15)
+}
+
+make_table(round_numeric(loading_tbl, 3), caption = "Top PCA loadings (PC1+PC2)")
+```
+
+```{r fig.height=4.8, fig.width=8}
+if (!is.null(pca_details)) {
+  loading_plot_tbl <- pca_details$loadings %>%
+    select(feature, PC1, PC2) %>%
+    pivot_longer(cols = c(PC1, PC2), names_to = "component", values_to = "loading") %>%
+    group_by(component) %>%
+    slice_max(order_by = abs(loading), n = 10, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      effect = ifelse(loading >= 0, "positive", "negative"),
+      feature = reorder(feature, abs(loading))
+    )
+
+  ggplot(loading_plot_tbl, aes(x = abs(loading), y = feature, fill = effect)) +
+    geom_col(width = 0.85) +
+    facet_wrap(~component, scales = "free_y") +
+    scale_fill_manual(values = c(negative = "#4B00FF", positive = "#FF1A1A")) +
+    theme_minimal(base_size = 10) +
+    labs(
+      title = "Top PCA loadings by component",
+      x = "Value",
+      y = "Feature",
+      fill = "Effect"
+    )
+}
+```
+
+## Clinical snapshot
+
+```{r}
+#| label: data-summary-07
+snapshot_vars <- c("MAge1", "MprepBMI", "MPrimipara", "MUniEdu", "MPRSmoke", "MGDMOGTT1OR2Fi")
+snapshot_vars <- snapshot_vars[snapshot_vars %in% names(df)]
+
+if (length(snapshot_vars) == 0) {
+  snapshot_tbl <- data.frame(message = "Clinical snapshot unavailable")
+} else {
+  snapshot_tbl <- bind_rows(lapply(sort(unique(df$visit_num)), function(v) {
+    dv <- df %>% filter(visit_num == v)
+
+    bind_rows(lapply(snapshot_vars, function(var_nm) {
+      x <- dv[[var_nm]]
+      x_num <- suppressWarnings(as.numeric(as.character(x)))
+
+      is_continuous <- var_nm %in% c("MAge1", "MprepBMI")
+
+      if (is_continuous) {
+        data.frame(
+          child_age = visit_label(v),
+          variable = pretty_var(var_nm),
+          variable_code = var_nm,
+          type = "numeric",
+          n_non_missing = sum(!is.na(x_num)),
+          summary = paste0(round(mean(x_num, na.rm = TRUE), 2), " (sd ", round(sd(x_num, na.rm = TRUE), 2), ")"),
+          stringsAsFactors = FALSE
+        )
+      } else {
+        # convert to factor/label
+        top_level <- names(sort(table(to_chr(x)), decreasing = TRUE))[1]
+        top_n <- max(table(to_chr(x)), na.rm = TRUE)
+        data.frame(
+          child_age = visit_label(v),
+          variable = pretty_var(var_nm),
+          variable_code = var_nm,
+          type = "categorical",
+          n_non_missing = sum(!is.na(x)),
+          summary = paste0("top: ", top_level, " (", top_n, ")"),
+          stringsAsFactors = FALSE
+        )
+      }
+    }))
+  }))
+}
+
+make_table(snapshot_tbl, caption = "Compact clinical snapshot by child age")
+```
+
+For full covariate distributions and testing, see the Clinical Characteristics page.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: data-summary-08
+sessionInfo()
+```
+:::

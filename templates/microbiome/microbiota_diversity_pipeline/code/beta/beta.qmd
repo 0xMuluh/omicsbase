@@ -1,0 +1,804 @@
+---
+title: "Beta diversity"
+---
+
+## Community composition
+
+In the report, a suffix of 1~ Baseline and 2~ Week 6
+
+```{r data}
+# Set Cairo to enable transparency in all devices
+knitr::opts_chunk$set(dev = "png", 
+                      dev.args = list(type = "cairo"), fig.pos = "H")
+# Source fxns
+source("../funct.R")
+tse <- readRDS("../../data/tse.Rds")
+tse$diet <- factor(tse$diet, levels=c("oat", "rice"))
+colnames(colData(tse)) <- str_replace_all(colnames(colData(tse)), 
+                                          c("diet" = "Diet", "duration" = "Duration"))
+
+colData(tse)$Time <- colData(tse)$Duration
+colData(tse)$Diet <- str_to_title(colData(tse)$Diet)
+colnames(colData(tse)) <- str_replace_all(colnames(colData(tse)), "Duration", "Time")
+```
+
+### Phylum
+
+```{r}
+#| label: fig-figure-of-composition-phyla
+#| fig-width: 18
+#| fig-height: 6
+#| out.width: "100%"
+#| fig.align: "center"
+#| layout-nrow: 1
+
+ top_taxa <- getTop(altExp(tse, "phylum"), top = 10, assay.type = "relabundance")
+ phylum_renamed <- lapply(rowData(altExp(tse, "phylum"))$phylum, function(x){
+     if (x %in% top_taxa) {x} else {"Other"}})
+ rowData(altExp(tse, "phylum"))$phylum_sub <- as.character(phylum_renamed)
+ altExp(tse, "phylum") <- agglomerateByVariable(altExp(tse, "phylum"), 
+                                    by = "rows", 
+                                    f = "phylum_sub")
+colData(altExp(tse, "phylum")) <- colData(tse)
+altExp(tse, "phylum")$Diet <- factor(altExp(tse, "phylum")$Diet, levels=c("Oat", "Rice"))
+tse_p <- altExp(tse, "phylum")
+
+plots <- lapply(sort(unique(tse_p$Diet)), function(diet_id) {
+    tse_diet <- tse_p[, tse_p$Diet == diet_id]
+    time_plots <- lapply(unique(tse_diet$Time), function(time_point) {
+        tse_filtered <- tse_diet[, tse_diet$Time == time_point]
+        #lab <- paste0(unique(tse_filtered$diet), " at time ", time_point)
+
+        # Plot abundance for the filtered tse
+        plotAbundance(
+            tse_filtered,
+            assay.type = "relabundance",
+            color.by = "phylum_sub",
+            group = "phylum_sub",
+            order.row.by = "name",
+            order.col.by = "Other"
+        ) + scale_fill_discrete(name = "Phylum") +
+            theme(
+              axis.text.y = element_text(face = "bold", size = 12),
+              axis.title.x = element_text(face = "bold", size = 14),
+              axis.title.y = element_text(face = "bold", size = 14),
+              legend.text = element_text(face = "bold", size = 14),
+              legend.title = element_text(face = "bold", size = 14),
+              plot.title = element_text(face = "bold", size = 14),
+              strip.text = element_text(size = 14, face = "bold")
+            ) + scale_y_continuous(label=scales::percent) +
+          labs(y = "Relative abundance (%)") + facet_wrap( Diet ~ Time, nrow = 1, drop = TRUE )  })
+     return(time_plots)
+})
+
+plots_flat <- unlist(plots, recursive = FALSE)
+
+# Create the combined plot
+bar_plot <- wrap_plots(plots_flat, nrow = 1, guides = "collect", axes = "collect")
+bar_plot
+
+```
+
+```{r}
+#| label: tbl-table-of-percentages-phylum
+avg <- assay(tse_p, "relabundance")
+phylum_names <- rowData(tse_p)$phylum_sub
+sample_totals <- colSums(avg)
+phylum_percent <- sweep(avg, 2, sample_totals, "/") * 100
+results <- as.data.frame(phylum_percent) %>%
+  mutate(Phylum = phylum_names) %>%
+  pivot_longer(cols = -Phylum, names_to = "Sample", values_to = "Percentage")
+
+summary_results <- results %>%
+  group_by(Phylum) %>%
+  summarize(Mean_Percentage = mean(Percentage)) %>%
+  arrange(desc(Mean_Percentage)) %>% 
+  mutate(Mean_Percentage = round(Mean_Percentage, 3)) 
+
+kable(summary_results)
+```
+
+```{r}
+#| label: fig-figure-of-percentages-phylum
+ggplot(summary_results, aes(x = reorder(Phylum, Mean_Percentage), y = Mean_Percentage)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Horizontal bars
+  labs(x = "Phylum", y = "Mean Relative Abundance (%)", 
+       title = "Phylum-Level Composition") +
+  theme_minimal()
+```
+
+
+### Genus
+
+```{r}
+#| label: fig-figure-of-composition-genus
+#| fig-width: 18
+#| fig-height: 6
+#| out.width: "100%"
+#| fig.align: "center"
+#| layout-ncol: 1
+# Visualization - composition bar plot
+ top_taxa <- getTop(altExp(tse, "genus"), top = 10, assay.type = "relabundance")
+ genus_renamed <- lapply(rowData(altExp(tse, "genus"))$genus, function(x){
+     if (x %in% top_taxa) {x} else {"Other"}})
+ rowData(altExp(tse, "genus"))$genus_sub <- as.character(genus_renamed)
+ altExp(tse, "genus") <- agglomerateByVariable(altExp(tse, "genus"), 
+                                    by = "rows", 
+                                    f = "genus_sub")
+colData(altExp(tse, "genus")) <- colData(tse)
+altExp(tse, "genus")$Diet <- factor(altExp(tse, "genus")$Diet, levels=c("Oat", "Rice"))
+
+tse_g <- altExp(tse, "genus")
+
+plots <- lapply(sort(unique(tse_g$Diet)), function(diet_id) {
+    tse_diet <- tse_g[, tse_g$Diet == diet_id]
+    time_plots <- lapply(unique(tse_diet$Time), function(time_point) {
+        tse_filtered <- tse_diet[, tse_diet$Time == time_point]
+        #lab <- paste0(unique(tse_filtered$diet), " at time ", time_point)
+
+        # Plot abundance for the filtered tse
+        plotAbundance(
+            tse_filtered,
+            assay.type = "relabundance",
+            color.by = "genus_sub",
+            group = "genus_sub",
+            order.row.by = "name",
+            order.col.by = "Other"
+        ) +  scale_fill_discrete(name = "Genus") +
+            theme(
+              axis.text.y = element_text(face = "bold", size = 12),
+              axis.title.x = element_text(face = "bold", size = 14),
+              axis.title.y = element_text(face = "bold", size = 14),
+              legend.text = element_text(face = "bold", size = 14),
+              legend.title = element_text(face = "bold", size = 14),
+              plot.title = element_text(face = "bold", size = 14),
+              strip.text = element_text(size = 14, face = "bold")
+            ) + scale_y_continuous(label=scales::percent) +
+          labs(y = "Relative abundance (%)") + facet_wrap( Diet ~ Time, nrow = 1, drop = TRUE )  })
+     return(time_plots)
+})
+
+plots_flat <- unlist(plots, recursive = FALSE)
+
+# Create the combined plot
+bar_plot <- wrap_plots(plots_flat, nrow = 1, guides = "collect", axes = "collect") 
+bar_plot
+```
+
+### Heatmap
+
+```{r}
+#| fig-width: 18
+#| fig-height: 6
+#| out.width: "100%"
+#| fig.align: "center"
+tse_heat <-  altExp(tse, "genus")
+tse_heat <- transformAssay(tse_heat, assay.type = "relabundance", method = "clr", pseudocount = TRUE)
+
+tse_heat <- transformAssay(
+    tse_heat, assay.type = "clr", MARGIN = "rows", method = "standardize",
+    name = "clr_z")
+
+order_indices <- order(tse_heat$Diet_in, tse_heat$Time)
+tse_heat <- tse_heat[, order_indices]
+
+sechm(
+            tse_heat, assayName = "clr_z", features = rownames(tse_heat),
+            show_rownames = TRUE, show_colnames = FALSE, do.scale = TRUE, name = "clr_z", top_annotation="Time", gaps_at=c("Diet", "Time"), show_annotation_legend = F, hmcols = c("blue", "white", "red"), cluster_rows = T, cluster_cols = F, na_col = "black", column_gap = unit(4, "mm")
+        )
+```
+
+
+## Unsupervised analysis
+
+### Community dissimilarity
+
+This document presents the results of a microbiota project, focusing on beta diversity analysis. Specifically, in this section, we employed Principal Coordinates Analysis (PCoA) to assess community dissimilarity among microbiota samples.
+
+```{r setup, include=FALSE}
+# #STEP2: PCoA
+# Define variables
+tax.level <- "species"
+dissimilarity.index <- "bray"
+variable <- "Diet"  
+adjust.method <- "fdr"
+test <- "Wilcoxon"
+index <- "divergence" 
+```
+
+-   **Taxonomic level:** `r tax.level`
+-   **Dissimilarity index:** `r dissimilarity.index`
+-   **Group variable:** `r variable`
+
+### PCoA plots
+
+```{r, fig.show="hold"}
+#| label: fig-figure-of-pcoa-plot-b
+#| layout-ncol: 3
+#| fig.width: 5
+#| fig.height: 3
+
+tse <- runMDS(
+        tse,
+        FUN = getDissimilarity,
+        method = "bray",
+        assay.type = "relabundance",
+        name = "PCoA_BC"
+    )
+tse <- transformAssay(tse, assay.type = "relabundance", method = "clr", pseudocount = TRUE)
+# Calculate explained variance
+e <- attr(reducedDim(tse, "PCoA_BC"), "eig")
+rel_eig <- e / sum(e[e > 0])
+# Create the PCoA plot
+p <- plotReducedDim(tse, "PCoA_BC",  colour_by = "group", shape_by = "Diet",
+                    other_fields = c("Diet", "group", "Time", "time")) +
+    scale_color_manual(
+        name = "Diet × Time",
+        values = c(
+            "diet_1_visit_1"  = "#EEB093",
+            "diet_1_visit_2"    = "#DB6022",
+            "diet_2_visit_1" = "#88EDFF",
+            "diet_2_visit_2"   = "#0098B2"
+        ),
+        labels = c(
+            "diet_1_visit_1"  = "Oat Baseline",
+            "diet_1_visit_2"    = "Oat Week 6",
+            "diet_2_visit_1" = "Rice Baseline",
+            "diet_2_visit_2"   = "Rice Week 6"
+        )
+    ) + theme(legend.position = "none") +
+    scale_shape_manual(
+        values = c(Oat = 16, Rice = 15)
+    ) +
+    guides(shape = "none") +
+    labs(
+        title = "(A) Oat vs Rice : Baseline vs Week 6",
+        x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+        y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+    )
+
+p_ellipse <- p
+
+tse_bb <- tse[, tse$timepoint == "before"]
+tse_w6 <- tse[, tse$timepoint == "after"]
+tse_obw <- tse[, tse$Diet == "Oat"]
+tse_rbw <- tse[, tse$Diet == "Rice"]
+
+p1 <- plotReducedDim(tse_bb, "PCoA_BC",  colour_by = "Diet", shape_by = "Diet",
+                    other_fields = c("Diet", "group", "timepoint", "time")) +
+  scale_color_manual(
+    values = c(Oat = "#EEB093", Rice = "#88EDFF")
+  ) +
+  scale_shape_manual(
+    values = c(Oat = 16, Rice = 15)
+  ) +
+  theme(legend.position = "none") +
+  labs(
+    title = "(B) Baseline: Oat vs Rice",
+    x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+    y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+  )
+
+p2 <- plotReducedDim(tse_w6, "PCoA_BC",  colour_by = "Diet", shape_by = "Diet",
+                    other_fields = c("Diet", "group", "timepoint", "time")) +
+  scale_color_manual(
+    values = c(Oat = "#DB6022", Rice = "#0098B2")
+  ) +
+  scale_shape_manual(
+    values = c(Oat = 16, Rice = 15)
+  ) +
+  theme(legend.position = "none") +
+  labs(
+    title = "(C) Week 6: Oat vs Rice",
+    x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+    y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+  )
+
+p3 <- plotReducedDim(tse_obw, "PCoA_BC",  colour_by = "Time", shape_by = "Diet",
+                    other_fields = c("Diet", "group", "timepoint", "time")) +
+  scale_color_manual(
+    values = c(Baseline = "#EEB093", "Week 6" = "#DB6022")
+  ) +
+  scale_shape_manual(
+    values = c(Oat = 16, Rice = 15)
+  ) +
+  theme(legend.position = "none") +
+  labs(
+    title = "(D) Oat: Baseline vs Week 6",
+    x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+    y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+  )
+
+p4 <- plotReducedDim(tse_rbw, "PCoA_BC",  colour_by = "Time", shape_by = "Diet",
+                    other_fields = c("Diet", "group", "timepoint", "time")) +
+  scale_color_manual(
+    values = c(Baseline = "#88EDFF", "Week 6" = "#0098B2")
+  ) +
+  scale_shape_manual(
+    values = c(Oat = 16, Rice = 15)
+  ) +
+  theme(legend.position = "none") +
+  labs(
+    title = "(E) Rice: Baseline vs Week 6",
+    x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+    y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+  )
+
+# Define color mapping
+color_mapping <- c(
+  "Oat Baseline"  = "#EEB093",
+  "Oat Week 6"    = "#DB6022",
+  "Rice Baseline" = "#88EDFF",
+  "Rice Week 6"   = "#0098B2"
+)
+
+# Create custom legend
+grp_levels <- names(color_mapping)
+legend_four <- ggplot(
+    data.frame(x = 1, y = 1, grp = factor(grp_levels, levels = grp_levels)),
+    aes(x, y, fill = grp)
+) +
+    geom_point(shape = 22, size = 8) +
+    scale_fill_manual(
+        name = "Diet × Time",
+        values = color_mapping,
+        breaks = grp_levels,
+        labels = c("Oat Baseline", "Oat Week 6", "Rice Baseline", "Rice Week 6")
+    ) +
+    theme_void() + 
+    theme(
+        legend.position = "right",
+        legend.title = element_text(face = "bold", size = 12),
+        legend.text = element_text(size = 10)
+    )
+legend_four_grob <- cowplot::get_legend(legend_four)
+
+# Patch all 4 plots with legend
+p_patched <- wrap_plots(p1, p2, p3, p4, nrow = 2, ncol = 2) +
+    plot_layout(guides = "collect")
+
+# Combine with custom legend using cowplot
+final_plot <- cowplot::plot_grid(p_patched, legend_four_grob, rel_widths = c(4, 0.5))
+p_grid <- wrap_plots(p1, p2, p3, p4, nrow = 2, ncol = 2)
+final_plot <- wrap_plots(
+    p_ellipse,
+    p_grid,
+    legend_four_grob,
+    nrow = 3,
+    ncol = 3,
+    widths = c(2, 1),
+    heights = c(1, 2)
+) +
+    plot_layout(design = "
+    14
+    23
+  ")
+
+```
+
+```{r trajectories}
+# Plot 2: Trajectories
+tse <- addStepwiseDivergence(tse, group = "id",
+                            time.col = "time",
+                            assay.type = "relabundance")
+tse_sub <- tse[, !is.na(colData(tse)$divergence)]
+
+
+```
+
+```{r run_diversity_tests}
+# Calculate p-values
+run_divergence_tests <- function(tse, index = "divergence") {
+  # Extract values and timepoint
+  values <- colData(tse)[[index]]
+  timepoint <- tse$timepoint
+  
+  # Subset data for "after" timepoint only
+  after_values <- values[timepoint == "after"]
+  after_treatment <- tse$Diet[timepoint == "after"]
+  
+  # Create an empty results dataframe
+  results <- data.frame(
+    Diet = character(),
+    mean = numeric(),
+    p.value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop through unique treatment groups
+  for (g_id in unique(after_treatment)) {
+    # Subset the data for current treatment group
+    subset_values <- after_values[after_treatment == g_id]
+    
+    # Calculate the mean for "after" timepoint
+    mean_after <- mean(subset_values, na.rm = TRUE)
+    
+    # Perform Wilcoxon test (test if the median of "after" diverges from zero)
+    test_result <- wilcox.test(
+      subset_values,
+      mu = 0,
+      exact = FALSE,
+      na.action = na.omit
+    )
+    
+    # Add results to dataframe
+    results <- rbind(results, data.frame(
+      Diet = g_id,
+      mean = mean_after,
+      p.adj = p.adjust(test_result$p.value, method = "fdr"),
+      stringsAsFactors = FALSE
+    )) %>%
+      arrange(Diet)
+  }
+  
+  return(results)
+}
+
+```
+
+```{r pvalues-paired}
+# Calculate statistical results
+results_unpaired <- run_divergence_tests(tse_sub, index)
+```
+
+### Table of the top findings
+
+##### Paired treatment between timepoint(1 and 2)
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **paired `r test`**
+
+```{r}
+#| label: tbl-table-of-findings-paired
+if (knitr::is_html_output()) {
+  datatable(
+    results_unpaired, 
+    options = list(
+      pageLength = 2,
+      dom = 'Bfrtip'
+    ),
+    caption = "Table of divergence paired between timepoint(1 and 2)",
+    rownames = FALSE
+) %>% 
+    formatRound(columns = c("mean"), digits = 2) %>%
+  formatSignif(columns = c("p.adj"), digits = 3)
+} else {
+  library(kableExtra)
+  results_unpaired %>% 
+    kbl(caption = "Table of divergence paired between timepoint(1 and 2)",
+        booktabs = TRUE,
+        longtable = TRUE,
+        align = c('l', 'r', 'r', 'r', 'r')) %>%
+    kable_styling(latex_options = "repeat_header") %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+## Supervised analysis
+
+### Permanova analysis
+
+-   Dissimilarity index: **`r dissimilarity.index`**
+
+-   Group variable: **`r variable`**
+
+**Interpretation**
+
+-   Homogeneity \< 0.05: The assumption of homogeneity of variance is violated (i.e., the variances are significantly different across groups).
+
+-   Homogeneity ≥ 0.05: The assumption of homogeneity of variance is not violated (i.e., the variances are similar across groups).
+
+-   R2 is the proportion of variance in the distance matrix explained by diet or time.
+
+```{r run_rdba_tests}
+# Function to perform dbRDA and permanova analysis
+perform_dbrda_permanova <- function(tse, variable, comparison, var, times) {
+    tse_subset <- tse[, colData(tse)[, variable] %in% comparison]
+    valid_indices <- complete.cases(colData(tse_subset)[, variable])
+    tse_rda <- tse_subset[, valid_indices]
+    tse_rda <- tse_rda[, tse_rda$timepoint == times]
+    
+    formula <- as.formula(paste("X ~",variable))
+    
+    perm_res <- getPERMANOVA(tse_rda, assay.type = "relabundance", 
+                          formula = formula, 
+                          permutations = 999)
+    
+    # Extract only the 'group' row and relevant columns
+    perm_df <- as.data.frame(perm_res$permanova)
+    hom_df <- as.data.frame(perm_res$homogeneity)
+    # group_row <- perm_df[rownames(perm_df) == var, ]
+    
+    result <- data.frame(
+        Term = "Diet",
+        P_value = perm_df$`Pr(>F)`[1],
+        R2 = signif(tail(perm_df$`R2`[1], ,), 3),
+        Homogeneity = hom_df$`Pr(>F)`[1]
+        # Homogeneity = signif(tail(perm_df$homogeneity.Pr..F., 1), 3)
+        #P_value_adjusted = p.adjust(group_row$"permanova.Pr..F.", method = "fdr")
+    )
+    
+    return(result)
+}
+
+# Function to apply the test over all comparisons and combine results
+run_rdba_tests <- function(tse, comparisons, variable, var, times) {
+    all_results <- list()
+    
+    for (comp in comparisons) {
+        result <- perform_dbrda_permanova(tse, variable, comp, var, times)
+        all_results[[length(all_results) + 1]] <- result
+    }
+    
+    # Combine all results into a single data frame
+    combined_results <- do.call(rbind, all_results)
+    return(combined_results)
+}
+```
+
+```{r permanova_before-after}
+# For the before treatment comparisons
+# final_results_permanova <- run_rdba_tests(tse, comparisons_before, variable, var = variable)
+# final_results_permanova$p.adj <- p.adjust(final_results_permanova$P_value, method = "fdr")
+# # For the after treatment comparisons
+# final_results_permanova_after <- run_rdba_tests(tse, comparisons_after, variable, var = variable)
+# final_results_permanova_after$p.adj <- p.adjust(final_results_permanova_after$P_value, method = "fdr")
+
+final_results_permanova_tp <- run_rdba_tests(tse, comparisons_before, variable, var = "time", times = "before")
+final_results_permanova_tp$p.adj <- p.adjust(final_results_permanova_tp$P_value, method = "fdr")
+# For the after treatment comparisons
+final_results_permanova_after_tp <- run_rdba_tests(tse, comparisons_after, variable, var = "time", times = "after")
+final_results_permanova_after_tp$p.adj <- p.adjust(final_results_permanova_after_tp$P_value, method = "fdr")
+
+final_results_permanova_tp <- final_results_permanova_tp %>%
+                                    select(-P_value)
+
+final_results_permanova_after_tp <- final_results_permanova_after_tp %>%
+                                    select(-P_value)
+
+#final_results_permanova[] <- lapply(final_results_permanova, function(x) gsub(".before|.after", "", x))
+#final_results_permanova_after[] <- lapply(final_results_permanova_after, function(x) gsub(".before|.after", "", x))
+```
+
+```{r permanova_paired}
+# Function to perform dbRDA and permanova analysis
+perform_dbrda_permanova_pair <- function(tse, variable, comparison, var) {
+    tse_subset <- tse[, colData(tse)[, variable] %in% comparison]
+    valid_indices <- complete.cases(colData(tse_subset)[, variable])
+    tse_rda <- tse_subset[, valid_indices]
+    
+    formula <- as.formula(paste("X ~", var))
+    
+    perm_res <- getPERMANOVA(tse_rda, assay.type = "relabundance", 
+                          formula = formula, 
+                          permutations = 999)
+    
+    # Extract only the 'group' row and relevant columns
+    perm_df <- as.data.frame(perm_res)
+    group_row <- perm_df[rownames(perm_df) == var, ]
+    
+    result <- data.frame(
+        Diet = comparison,
+        P_value = group_row$"permanova.Pr..F.",
+        R2 = signif(tail(group_row$"permanova.R2", 1), 3),
+        Homogeneity = signif(tail(perm_df$homogeneity.Pr..F., 1), 3)
+        #P_value_adjusted = p.adjust(group_row$"permanova.Pr..F.", method = "fdr")
+    )
+    
+    return(result)
+}
+
+# Function to apply the test over all comparisons and combine results
+run_rdba_tests_pair <- function(tse, comparisons, variable, var) {
+    all_results <- list()
+    
+    for (comp in comparisons) {
+        result <- perform_dbrda_permanova_pair(tse, variable, comp, var)
+        all_results[[length(all_results) + 1]] <- result
+    }
+    
+    # Combine all results into a single data frame
+    combined_results <- do.call(rbind, all_results)
+    return(combined_results)
+}
+```
+
+```{r permanova_paired_res}
+# For the paired treatment comparisons
+diet_groups <- sort(unique(tse$Diet))
+# Calculate statistical results
+  
+# Run the diversity tests
+ # for (comp in meal_groups) {
+ #    respair <- run_rdba_tests_pair(tse, comp, variable, var= "time")
+ # }
+
+final_results_permanova_paired<- lapply(diet_groups, function(diet_id) {
+    respair <- run_rdba_tests_pair(tse, comp = diet_id, variable = "Diet", var = "time")
+    return(respair)
+}) %>% 
+  bind_rows() %>%
+  arrange(Diet)
+final_results_permanova_paired$p.adj <- p.adjust(final_results_permanova_paired$P_value, method = "fdr")
+final_results_permanova_paired <- final_results_permanova_paired %>%
+                                    select(-P_value)
+
+#final_results_permanova_paired <- final_results_permanova_paired %>% arrange(desc(Diet))
+```
+
+#### Across-group
+
+```{r}
+#| label: tbl-permanova_res_beforetp
+
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova_tp,
+            options = list(pageLength = 1),
+            caption = "PERMANOVA Results - variance across diets oat and rice at 
+Baseline: diet explained 1.89% of the variance in microbial community composition 
+(R² = 0.0189), with no evidence of dispersion differences between groups 
+(homogeneity = 0.914). The effect was not statistically significant after 
+correction (adjusted p = 0.099).")
+} else {
+  library(kableExtra)
+  final_results_permanova_tp %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - before treatment - X ~ time",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova_tp)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+```{r}
+#| label: tbl-permanova_res_aftertp
+
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova_after_tp,
+            options = list(pageLength = 6),
+            caption = "PERMANOVA Results - variance across diets oat and rice at 
+Week 6: diet accounted for 2.03% of the variation in microbial community 
+composition (R² = 0.0203), with no significant differences in dispersion 
+between groups (homogeneity = 0.927). The effect was statistically significant 
+after correction (adjusted p = 0.048).")
+} else {
+  library(kableExtra)
+  final_results_permanova_after_tp %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - after treatment - X ~ time",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova_after_tp)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+#### Within-group
+
+```{r}
+#| label: tbl-permanova_paired_tab
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova_paired,
+            options = list(pageLength = 4),
+            caption = "PERMANOVA Results - Variance of diets oat and rice between 
+  Baseline and Week 6: Within-group comparisons over time showed that temporal 
+  changes in microbial composition from baseline to Week 6 were minimal and not 
+  statistically significant for either diet. For oat, time explained 0.63% of 
+  the variance (R² = 0.0063, homogeneity = 0.669, p.adj = 1); for rice, 
+  it explained 1.09% (R² = 0.0109, homogeneity = 0.835, p.adj = 1).")
+} else {
+  library(kableExtra)
+  final_results_permanova_paired %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - Paired after intervention - X ~ time",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova_paired)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+   
+```
+
+### Average abundance and 95 percentile of prevalent species and genus
+
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+```{r}
+tse <- readRDS("../../data/tse.Rds")
+tabs_species <- NULL 
+tse_g <- altExp(tse, "species_prevalent")
+for (g in unique(tse_g$diet)) {
+    tseg <- tse_g[, tse_g$diet==g] 
+    df <- as.data.frame(colData(tseg)) 
+    for (tax in na.omit(rowData(tseg)$species)) {
+      df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      vars <- c("id", "timepoint", "signal")
+      dfm <- melt(df[, vars])
+      colnames(dfm) <- vars
+
+      tabs_species <-
+        rbind(tabs_species,
+        c(
+          Diet = g,
+          Taxon = tax,
+          mean1 = mean(subset(df, timepoint=="before")$signal),
+          mean2 = mean(subset(df, timepoint=="after")$signal),
+          iqr95_1 = quantile(subset(df, timepoint == "before")$signal, 0.95),
+          iqr95_2 = quantile(subset(df, timepoint == "after")$signal, 0.95),
+	  logFC.rel = mean(subset(df, timepoint=="after")$signal - subset(df, timepoint=="before")$signal)
+        ))
+    }
+}
+tabs_species <- as.data.frame(tabs_species)
+tabs_species$mean.rel1 <- round(100 * as.numeric(tabs_species$mean1), 3); tabs_species$mean1 <- NULL
+tabs_species$mean.rel2 <- round(100 * as.numeric(tabs_species$mean2), 3); tabs_species$mean2 <- NULL
+tabs_species$iqr95_1 <- round(100 * as.numeric(tabs_species$iqr95_1), 3); tabs_species$`iqr95_1.95%` <- NULL
+tabs_species$iqr95_2 <- round(100 * as.numeric(tabs_species$iqr95_2), 3); tabs_species$`iqr95_2.95%` <- NULL
+tabs_species$logFC.rel <- round(100 * as.numeric(tabs_species$logFC.rel), 3); 
+```
+
+
+```{r}
+tabs_genus <- NULL 
+ tse_g <- altExp(tse, "genus_prevalent")
+for (g in unique(tse_g$diet)) {
+  tseg <- tse_g[, tse_g$diet==g] 
+    df <- as.data.frame(colData(tseg)) 
+    for (tax in na.omit(rowData(tseg)$genus)) {
+      df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      vars <- c("id", "timepoint", "signal")
+      dfm <- melt(df[, vars])
+      colnames(dfm) <- vars
+
+      tabs_genus <-
+        rbind(tabs_genus,
+        c(
+          Diet = g,
+          Taxon = tax,
+          mean1 = mean(subset(df, timepoint=="before")$signal),
+          mean2 = mean(subset(df, timepoint=="after")$signal),
+          iqr95_1 = quantile(subset(df, timepoint == "before")$signal, 0.95),
+          iqr95_2 = quantile(subset(df, timepoint == "after")$signal, 0.95),
+	  logFC.rel = mean(subset(df, timepoint=="after")$signal - subset(df, timepoint=="before")$signal)
+        ))
+    }
+}
+tabs_genus <- as.data.frame(tabs_genus)
+tabs_genus$mean.rel1 <- round(100 * as.numeric(tabs_genus$mean1), 3); tabs_genus$mean1 <- NULL
+tabs_genus$mean.rel2 <- round(100 * as.numeric(tabs_genus$mean2), 3); tabs_genus$mean2 <- NULL
+tabs_genus$iqr95_1 <- round(100 * as.numeric(tabs_genus$iqr95_1), 3); tabs_genus$`iqr95_1.95%` <- NULL
+tabs_genus$iqr95_2 <- round(100 * as.numeric(tabs_genus$iqr95_2), 3); tabs_genus$`iqr95_2.95%` <- NULL
+tabs_genus$logFC.rel <- round(100 * as.numeric(tabs_genus$logFC.rel), 3); 
+```
+
+```{r}
+#| label: tbl-tablespecies
+if (knitr::is_html_output()) {
+  datatable(tabs_species,
+            options = list(pageLength = 10),
+            caption = "Table of average relative abundance and 95th percentile - Species")
+} else {
+  kable(tabs_species)
+}
+```
+
+```{r}
+#| label: tbl-tablegenus
+if (knitr::is_html_output()) {
+  datatable(tabs_genus,
+            options = list(pageLength = 10),
+            caption = "Table of average relative abundance and 95th percentile - Genus")
+} else {
+  kable(tabs_genus)
+}
+```
+
+
+### Data Summary
+
+```{r data-summary}
+tse
+```

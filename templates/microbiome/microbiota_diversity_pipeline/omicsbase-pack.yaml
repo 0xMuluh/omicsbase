@@ -1,0 +1,92 @@
+schema_version: "1.0"
+id: microbiome-diversity
+version: "0.1.0"
+domain: microbiome
+name: Microbiome diversity report
+entrypoint: code/main.R
+default_adaptation: inspect
+
+execution:
+  working_directory: code
+  render: entrypoint
+  artifacts:
+    - output/index.html
+  steps:
+    - id: preprocess-metaphlan
+      path: preprocessing/remove_columns_metaphlan_db_meta4_combined_reports.R
+      role: data_loader
+    - id: construct-analysis-data
+      path: code/data.R
+      role: data_loader
+    - id: construct-delta-data
+      path: code/data_delta.R
+      role: analysis
+
+capabilities:
+  microbiome_diversity:
+    sources:
+      - preprocessing/remove_columns_metaphlan_db_meta4_combined_reports.R
+      - code/data.R
+      - code/data_delta.R
+      - code/main.R
+    execution_steps:
+      - preprocess-metaphlan
+      - construct-analysis-data
+      - construct-delta-data
+    parameters:
+      grouping_variable: required
+      distance: optional
+    outputs:
+      - output/index.html
+    validators:
+      - code/data.R
+
+prompt_references:
+  - microbiome-analysis/references/compositional-data-rules.md
+  - microbiome-analysis/references/diversity-analysis.md
+  - microbiome-analysis/references/differential-abundance.md
+  - microbiome-analysis/references/decision-preservation.md
+  - microbiome-analysis/references/validation-checklist.md
+
+# Rules are first-match. "required" means a new study must change the file;
+# "inspect" permits an explicit, reasoned no-change decision; "none" copies it.
+file_rules:
+  - id: main-orchestrator
+    match: code/main.R
+    role: orchestrator
+    adaptation: inspect
+
+  - id: quarto-assembly
+    match: code/_quarto.yml
+    role: assembly
+    adaptation: inspect
+
+  - id: primary-loader
+    match: code/data.R
+    role: data_loader
+    adaptation: required
+
+  - id: study-helpers
+    match: code/funct.R
+    role: helper
+    adaptation: inspect
+
+  - id: delta-analysis
+    match: code/data_delta.R
+    role: analysis
+    adaptation: inspect
+
+  - id: report-pages
+    match: code/**/*.qmd
+    role: page
+    adaptation: inspect
+
+  - id: preprocessing-loaders
+    match: preprocessing/*.R
+    role: data_loader
+    adaptation: required
+
+  - id: pack-readme
+    match: README.md
+    role: static
+    adaptation: none

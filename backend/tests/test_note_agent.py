@@ -15,6 +15,7 @@ from agent_test_helpers import text_turn, tool_turn
 from app.database import Base, get_db
 from app.main import app
 from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThread
+from app.models.runs import RunTelemetry
 from app.services import note_agent
 
 
@@ -263,6 +264,7 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
 
     async def fake_stream(**kwargs):
         provider_calls.append(kwargs["messages"])
+        call_number = len(provider_calls)
         if len(provider_calls) == 1:
             events = tool_turn("add_note", {"text": "First we load the required libraries."}, call_id="call-1")
         elif len(provider_calls) == 2:
@@ -273,6 +275,14 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
             )
         else:
             events = text_turn("The notebook above explains each step and the cell is queued.")
+        yield {
+            "type": "usage",
+            "usage": {
+                "input_tokens": 10 * call_number,
+                "output_tokens": call_number,
+                "total_tokens": 11 * call_number,
+            },
+        }
         for event in events:
             yield event
 
@@ -313,6 +323,15 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
         assert types == ["agent", "markdown", "code", "markdown"]
         assert cells[1].revisions[0].content == "First we load the required libraries."
         assert cells[1].revisions[0].revision_metadata["generated_by"] == "note_agent"
+        telemetry = (
+            verify_db.query(RunTelemetry)
+            .filter(RunTelemetry.operation == "note_turn")
+            .one()
+        )
+        assert telemetry.input_tokens == 60
+        assert telemetry.output_tokens == 6
+        assert telemetry.total_tokens == 66
+        assert telemetry.telemetry_metadata["provider_usage"]["total_tokens"] == 66
         verify_db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)

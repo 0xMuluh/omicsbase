@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
-from app.services.apply_edits import (
-    ApplyResult,
-    apply_rewrite,
-    apply_search_replace,
-    format_apply_failures,
-    is_path_locked,
-)
+from app.services.apply_edits import ApplyResult, format_apply_failures
+from app.services.edit_engine import EditEngineError, EditOperation, EditPolicy, commit_transaction, parse_apply_patch, prepare_transaction, sha256_bytes
 from app.services.llm import call_llm
 from app.services.sanitizer import sanitize_text
+from app.services.execution_contract import (
+    CONTRACT_NAME,
+    PACK_SNAPSHOT_NAME,
+    ExecutionContractError,
+    load_execution_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +36,30 @@ async def repair_generated_project(
     """Ask the LLM for targeted file repairs and apply them safely."""
     base = Path(project_dir).resolve()
     failure_text = json.dumps(failure_result, default=str)
-    source_files = _collect_source_files(base, failure_text)
+    protected_paths = _automatic_repair_protected_paths(base)
+    source_files = _collect_source_files(
+        base,
+        failure_text,
+        protected_paths=protected_paths,
+    )
     if not source_files:
         return {"status": "skipped", "reason": "No generated source files were available to repair."}
 
-    system_prompt = """You are a precise R and Quarto repair agent for generated microbiome analysis projects.
+    system_prompt = """You are a precise R and Quarto repair agent for generated omics analysis projects.
 You receive render/runtime errors, repair history, and generated source files. Return only valid JSON.
 You may only repair files that are present in the provided source context.
 Do not invent input files, metadata columns, comparison groups, or biological conclusions.
 Prefer minimal, robust patches that make the project render honestly.
 If a required R package is optional, avoid it or add a guarded fallback instead of assuming installation.
+ReportPack execution contracts, pack manifests, and scientific validator scripts are protected evidence.
+Never edit or weaken them. Treat validator failures as diagnostics and repair an upstream loader,
+analysis, helper, or report page only when the supplied source proves that change is valid.
 
-You may specify repairs as either:
-1. Targeted Search-and-Replace: "search" (code string) and "replace" (new code string). Whitespace-tolerant matching is applied.
-2. Full File Replacement: "content" (complete new file text).
+You may specify repairs as one of three forms:
+1. Targeted Search-and-Replace: "search" and "replace" for one unambiguous location.
+2. Codex-style patch envelope: "patch" with explicit update hunks.
+3. Full File Replacement: "content" only when a large, justified rewrite is necessary.
+All repairs are prepared as one transaction; if any requested repair fails, none are written.
 """
     user_prompt = _build_repair_prompt(source_files, failure_result, repair_history)
     apply_results: list[ApplyResult] = []
@@ -83,7 +95,11 @@ You may specify repairs as either:
                     }
 
         reason = str(repair_plan.get("reason") or reason)
-        apply_results = _apply_repairs(base, repairs)
+        apply_results = _apply_repairs(
+            base,
+            repairs,
+            protected_paths=protected_paths,
+        )
         failures = [item for item in apply_results if not item.ok]
         if not failures:
             break
@@ -110,88 +126,175 @@ You may specify repairs as either:
     }
 
 
-def _apply_repairs(base: Path, repairs: list[Any]) -> list[ApplyResult]:
+def _apply_repairs(
+    base: Path,
+    repairs: list[Any],
+    *,
+    protected_paths: set[str] | None = None,
+) -> list[ApplyResult]:
+    """Prepare all automatic repairs before committing any source bytes."""
+    protected = protected_paths or set()
+    operations: list[EditOperation] = []
+    metadata: list[tuple[str, str | None, str]] = []
     results: list[ApplyResult] = []
+    preflight_failed = False
+
+    def fail(path: str, message: str, *, reason: str, attempted_search: str | None = None, strategy: str = "none") -> None:
+        nonlocal preflight_failed
+        preflight_failed = True
+        results.append(
+            ApplyResult(
+                path=path,
+                ok=False,
+                strategy=strategy,
+                attempted_search=attempted_search,
+                diagnostics=[message],
+                reason=reason,
+            )
+        )
+
     for repair in repairs:
         if not isinstance(repair, dict):
+            fail("", "Repair operation must be an object.", reason="invalid_operation")
             continue
         relative_path = str(repair.get("path") or "").strip()
-        reason = str(repair.get("reason") or "Targeted render repair")
+        reason = str(repair.get("reason") or "Targeted render repair")[:1000]
+        patch = repair.get("patch")
+        if isinstance(patch, str):
+            try:
+                patch_operations = parse_apply_patch(patch)
+            except EditEngineError as exc:
+                fail(relative_path or "(patch)", str(exc), reason=reason)
+                continue
+            for patch_operation in patch_operations:
+                rel = str(patch_operation.path or "").strip()
+                target = _safe_source_path(base, rel)
+                if target is None or not target.is_file():
+                    fail(rel, "Unsafe or missing repair target.", reason=reason)
+                    continue
+                if rel in protected:
+                    fail(rel, f"{rel} is scientific assurance evidence and cannot be changed by automatic repair.", reason=reason, strategy="protected")
+                    continue
+                base_sha256 = sha256_bytes(target.read_bytes())
+                operations.append(dataclass_replace(patch_operation, base_sha256=base_sha256, reason=reason))
+                metadata.append((rel, None, reason))
+            continue
+
         if not relative_path:
+            fail("", "Repair path is required unless a patch envelope supplies paths.", reason=reason)
             continue
         target = _safe_source_path(base, relative_path)
-        if target is None:
-            results.append(
-                ApplyResult(
-                    path=relative_path,
-                    ok=False,
-                    strategy="none",
-                    diagnostics=["Unsafe or missing repair target."],
-                    reason=reason,
-                )
-            )
+        if target is None or not target.is_file():
+            fail(relative_path, "Unsafe or missing repair target.", reason=reason)
             continue
         rel = target.relative_to(base).as_posix()
-        if is_path_locked(base, rel):
-            results.append(
-                ApplyResult(
-                    path=rel,
-                    ok=False,
-                    strategy="locked",
-                    diagnostics=[f"{rel} is locked and cannot be repaired by the agent."],
-                    reason=reason,
-                )
-            )
+        if rel in protected:
+            fail(rel, f"{rel} is scientific assurance evidence and cannot be changed by automatic repair.", reason=reason, strategy="protected")
             continue
-
-        search_str = repair.get("search")
-        replace_str = repair.get("replace")
+        existing = target.read_bytes()
+        base_sha256 = sha256_bytes(existing)
+        search = repair.get("search")
+        replace = repair.get("replace")
         content = repair.get("content")
-        existing = target.read_text(errors="replace")
-
-        if isinstance(search_str, str) and isinstance(replace_str, str):
-            result = apply_search_replace(existing, search_str, replace_str, path=rel)
-            result.reason = reason
-            if result.ok and result.after is not None:
-                target.write_text(result.after)
-                results.append(result)
-            elif isinstance(content, str):
-                rewrite = apply_rewrite(existing, content, path=rel)
-                rewrite.reason = reason
-                target.write_text(content)
-                results.append(rewrite)
-            else:
-                results.append(result)
+        if isinstance(search, str) and isinstance(replace, str):
+            operations.append(
+                EditOperation(path=rel, kind="replace", search=search, replace=replace, base_sha256=base_sha256, reason=reason)
+            )
+            metadata.append((rel, search, reason))
         elif isinstance(content, str):
-            rewrite = apply_rewrite(existing, content, path=rel)
-            rewrite.reason = reason
-            target.write_text(content)
-            results.append(rewrite)
+            if len(existing) > DEFAULT_FILE_CHARS:
+                fail(
+                    rel,
+                    "Full-file repairs are disabled when the model saw a truncated source; use an exact SEARCH/REPLACE or patch hunk.",
+                    reason=reason,
+                )
+                continue
+            operations.append(
+                EditOperation(path=rel, kind="rewrite", content=content, base_sha256=base_sha256, reason=reason)
+            )
+            metadata.append((rel, None, reason))
         else:
+            fail(rel, "Repair missing search/replace, patch, and content.", reason=reason)
+
+    if preflight_failed:
+        for rel, attempted_search, reason in metadata:
             results.append(
                 ApplyResult(
                     path=rel,
                     ok=False,
-                    strategy="none",
-                    diagnostics=["Repair missing both search/replace and content."],
+                    attempted_search=attempted_search,
+                    diagnostics=["Repair transaction aborted during preflight; no files were changed."],
+                    reason="preflight_failed",
+                )
+            )
+        return results
+    if not operations:
+        return results
+    try:
+        prepared = prepare_transaction(
+            base,
+            operations,
+            origin="automatic_repair",
+            summary="Targeted render repair",
+            policy=EditPolicy(protected_paths=frozenset(protected), require_base_for_rewrite=True),
+            validate=True,
+        )
+        committed = commit_transaction(prepared)
+    except EditEngineError as exc:
+        for rel, attempted_search, reason in metadata:
+            results.append(
+                ApplyResult(
+                    path=rel,
+                    ok=False,
+                    strategy="conflict" if exc.code == "edit_conflict" else "none",
+                    attempted_search=attempted_search,
+                    diagnostics=[str(exc)],
                     reason=reason,
                 )
             )
+        return results
+
+    files = {item.path: item for item in committed.files}
+    for rel, attempted_search, reason in metadata:
+        item = files.get(rel)
+        if item is None:
+            continue
+        results.append(
+            ApplyResult(
+                path=rel,
+                ok=True,
+                strategy=item.strategies[-1] if item.strategies else "none",
+                before=_decode_text(item.before),
+                after=_decode_text(item.after),
+                attempted_search=attempted_search,
+                reason=reason,
+            )
+        )
     return results
 
+def _decode_text(value: bytes | None) -> str | None:
+    return value.decode("utf-8", errors="replace") if value is not None else None
 
-def _collect_source_files(base: Path, failure_text: str) -> list[dict[str, str]]:
+def _collect_source_files(
+    base: Path,
+    failure_text: str,
+    *,
+    protected_paths: set[str] | None = None,
+) -> list[dict[str, str]]:
     files = []
+    protected = protected_paths or set()
     for path in sorted(base.rglob("*")):
         if not path.is_file() or path.suffix not in TEXT_EXTENSIONS:
             continue
         relative = path.relative_to(base).as_posix()
+        if relative in protected:
+            continue
         if any(part.startswith(".") for part in path.relative_to(base).parts):
             continue
         content = path.read_text(errors="replace")
         is_referenced = relative in failure_text or Path(relative).name in failure_text
         limit = REFERENCED_FILE_CHARS if is_referenced else DEFAULT_FILE_CHARS
-        files.append({"path": relative, "content": content[:limit], "referenced": str(is_referenced).lower()})
+        files.append({"path": relative, "content": content[:limit], "truncated": len(content) > limit, "referenced": str(is_referenced).lower()})
 
     return sorted(files, key=lambda source_file: (source_file["referenced"] != "true", source_file["path"]))
 
@@ -204,7 +307,8 @@ def _build_repair_prompt(
     context_parts = []
     total_chars = 0
     for source_file in source_files:
-        block = f"### {source_file['path']}\n```\n{source_file['content']}\n```"
+        completeness = "truncated; targeted edits only" if source_file.get("truncated") else "complete"
+        block = f"### {source_file['path']} ({completeness})\n```\n{source_file['content']}\n```"
         if total_chars + len(block) > MAX_CONTEXT_CHARS:
             break
         context_parts.append(block)
@@ -239,16 +343,18 @@ Return exactly this shape:
     {{
       "path": "code/data.R",
       "reason": "why this file needs changing",
-      "search": "exact snippet to replace (or use content)",
-      "replace": "new snippet"
+      "search": "exact snippet to replace (or use patch/content)",
+      "replace": "new snippet",
+      "reason": "why this repair is required"
     }}
   ]
 }}
 
 Rules:
 - Only include files shown in Generated Source Files.
+- Never edit a ReportPack manifest, execution contract, or validator. Repair upstream source instead.
 - If the traceback names a .qmd or .R file, repair that file first.
-- Keep repairs minimal and render-oriented.
+- Keep repairs minimal and render-oriented. A truncated source excerpt may only receive targeted SEARCH/REPLACE or patch edits, never a full rewrite.
 - If a namespace export does not exist, use the correct package or replace it with base/tidyverse code already loaded.
 - If the error is a missing nonessential package, remove or guard that dependency.
 - If the error is a missing column/group, infer only from shown code and fail honestly if not knowable.
@@ -283,3 +389,18 @@ def _safe_source_path(base: Path, relative_path: str) -> Path | None:
     if not path.exists() or not path.is_file():
         return None
     return path
+
+
+def _automatic_repair_protected_paths(base: Path) -> set[str]:
+    protected = {CONTRACT_NAME, PACK_SNAPSHOT_NAME}
+    try:
+        contract = load_execution_contract(base)
+    except ExecutionContractError:
+        # A malformed/missing required contract is itself protected evidence;
+        # automatic source repair must not manufacture a replacement.
+        return protected
+    if contract is not None:
+        protected.update(
+            step.path for step in contract.steps if step.role == "validator"
+        )
+    return protected

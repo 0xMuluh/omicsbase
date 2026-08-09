@@ -73,8 +73,8 @@ def _materialize_outputs(project: Path, recipe_ids: list[str]) -> None:
             path.write_text("result\n")
     for page in (
         "data/data_summary.html",
-        "primary/beta_diversity.html",
-        "primary/permanova.html",
+        "beta/beta.html",
+        "beta/permanova.html",
     ):
         path = project / "output" / page
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,5 +137,5 @@ async def test_targeted_execution_reuses_unchanged_dependency_closure(tmp_path, 
         "microbiome.inventory",
         "microbiome.beta_diversity",
     ]
-    assert calls[-1]["target_pages"] == ["primary/permanova.qmd"]
+    assert calls[-1]["target_pages"] == ["beta/permanova.qmd"]
     assert calls[-1]["run_data"] is False

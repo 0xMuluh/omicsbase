@@ -292,6 +292,67 @@ async def test_r_execution_uses_fixed_script_and_bounded_preview(tmp_path, monke
     assert artifact["sha256"] == hashlib.sha256(b"result\n").hexdigest()
 
 
+@pytest.mark.asyncio
+async def test_deployed_note_execution_bypasses_host_kernel(tmp_path, monkeypatch):
+    """A configured kernel must not bypass the deployed runner boundary."""
+    from app.config import settings
+    from app.services import note_execution, note_kernel
+
+    captured = {}
+
+    async def fake_run_command(cmd, cwd, timeout, cancel_check=None):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        return True, "sandboxed result\n"
+
+    def fail_if_kernel_used(*args, **kwargs):
+        raise AssertionError("host kernel was used outside local development")
+
+    monkeypatch.setattr(settings, "dev_mode", False)
+    monkeypatch.setattr(settings, "use_docker_sandbox", True)
+    monkeypatch.setattr(settings, "note_kernel_enabled", True)
+    monkeypatch.setattr(settings, "note_execution_shared_workspace", True)
+    monkeypatch.setattr(note_execution, "_run_command", fake_run_command)
+    monkeypatch.setattr(note_kernel, "ensure_kernel", fail_if_kernel_used)
+
+    status, metadata, error = await note_execution.execute_r_cell(
+        project_dir=str(tmp_path),
+        execution_id=str(uuid.uuid4()),
+        source="cat('sandboxed result')",
+        language="r",
+        parameters={},
+        timeout_seconds=20,
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert captured["cmd"][0:2] == ["Rscript", "--vanilla"]
+    assert captured["cwd"] == str(tmp_path)
+    assert metadata["stdout_preview"] == "sandboxed result\n"
+
+
+@pytest.mark.parametrize("launcher_name", ["start_kernel", "ensure_kernel"])
+def test_host_kernel_launchers_fail_closed_outside_dev_mode(
+    launcher_name, tmp_path, monkeypatch
+):
+    """Direct callers cannot bypass the execution-layer kernel gate."""
+    from app.config import settings
+    from app.services import note_kernel
+
+    monkeypatch.setattr(settings, "dev_mode", False)
+    monkeypatch.setattr(
+        note_kernel.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("Rscript host process was launched"),
+    )
+
+    launcher = getattr(note_kernel, launcher_name)
+    with pytest.raises(note_kernel.KernelHostExecutionDisabled, match="local development"):
+        launcher(str(tmp_path))
+
+    assert not (tmp_path / ".omicsbase" / "note-kernel").exists()
+
+
 def test_driver_rewrites_multiline_cells_without_vapply_length_error():
     """The print->.note_display rewrite must collapse deparse output.
 
@@ -460,4 +521,3 @@ def test_task_persists_artifact_and_provenance(monkeypatch, tmp_path):
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(bind=engine)
-

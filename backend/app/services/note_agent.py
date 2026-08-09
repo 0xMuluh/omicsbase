@@ -13,6 +13,8 @@ from typing import Any, AsyncIterator, Callable
 from app.config import settings
 from app.models.notes import NoteCell, NoteCellRevision, NoteThread
 from app.services.agent_core import ToolCallResult, friendly_tool_label, run_agent_loop
+from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
+from app.services.context_budget import bounded_json
 from app.services.agent_runtime import normalise_cell_type
 
 logger = logging.getLogger(__name__)
@@ -67,87 +69,14 @@ For methodological questions involving omics or Bioconductor workflows, call `se
 
 For stochastic procedures, set and display a reproducible seed. Avoid unexplained changes to the working directory, global options, contrasts, or other session-wide state. Preserve alignment between assays, samples, features, and metadata.
 
-Do not edit the Workspace. When the user explicitly asks to move a tested notebook step into the report, use `promote_to_workspace` to copy the validated cell into the project code directory.
+Do not edit the Workspace. When the user explicitly asks to move a tested notebook step into the report, use `promote_to_workspace` to copy the validated cell into the project code directory. Promotion defaults to creating a new file; updating an existing file requires an explicit base_sha256 and an append or replace strategy.
 
 The final chat response should not repeat or enumerate notebook cells. In normal cases, use 1–3 sentences summarizing the substantive result or stating that results appear inline. If execution is blocked, briefly state the blocking issue and the exact missing input or dependency.
 
 Return natural language unless a tool is needed. Tool arguments must be valid JSON."""
 
 
-def _tool_def(name: str, description: str, parameters: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": parameters or {"type": "object", "properties": {}},
-        },
-    }
-
-
-NOTE_TOOLS = [
-    _tool_def(
-        "inspect_note",
-        "Inspect the current linear notebook, including prior cells and completed execution previews.",
-    ),
-    _tool_def(
-        "search_bioc_books",
-        "Search the pinned QMD-derived Bioconductor books for relevant explanations, assumptions, and reusable R examples. Prefer the stable channel unless the user explicitly asks about development material.",
-        {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The scientific or coding question to search for."},
-                "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5},
-                "book": {"type": "string", "description": "Optional curated book slug."}
-            },
-            "required": ["query"]
-        },
-    ),
-    _tool_def(
-        "run_r_cell",
-        "Persist and queue a minimal R computation when the user question requires it. Do not use for explanations that need no calculation.",
-        {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "The complete R cell to persist and execute."},
-                "purpose": {"type": "string", "description": "What scientific question this cell checks."},
-                "parameters": {"type": "object", "description": "Explicit parameters used by the cell."},
-                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800},
-            },
-            "required": ["code"],
-        },
-    ),
-    _tool_def(
-        "add_note",
-        "Insert a concise markdown explanation into the notebook at this point, between code steps. Use this for all narration; never narrate with cat() inside code cells.",
-        {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "The markdown text for the note (2-4 sentences)."},
-            },
-            "required": ["text"],
-        },
-    ),
-    _tool_def(
-        "promote_to_workspace",
-        "Copy a tested R cell into the project's code directory (e.g. data_processing.R) so the next report build adopts it. Only usable in a notebook attached to a project, and only when the user asks to move the work into the report. The path is relative to the project code directory.",
-        {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Relative file name under code/, e.g. data_processing.R"},
-                "content": {"type": "string", "description": "The full R content to write"},
-                "purpose": {"type": "string", "description": "What this promoted step does in the pipeline"},
-            },
-            "required": ["path", "content"],
-        },
-    ),
-    _tool_def(
-        "inspect_data_files",
-        "List data files attached to this notebook (user uploads or imported example datasets) with format, columns, and the r_path to read each in an R cell.",
-    ),
-]
-
+NOTE_TOOLS = [spec.as_openai() for spec in NOTE_TOOL_SPECS]
 
 def _latest_revision(cell: Any) -> Any | None:
     revisions = list(getattr(cell, "revisions", []) or [])
@@ -176,7 +105,7 @@ def conversation_from_cells(cells: list[Any]) -> list[dict[str, str]]:
 def _live_context(context: dict[str, Any]) -> str:
     return (
         "## Current linear notebook context\n```json\n"
-        + json.dumps(context, indent=1, default=str)[:MAX_NOTE_TOOL_CHARS]
+        + bounded_json(context, MAX_NOTE_TOOL_CHARS, priority_keys=("question", "workspace_objects", "cells", "uploads", "findings"))
         + "\n```"
     )
 
@@ -406,6 +335,11 @@ class NoteAgentExecutor:
 
     async def legacy_llm_step(self, messages: list[dict], *, step: int) -> None:
         return None
+
+    def tool_idempotency(self, tool_name: str) -> str:
+        # R-cell execution and promotion are side effects; identical calls in
+        # one streamed turn must not enqueue or write twice.
+        return "non_idempotent" if tool_name in {"run_r_cell", "promote_to_workspace"} else "read_only"
 
     async def execute_tool(
         self,

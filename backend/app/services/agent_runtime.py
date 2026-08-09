@@ -188,8 +188,15 @@ def queue_pending_guidance(
     guidance: str,
     *,
     source: str = "user",
+    mutation_authorized: bool = False,
 ) -> dict[str, Any]:
-    """Store mid-job steering to apply after the current run finishes."""
+    """Store explicitly authorized mid-job mutation guidance.
+
+    Pending guidance is executed asynchronously after the current job, so it
+    must never be used as a holding area for questions or inferred mutations.
+    """
+    if not mutation_authorized:
+        raise ValueError("Pending guidance requires explicit mutation authorization.")
     content = " ".join(guidance.split()).strip()
     if len(content) < 3:
         raise ValueError("Guidance is empty.")
@@ -201,6 +208,7 @@ def queue_pending_guidance(
         "source": source,
         "created_at": _now(),
         "status": "queued",
+        "mutation_authorized": True,
     }
     pending.append(entry)
     memory["pending_guidance"] = pending[-20:]
@@ -214,11 +222,16 @@ def queue_pending_guidance(
 
 
 def consume_pending_guidance(db, project) -> list[dict[str, Any]]:
-    """Return and clear queued mid-job guidance."""
+    """Return authorized mutation guidance and discard legacy/unsafe entries."""
     memory = _memory(project)
-    pending = list(memory.get("pending_guidance") or [])
-    if not pending:
+    stored = list(memory.get("pending_guidance") or [])
+    if not stored:
         return []
+    pending = [
+        item
+        for item in stored
+        if isinstance(item, dict) and item.get("mutation_authorized") is True
+    ]
     memory["pending_guidance"] = []
     memory["updated_at"] = _now()
     project.agent_memory = memory
@@ -263,6 +276,7 @@ def refresh_project_memory(db, project, files: list[Any] | None = None, jobs: li
     memory["project"] = {
         "id": str(project.id),
         "name": project.name,
+        "name_source": getattr(project, "name_source", "default"),
         "status": project.status,
         "project_dir": project.project_dir,
     }

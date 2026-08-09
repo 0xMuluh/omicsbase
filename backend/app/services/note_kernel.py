@@ -232,6 +232,10 @@ class KernelDied(Exception):
     pass
 
 
+class KernelHostExecutionDisabled(RuntimeError):
+    """Raised when code attempts to use the host R kernel outside dev mode."""
+
+
 class KernelHandle:
     __slots__ = ("project_dir", "pid", "started_at", "last_used")
 
@@ -244,6 +248,17 @@ class KernelHandle:
 
 
 _kernels: dict[str, KernelHandle] = {}
+
+
+def _require_local_development() -> None:
+    """Fail closed before starting or using an unsandboxed host R process."""
+    from app.config import settings
+
+    if not bool(getattr(settings, "dev_mode", False)):
+        raise KernelHostExecutionDisabled(
+            "The persistent NoteThread R kernel is available only in local "
+            "development (DEV_MODE=true); deployed cells must use the isolated runner"
+        )
 
 
 def _kernel_root(project_dir: str) -> Path:
@@ -289,6 +304,7 @@ def start_kernel(project_dir: str) -> KernelHandle:
     """Launch the kernel R process for a thread scope."""
     from app.config import settings
 
+    _require_local_development()
     root = _kernel_root(project_dir)
     root.mkdir(parents=True, exist_ok=True)
     script = root / KERNEL_SCRIPT_NAME
@@ -321,6 +337,7 @@ def ensure_kernel(project_dir: str) -> KernelHandle:
     """
     from app.config import settings
 
+    _require_local_development()
     root = _kernel_root(project_dir)
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / START_LOCK_NAME
@@ -368,6 +385,7 @@ def request_cell(
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Send one cell to the kernel and wait for its done marker."""
+    _require_local_development()
     root = _kernel_root(handle.project_dir)
     _write_atomic(
         root / REQUEST_FILE_NAME,

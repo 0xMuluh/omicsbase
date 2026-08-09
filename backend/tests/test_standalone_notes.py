@@ -149,6 +149,13 @@ def test_standalone_thread_can_create_a_workspace(monkeypatch, tmp_path):
         assert payload["note_thread"]["project_id"] == payload["project_id"]
         assert payload["note_thread"]["scope"] == "workspace"
 
+        project_response = client.get(
+            f"/api/projects/{payload['project_id']}",
+            headers=headers,
+        )
+        assert project_response.status_code == 200
+        assert project_response.json()["name_source"] == "user"
+
         workspace_thread = client.get(
             f"/api/projects/{payload['project_id']}/notes/{thread['id']}",
             headers=headers,

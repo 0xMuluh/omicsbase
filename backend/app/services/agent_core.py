@@ -279,6 +279,8 @@ async def run_agent_loop(
         live_context = executor.build_live_context()
         collected_text = ""
         failed_tool_calls: dict[str, str] = {}
+        # Non-idempotent calls are guarded for this turn so reconnects cannot enqueue duplicates.
+        seen_non_idempotent_calls: set[str] = set()
         context_refreshed = False
 
         for step in range(1, executor.max_steps + 1):
@@ -356,6 +358,7 @@ async def run_agent_loop(
                     step=step,
                     step_text=step_text,
                     failed_tool_calls=failed_tool_calls,
+                    seen_non_idempotent_calls=seen_non_idempotent_calls,
                 )
                 if outcomes is None:
                     for event in stop_events:
@@ -374,7 +377,8 @@ async def run_agent_loop(
                         failed_tool_calls[tool_signature(tc["name"], tc["arguments"])] = str(
                             result.observation.get("error") or "unknown error"
                         )[:2000]
-                    status = "ok" if result.observation.get("status") != "error" else "error"
+                    observed_status = str(result.observation.get("status") or "")
+                    status = observed_status if observed_status in {"error", "duplicate", "unsupported"} else "ok"
                     summary = result.summary or executor.summary_for(tc["name"], result.observation)
                     if result.emit_completed:
                         yield executor.tool_completed_event(
@@ -470,6 +474,7 @@ async def _execute_tool_group(
     step: int,
     step_text: str,
     failed_tool_calls: dict[str, str],
+    seen_non_idempotent_calls: set[str],
 ) -> tuple[list[dict], list[tuple[dict[str, Any], ToolCallResult]] | None]:
     """Execute one group of tool calls.
 
@@ -479,6 +484,7 @@ async def _execute_tool_group(
     order; parallel-eligible groups run concurrently in worker threads.
     """
     prepared = []
+    blocked: dict[str, ToolCallResult] = {}
     for tc in group:
         arguments = tc["arguments"] if isinstance(tc["arguments"], dict) else {}
         signature = tool_signature(tc["name"], arguments)
@@ -492,6 +498,28 @@ async def _execute_tool_group(
                 [{"type": "token", "token": message}, executor.final_event(message)],
                 None,
             )
+        idempotency = getattr(executor, "tool_idempotency", lambda name: "read_only")(tc["name"])
+        if idempotency == "non_idempotent" and signature in seen_non_idempotent_calls:
+            blocked[tc["id"]] = ToolCallResult(
+                observation={
+                    "status": "duplicate",
+                    "error": (
+                        f"Duplicate non-idempotent call suppressed: {tc['name']} "
+                        "with the same arguments already ran in this turn."
+                    ),
+                },
+                events=[{
+                    "type": "tool_started",
+                    "tool": tc["name"],
+                    "reason": "Duplicate call suppressed; the original call is already in this turn.",
+                    "step": step,
+                }],
+                summary="Duplicate call suppressed; the original call is already in this turn.",
+                record_failure=False,
+            )
+            continue
+        if idempotency == "non_idempotent":
+            seen_non_idempotent_calls.add(signature)
         prepared.append((tc, arguments, persistable_tool_arguments(arguments)))
 
     if len(prepared) > 1:
@@ -508,7 +536,7 @@ async def _execute_tool_group(
             )
             for tc, arguments, persisted_arguments in prepared
         ])
-    else:
+    elif prepared:
         tc, arguments, persisted_arguments = prepared[0]
         results = [await executor.execute_tool(
             tc["name"],
@@ -518,4 +546,8 @@ async def _execute_tool_group(
             persisted_arguments=persisted_arguments,
             step_text=step_text,
         )]
-    return [], [(tc, result) for (tc, _, _), result in zip(prepared, results)]
+    else:
+        results = []
+    by_id = dict(blocked)
+    by_id.update({tc["id"]: result for (tc, _, _), result in zip(prepared, results)})
+    return [], [(tc, by_id[tc["id"]]) for tc in group]

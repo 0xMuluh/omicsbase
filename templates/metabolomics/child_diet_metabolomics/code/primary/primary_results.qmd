@@ -1,0 +1,425 @@
+---
+title: "Primary results: child diet and metabolites"
+---
+
+Child diet is related to child serum metabolites at 2 years, 5-6 years, and across the repeated 2-year to 5-6-year follow-up window. The repeated-measures component should be interpreted more cautiously than the linear-model components. For multi-level diet-quality class exposures in the tables below, the reported `P` and `Q` values come from omnibus factor tests across class levels, and the category-specific Betas and 95% CIs are presented relative to the reference category (Poor).
+
+```{r}
+#| label: setup
+#| include: false
+source("report_utils.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DT)
+
+# Override datatable locally to add Excel/CSV export buttons by default
+datatable <- function(data, ..., options = list(), extensions = character(0)) {
+  options$dom <- "Blfrtip"
+  options$buttons <- c("copy", "csv", "excel")
+  DT::datatable(data, ..., extensions = c(extensions, "Buttons"), options = options)
+}
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+q1 <- results$q1
+q2 <- results$q2
+q3 <- results$q3
+q4 <- results$q4
+q1_sens <- results$q1_sensitivity
+q2_sens <- results$q2_sensitivity
+q3_sens <- results$q3_sensitivity
+q4_sens <- results$q4_sensitivity
+model_status <- results$model_status
+
+filter_family <- function(df, family) {
+  df <- add_exposure_family(df)
+  if (is.null(df) || nrow(df) == 0 || !("exposure_family" %in% names(df))) return(df)
+  df %>% filter(exposure_family == family)
+}
+
+show_results_table <- function(df, title = NULL) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+
+  multi_term <- if ("term" %in% names(df)) {
+    grepl("\\|", df$term)
+  } else if ("levels_detailed" %in% names(df)) {
+    !is.na(df$levels_detailed) & df$levels_detailed != ""
+  } else {
+    rep(FALSE, nrow(df))
+  }
+  has_detailed <- "levels_detailed" %in% names(df) && "estimates_detailed" %in% names(df) && "ci_detailed" %in% names(df)
+  
+  df_display <- df %>%
+    mutate(
+      exposure = sapply(exposure, pretty_exposure),
+      Level = if_else(
+        multi_term,
+        if (has_detailed) as.character(levels_detailed) else "Moderate<br>Good",
+        "Single-level"
+      ),
+      Beta = if_else(
+        multi_term,
+        if (has_detailed) as.character(estimates_detailed) else "Omnibus test",
+        as.character(round(estimate, 3))
+      ),
+      `95% CI` = if_else(
+        multi_term,
+        if (has_detailed) as.character(ci_detailed) else "Omnibus test",
+        paste0("[", round(conf.low, 3), ", ", round(conf.high, 3), "]")
+      ),
+      P = formatC(p.value, format = "e", digits = 2),
+      Q = formatC(q.value, format = "e", digits = 2)
+    ) %>%
+    select(exposure, feature, n, Level, Beta, `95% CI`, P, Q)
+
+  if (!any(multi_term)) {
+    df_display <- df_display %>% select(-Level)
+  }
+
+  datatable(
+    df_display,
+    caption = title,
+    filter = "top",
+    escape = FALSE, # Allow HTML formatting like <br> in the table cells
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+
+show_mixed_table <- function(df, title = NULL) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+
+  df_display <- df %>%
+    mutate(
+      exposure = sapply(exposure, pretty_exposure),
+      estimate = round(estimate, 3),
+      std.error = round(std.error, 3),
+      conf.low = round(estimate - 1.96 * std.error, 3),
+      conf.high = round(estimate + 1.96 * std.error, 3),
+      p.value = formatC(p.value, format = "e", digits = 2),
+      q.value = formatC(q.value, format = "e", digits = 2)
+    ) %>%
+    mutate(`95% CI` = paste0("[", conf.low, ", ", conf.high, "]")) %>%
+    select(exposure, feature, term, n_obs, n_ind, Beta = estimate, `95% CI`, SE = std.error, P = p.value, Q = q.value)
+
+  datatable(
+    df_display,
+    caption = title,
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+
+show_status_table <- function(df, title = NULL) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+
+  datatable(
+    df %>%
+      mutate(
+        n_complete = ifelse(
+          is.na(n_complete_min),
+          NA_character_,
+          ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+        )
+      ) %>%
+      select(question, analysis, exposure, status, reason, n_complete, n_features_tested),
+    caption = title,
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+
+q4_split <- split_q4_terms(q4)
+q4_main <- q4_split$main
+q4_interaction <- q4_split$interaction
+q4_split_sens <- split_q4_terms(q4_sens)
+q4_main_sens <- q4_split_sens$main
+q4_interaction_sens <- q4_split_sens$interaction
+signal_summary_tbl <- build_signal_summary(results)
+```
+
+## Signal summary
+
+This table shows how much result volume and FDR-significant signal each analysis component contributes by exposure family before the detailed tables below.
+
+```{r}
+#| label: tbl-signal-summary
+datatable(
+  signal_summary_tbl,
+  caption = "Question-level signal summary",
+  options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+)
+```
+
+## Concurrent associations at 2 years
+
+Visit-6 analytical population. Complete-case `n` across fitted models: `r sample_n_label(q1)`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q1-nutrients
+show_results_table(filter_family(q1, "Nutrients"), "Associations at 2 years (visit 6) - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q1-diet-quality-continuous
+show_results_table(filter_family(q1, "Diet Quality") %>% filter(grepl("points", exposure)), "Associations at 2 years (visit 6) - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q1-diet-quality-categorical
+show_results_table(filter_family(q1, "Diet Quality") %>% filter(grepl("classes", exposure)), "Associations at 2 years (visit 6) - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+## Concurrent associations at 5-6 years
+
+Visit-7 analytical population. Complete-case `n` across fitted models: `r sample_n_label(q2)`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q2-nutrients
+show_results_table(filter_family(q2, "Nutrients"), "Associations at 5-6 years (visit 7) - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q2-diet-quality-continuous
+show_results_table(filter_family(q2, "Diet Quality") %>% filter(grepl("points", exposure)), "Associations at 5-6 years (visit 7) - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q2-diet-quality-categorical
+show_results_table(filter_family(q2, "Diet Quality") %>% filter(grepl("classes", exposure)), "Associations at 5-6 years (visit 7) - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+## Prospective associations: 2-year diet and 5-6-year metabolites
+
+Prospective analytical population. Complete-case `n` across fitted models: `r sample_n_label(q3)`. Each visit-7 metabolite is conditioned on its own visit-6 baseline value.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q3-nutrients
+show_results_table(filter_family(q3, "Nutrients"), "Prospective associations (2-year diet -> 5-6-year metabolites) - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q3-diet-quality-continuous
+show_results_table(filter_family(q3, "Diet Quality") %>% filter(grepl("points", exposure)), "Prospective associations (2-year diet -> 5-6-year metabolites) - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q3-diet-quality-categorical
+show_results_table(filter_family(q3, "Diet Quality") %>% filter(grepl("classes", exposure)), "Prospective associations (2-year diet -> 5-6-year metabolites) - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+## Repeated-measures associations across 2 years and 5-6 years
+
+The repeated-measures model uses the paired visit-6 and visit-7 diet constructs within child and reports both the pooled diet main effect and the diet-by-visit interaction.
+
+These estimates should be treated more cautiously than Q1-Q3. In the executed analysis, this model family produced singular-fit and rank-deficiency warnings. The saved results object does not currently encode warning counts, so the tables below report coefficient output, not clean-fit certification.
+
+Diet main-effect rows. Complete-case `n` across fitted models: `r sample_n_label(q4_main, 'n_obs')`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q4-main-nutrients
+show_mixed_table(filter_family(q4_main, "Nutrients"), "Repeated-measures main effects - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-main-diet-quality-continuous
+show_mixed_table(filter_family(q4_main, "Diet Quality") %>% filter(grepl("points", exposure)), "Repeated-measures main effects - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-main-diet-quality-categorical
+show_mixed_table(filter_family(q4_main, "Diet Quality") %>% filter(grepl("classes", exposure)), "Repeated-measures main effects - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+Diet-by-visit interaction rows. Complete-case `n` across fitted models: `r sample_n_label(q4_interaction, 'n_obs')`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q4-interaction-nutrients
+show_mixed_table(filter_family(q4_interaction, "Nutrients"), "Repeated-measures diet-by-visit interaction effects - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-interaction-diet-quality-continuous
+show_mixed_table(filter_family(q4_interaction, "Diet Quality") %>% filter(grepl("points", exposure)), "Repeated-measures diet-by-visit interaction effects - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-interaction-diet-quality-categorical
+show_mixed_table(filter_family(q4_interaction, "Diet Quality") %>% filter(grepl("classes", exposure)), "Repeated-measures diet-by-visit interaction effects - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+## Top associations from the concurrent and prospective models
+
+This summary intentionally excludes Q4 because the repeated-measures outputs have a different structure and a heavier model-warning burden.
+
+```{r}
+#| label: fig-top-hits
+#| fig-cap: "Top 20 associations by significance across the visit-specific and prospective models."
+all_res <- bind_rows(
+  q1 %>% mutate(analysis = "Concurrent: 2-year diet and 2-year metabolites"),
+  q2 %>% mutate(analysis = "Concurrent: 5-6-year diet and 5-6-year metabolites"),
+  q3 %>% mutate(analysis = "Prospective: 2-year diet and 5-6-year metabolites")
+) %>%
+  filter(!is.na(q.value)) %>%
+  arrange(q.value)
+
+top_hits <- all_res %>% slice_head(n = 20)
+
+ggplot(top_hits, aes(x = estimate, y = reorder(paste(analysis, exposure, feature, sep = " | "), -q.value), color = analysis)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Beta (SD units per unit exposure)", y = "Analysis | Exposure | Metabolite", title = "Top 20 significant associations") +
+  theme_minimal(base_size = 16)
+```
+
+## Repeated-measures supporting tables
+
+These highlight tables are descriptive rankings of the saved Q4 coefficient rows. They should not be read as evidence that the mixed-model family was numerically clean.
+
+### Main Effects: Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-main-nutrients
+q4_main_nutrients_top <- filter_family(q4_main, "Nutrients") %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_main_nutrients_top, "Top repeated-measures main-effect terms - Nutrients")
+```
+
+### Main Effects: Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-main-diet-quality-continuous
+q4_main_dq_cont_top <- filter_family(q4_main, "Diet Quality") %>%
+  filter(grepl("points", exposure)) %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_main_dq_cont_top, "Top repeated-measures main-effect terms - Diet Quality Score (Continuous)")
+```
+
+### Main Effects: Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-main-diet-quality-categorical
+q4_main_dq_cat_top <- filter_family(q4_main, "Diet Quality") %>%
+  filter(grepl("classes", exposure)) %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_main_dq_cat_top, "Top repeated-measures main-effect terms - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+### Interactions: Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-interaction-nutrients
+q4_int_nutrients_top <- filter_family(q4_interaction, "Nutrients") %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_int_nutrients_top, "Top repeated-measures interaction terms - Nutrients")
+```
+
+### Interactions: Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-interaction-diet-quality-continuous
+q4_int_dq_cont_top <- filter_family(q4_interaction, "Diet Quality") %>%
+  filter(grepl("points", exposure)) %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_int_dq_cont_top, "Top repeated-measures interaction terms - Diet Quality Score (Continuous)")
+```
+
+### Interactions: Diet Quality Classes (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-q4-top-interaction-diet-quality-categorical
+q4_int_dq_cat_top <- filter_family(q4_interaction, "Diet Quality") %>%
+  filter(grepl("classes", exposure)) %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 15)
+show_mixed_table(q4_int_dq_cat_top, "Top repeated-measures interaction terms - Diet Quality Classes (Categorical; relative to Poor)")
+```
+
+## Sensitivity summary
+
+```{r}
+#| label: tbl-sensitivity-summary
+comp_q1 <- compare_primary_sensitivity(q1, q1_sens, c("exposure", "feature", "visit")) %>% mutate(analysis = "Q1 concurrent")
+comp_q2 <- compare_primary_sensitivity(q2, q2_sens, c("exposure", "feature", "visit")) %>% mutate(analysis = "Q2 concurrent")
+comp_q3 <- compare_primary_sensitivity(q3, q3_sens, c("exposure", "feature", "visit_exposure", "visit_outcome")) %>% mutate(analysis = "Q3 prospective")
+comp_q4 <- compare_primary_sensitivity(q4, q4_sens, c("exposure", "feature", "term")) %>% mutate(analysis = "Q4 repeated")
+
+comp_all <- bind_rows(comp_q1, comp_q2, comp_q3, comp_q4)
+
+if (nrow(comp_all) > 0) {
+  summary_tbl <- comp_all %>%
+    mutate(exposure_family = exposure_family(exposure)) %>%
+    group_by(analysis, exposure_family, exposure) %>%
+    summarise(
+      pairs_compared = n(),
+      median_abs_delta = median(abs_delta, na.rm = TRUE),
+      p90_abs_delta = as.numeric(quantile(abs_delta, 0.90, na.rm = TRUE, names = FALSE)),
+      direction_flip_fraction = mean(direction_flip, na.rm = TRUE),
+      q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      median_abs_delta = round(median_abs_delta, 3),
+      p90_abs_delta = round(p90_abs_delta, 3),
+      direction_flip_fraction = round(direction_flip_fraction, 3),
+      q_reclassification_fraction = round(q_reclassification_fraction, 3)
+    )
+
+  datatable(
+    summary_tbl,
+    caption = "Primary-vs-sensitivity estimate stability",
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+```
+
+## Execution status
+
+This status table records execution status only. `ok` means an exposure-question combination returned saved output rows; it does not mean the corresponding models were free of singular fits, rank deficiency, or other estimation warnings.
+
+```{r}
+#| label: tbl-model-status
+show_status_table(model_status, "Executed model status summary")
+```

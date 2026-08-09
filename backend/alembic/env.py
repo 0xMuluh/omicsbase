@@ -13,7 +13,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.config import settings
 from app.database import Base
-from app.models.project import Job, Project, UploadedFile  # noqa: F401
+from app.models.project import Job, Project, ProjectEdit, UploadedFile  # noqa: F401
 import app.models.notes  # noqa: F401
 import app.models.knowledge  # noqa: F401
 import app.models.runs  # noqa: F401

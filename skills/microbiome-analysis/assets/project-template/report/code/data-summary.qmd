@@ -1,0 +1,44 @@
+---
+title: "Data Summary"
+---
+
+```{r}
+#| include: false
+setup_file <- if (file.exists("_report_setup.R")) "_report_setup.R" else file.path("report", "code", "_report_setup.R")
+source(setup_file)
+sample_alignment <- read_if_exists(file.path(plan$paths$results_dir, "sample_alignment.tsv"))
+sample_summary <- read_if_exists(file.path(plan$paths$results_dir, "sample_summary.tsv"))
+feature_summary <- read_if_exists(file.path(plan$paths$results_dir, "feature_summary.tsv"))
+feature_map <- read_if_exists(file.path(plan$paths$results_dir, "feature_map.tsv"))
+preprocessing_summary <- read_if_exists(file.path(plan$paths$results_dir, "preprocessing_summary.tsv"))
+```
+
+## Preprocessing Summary
+
+```{r}
+table_out(preprocessing_summary, "Preprocessing summary")
+```
+
+## Sample Alignment
+
+```{r}
+table_out(sample_alignment, "Metadata and feature-table alignment", n = 100)
+```
+
+## Sample Counts
+
+```{r}
+table_out(sample_summary, "Sample counts")
+```
+
+## Feature Counts
+
+```{r}
+table_out(feature_summary, "Feature counts")
+```
+
+## Feature Map
+
+```{r}
+table_out(feature_map, "Original and analysis-safe feature names", n = 50)
+```

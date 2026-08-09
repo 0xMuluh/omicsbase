@@ -14,6 +14,7 @@ import {
   ArrowUp,
   ChevronDown,
   Database,
+  FileImage,
   FileText,
   Loader2,
   Mic,
@@ -29,6 +30,20 @@ type LaunchMode = "notes" | "build" | "plan";
 interface AttachedFile {
   file: File;
   role: string;
+}
+
+function formatBytes(bytes: number | null | undefined): string | null {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
 }
 
 function inferRole(file: File): string {
@@ -249,23 +264,31 @@ export function StartComposer({
               exit={{ opacity: 0, height: 0 }}
               className="mb-1.5 flex flex-wrap gap-2 px-1"
             >
-              {files.map((item, index) => (
-                <div
-                  key={`${item.file.name}-${index}`}
-                  className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-xs text-foreground"
-                >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
-                  <span className="truncate">{item.file.name}</span>
-                  <button
-                    type="button"
-                    className="rounded-full p-1 text-muted-foreground hover:bg-background hover:text-foreground"
-                    onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))}
-                    aria-label={`Remove ${item.file.name}`}
+              {files.map((item, index) => {
+                const Icon = isImageFile(item.file) ? FileImage : FileText;
+                const sizeStr = formatBytes(item.file.size);
+                return (
+                  <div
+                    key={`${item.file.name}-${index}`}
+                    className="group flex min-w-0 max-w-60 items-center gap-2 rounded-xl border border-border bg-background/80 px-2.5 py-1.5 text-left shadow-sm backdrop-blur"
+                    title={item.file.name}
                   >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+                    <Icon className="h-4 w-4 shrink-0 text-red-500" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-foreground">{item.file.name}</span>
+                      {sizeStr ? <span className="block text-[10px] uppercase text-muted-foreground">{sizeStr}</span> : null}
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                      onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))}
+                      aria-label={`Remove ${item.file.name}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
               {selectedDataset ? (
                 <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-xs text-foreground">
                   <Database className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
@@ -498,7 +521,7 @@ export function StartComposer({
       ) : (
         <p className="mt-4 text-center text-sm text-muted-foreground">
           {mode === "build"
-            ? "Build mode lets the AI take control when the study plan is clear."
+            ? "Build mode lets OmicsBase take control when the study plan is clear."
             : mode === "plan"
               ? "Plan mode pauses for your approval before generation."
               : "Notes opens a lightweight notebook."}

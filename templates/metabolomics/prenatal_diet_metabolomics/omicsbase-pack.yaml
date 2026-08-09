@@ -1,0 +1,111 @@
+schema_version: "1.0"
+id: prenatal-metabolomics
+version: "0.1.0"
+domain: metabolomics
+name: Metabolomics association report
+entrypoint: code/main.R
+default_adaptation: inspect
+
+execution:
+  working_directory: code
+  render: entrypoint
+  artifacts:
+    - output/index.html
+  steps:
+    - id: construct-mae
+      path: code/make_mae.R
+      role: data_loader
+    - id: fit-prenatal-models
+      path: code/prenatal_diet_analysis.R
+      role: analysis
+    - id: validate-results
+      path: code/validate_results.R
+      role: validator
+
+capabilities:
+  prenatal_metabolomics_association:
+    sources:
+      - code/make_mae.R
+      - code/prenatal_diet_analysis.R
+      - code/validate_results.R
+      - code/main.R
+    execution_steps:
+      - construct-mae
+      - fit-prenatal-models
+      - validate-results
+    parameters:
+      exposure: required
+      outcome: required
+      covariates: optional
+    outputs:
+      - output/index.html
+    validators:
+      - code/validate_results.R
+
+prompt_references:
+  - metabolomics-analysis/references/model-families.md
+  - metabolomics-analysis/references/decision-preservation.md
+  - metabolomics-analysis/references/validation-checklist.md
+  - metabolomics-analysis/references/report-output-contract.md
+  - quarto-research-report/references/metabolomics-report-architecture.md
+
+file_rules:
+  - id: main-orchestrator
+    match: code/main.R
+    role: orchestrator
+    adaptation: none
+
+  - id: quarto-assembly
+    match: code/_quarto.yml
+    role: assembly
+    adaptation: inspect
+
+  - id: mae-loader
+    match: code/make_mae.R
+    role: data_loader
+    adaptation: required
+
+  - id: primary-analysis
+    match: code/prenatal_diet_analysis.R
+    role: analysis
+    adaptation: required
+
+  - id: study-data-helpers
+    match: code/analysis_data_utils.R
+    role: helper
+    adaptation: inspect
+
+  - id: report-helpers
+    match: code/report_utils.R
+    role: helper
+    adaptation: required
+
+  - id: result-validator
+    match: code/validate_results.R
+    role: validator
+    adaptation: required
+
+  - id: shared-method-helpers
+    match: code/shared/*.R
+    role: helper
+    adaptation: none
+
+  - id: report-pages
+    match: code/**/*.qmd
+    role: page
+    adaptation: inspect
+
+  - id: static-css
+    match: code/*.css
+    role: static
+    adaptation: none
+
+  - id: static-javascript
+    match: code/*.js
+    role: static
+    adaptation: none
+
+  - id: pack-readme
+    match: README.md
+    role: static
+    adaptation: none

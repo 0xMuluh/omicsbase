@@ -6,6 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.services.execution_contract import (
+    ExecutionContractError,
+    load_execution_contract,
+)
+
 REQUIRED_CODE_FILES = ("data.R", "funct.R", "_quarto.yml", "main.R")
 ERROR_MARKERS = ("error in", "execution halted", "quitting from lines")
 ABSOLUTE_PATH_PATTERN = re.compile(r'["\']/(?:home|Users|tmp|var)/[^"\']+["\']')
@@ -19,43 +24,116 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
     """Validate that the render produced a usable, structurally sound report artifact."""
     base = Path(project_dir)
     output_dir = base / "output"
-    index_html = output_dir / "index.html"
     checks: list[dict[str, str]] = []
 
-    if not output_dir.exists():
-        return {"status": "failed", "summary": "Render did not create an output directory", "checks": checks}
-    if not index_html.exists():
-        return {"status": "failed", "summary": "Render did not produce output/index.html", "checks": checks}
+    try:
+        execution_contract = load_execution_contract(base)
+    except ExecutionContractError as exc:
+        return {
+            "status": "failed",
+            "summary": f"Invalid execution contract: {exc}",
+            "checks": [
+                _check(
+                    "execution_contract",
+                    False,
+                    f"Invalid execution contract: {exc}",
+                )
+            ],
+        }
 
-    html = index_html.read_text(errors="replace")
-    checks.extend([
-        _check("output_directory", True, "output/ exists"),
-        _check("index_html", True, "output/index.html exists"),
-        _check(
-            "html_size",
-            len(html) > 500,
-            f"index.html has {len(html)} characters",
-            severity="warning",
-        ),
-    ])
-
-    code_dir = base / "code"
-    for filename in REQUIRED_CODE_FILES:
-        path = code_dir / filename
+    artifact_relatives = (
+        list(execution_contract.artifacts)
+        if execution_contract is not None
+        else ["output/index.html"]
+    )
+    if execution_contract is None and not output_dir.exists():
+        return {
+            "status": "failed",
+            "summary": "Render did not create an output directory",
+            "checks": checks,
+        }
+    for relative in artifact_relatives:
+        artifact_path = base / relative
+        check_id = re.sub(r"[^A-Za-z0-9]+", "_", relative).strip("_")
         checks.append(
             _check(
-                f"source_{filename}",
+                f"artifact_{check_id}",
+                artifact_path.is_file(),
+                f"{relative} {'exists' if artifact_path.is_file() else 'missing'}",
+            )
+        )
+    missing_artifacts = [
+        relative for relative in artifact_relatives if not (base / relative).is_file()
+    ]
+    if missing_artifacts:
+        return {
+            "status": "failed",
+            "summary": "Render did not produce declared artifact(s): "
+            + ", ".join(missing_artifacts),
+            "checks": checks,
+        }
+
+    html_relative = next(
+        relative for relative in artifact_relatives if Path(relative).suffix.lower() == ".html"
+    )
+    html_path = base / html_relative
+    html = html_path.read_text(errors="replace")
+    checks.extend(
+        [
+            _check(
+                "output_directory",
+                output_dir.exists(),
+                "output/ exists" if output_dir.exists() else "output/ missing",
+                severity="warning",
+            ),
+            _check(
+                "html_size",
+                len(html) > 500,
+                f"{html_relative} has {len(html)} characters",
+                severity="warning",
+            ),
+        ]
+    )
+
+    code_dir = base / "code"
+    source_dir = (
+        execution_contract.working_path
+        if execution_contract is not None
+        else code_dir
+    )
+    source_root = (
+        execution_contract.working_directory
+        if execution_contract is not None
+        else "code"
+    )
+
+    if execution_contract is None:
+        required_sources = [f"code/{filename}" for filename in REQUIRED_CODE_FILES]
+    else:
+        checks.append(_check("execution_contract", True, "ReportPack execution contract is valid"))
+        required_sources = [f"{source_root}/_quarto.yml"]
+        if execution_contract.entrypoint:
+            required_sources.append(execution_contract.entrypoint)
+        required_sources.extend(step.path for step in execution_contract.steps)
+        required_sources = list(dict.fromkeys(required_sources))
+
+    for relative in required_sources:
+        path = base / relative
+        check_id = re.sub(r"[^A-Za-z0-9]+", "_", relative).strip("_")
+        checks.append(
+            _check(
+                f"source_{check_id}",
                 path.exists(),
-                f"code/{filename} {'exists' if path.exists() else 'missing'}",
+                f"{relative} {'exists' if path.exists() else 'missing'}",
             )
         )
 
-    qmd_files = sorted(code_dir.glob("**/*.qmd")) if code_dir.exists() else []
+    qmd_files = sorted(source_dir.glob("**/*.qmd")) if source_dir.exists() else []
     checks.append(
         _check(
             "qmd_pages",
             len(qmd_files) > 0,
-            f"Found {len(qmd_files)} Quarto page(s) under code/",
+            f"Found {len(qmd_files)} Quarto page(s) under {source_root}/",
         )
     )
 
@@ -64,7 +142,9 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
             _check(
                 "index_page",
                 any(page.name in {"index.qmd", "index.Qmd"} for page in qmd_files),
-                "code/index.qmd present" if any(page.name.lower() == "index.qmd" for page in qmd_files) else "code/index.qmd missing",
+                f"{source_root}/index.qmd present"
+                if any(page.name.lower() == "index.qmd" for page in qmd_files)
+                else f"{source_root}/index.qmd missing",
                 severity="warning",
             )
         )
@@ -72,7 +152,7 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
     session_info_in_html = "sessioninfo" in html.lower() or "session info" in html.lower()
     session_info_in_source = any(
         "sessioninfo" in path.read_text(errors="replace").lower()
-        for path in list(code_dir.glob("**/*.R")) + qmd_files
+        for path in list(source_dir.glob("**/*.R")) + qmd_files
     )
     checks.append(
         _check(
@@ -94,7 +174,7 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
     )
 
     absolute_path_hits: list[str] = []
-    for source_path in list(code_dir.glob("**/*.R")) + qmd_files:
+    for source_path in list(source_dir.glob("**/*.R")) + qmd_files:
         for match in ABSOLUTE_PATH_PATTERN.findall(source_path.read_text(errors="replace")):
             absolute_path_hits.append(f"{source_path.name}: {match}")
     checks.append(

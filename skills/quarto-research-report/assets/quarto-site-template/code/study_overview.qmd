@@ -1,0 +1,58 @@
+---
+title: "Study overview"
+---
+
+```{r}
+#| label: report-context
+#| include: false
+find_first <- function(paths) {
+  hits <- paths[file.exists(paths)]
+  if (length(hits)) hits[[1]] else NA_character_
+}
+load_plan <- function() {
+  path <- find_first(c("config/analysis_plan.R", "../config/analysis_plan.R", "../../config/analysis_plan.R"))
+  if (is.na(path)) return(NULL)
+  env <- new.env(parent = baseenv())
+  sys.source(path, envir = env)
+  if (exists("analysis_plan", envir = env, inherits = FALSE)) get("analysis_plan", envir = env) else NULL
+}
+read_optional_table <- function(paths) {
+  path <- find_first(paths)
+  if (is.na(path)) return(NULL)
+  ext <- tolower(tools::file_ext(path))
+  if (ext %in% c("tsv", "txt")) read.delim(path, check.names = FALSE, stringsAsFactors = FALSE) else read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+}
+plan <- load_plan()
+```
+
+
+## Study identity
+
+```{r}
+if (is.null(plan)) {
+  cat("No project config is connected yet. Create or link config/analysis_plan.R before finalizing this page.")
+} else {
+  data.frame(
+    field = c("title", "key", "domain", "status"),
+    value = c(plan$study$title, plan$study$key, plan$study$domain, plan$study$status)
+  )
+}
+```
+
+## Research question
+
+State the primary scientific question from the draft analysis plan, including population, exposure or group, outcome or feature panel, timing, and intended estimand.
+
+## Data sources
+
+```{r}
+if (is.null(plan)) {
+  cat("Data paths will be listed after config/analysis_plan.R is connected.")
+} else {
+  data.frame(path_name = names(plan$paths), path = unlist(plan$paths, use.names = FALSE))
+}
+```
+
+## Planned outputs
+
+Link each planned output to the script or result object that creates it. Do not describe a result as complete until the corresponding validation artifact exists.

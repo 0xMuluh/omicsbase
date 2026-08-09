@@ -1,0 +1,6 @@
+analysis_id,scenario,analysis_family,method,response,exposure,distance,covariates,fdr_family,min_n,permutations,primary
+alpha_wilcox_001,alpha_diversity,alpha_diversity,wilcoxon_fdr,alpha_metrics,<required: group or exposure column>,,none,BH,20,,TRUE
+alpha_lmm_001,longitudinal_microbiome,alpha_diversity,lmer_interaction,alpha_metrics,<required: group or exposure column>,,none,BH,20,,TRUE
+beta_bray_001,beta_diversity_permanova,beta_diversity,bray_pcoa_permanova,community,<required: group or exposure column>,bray,none,BH,20,999,TRUE
+da_clr_rank_001,differential_abundance,differential_abundance,clr_rank_tests,features,<required: group or exposure column>,,none,BH,20,,TRUE
+da_maaslin3_001,differential_abundance,differential_abundance,maaslin3,features,<required: group or exposure column>,,none,BH,20,,TRUE

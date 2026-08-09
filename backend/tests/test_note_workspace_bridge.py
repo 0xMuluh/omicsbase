@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -10,9 +11,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models.notes import NoteThread
+from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThread
 from app.models.project import Project
 from app.api.projects_notes import _promote_cell_to_workspace
+from app.services.note_execution import input_fingerprint
 from app.services.workspace_agent import list_project_result_artifacts
 
 SQLALCHEMY_DATABASE_URL = "sqlite://"
@@ -67,18 +69,92 @@ def _thread(db_session, project, **kwargs):
     return thread
 
 
+def _executed_cell(db_session, thread, content="library(dplyr)\nfiltered <- df %>% filter(x > 1)\n"):
+    cell = NoteCell(thread_id=thread.id, position=0, status="active")
+    db_session.add(cell)
+    db_session.flush()
+    revision = NoteCellRevision(
+        cell_id=cell.id,
+        revision=1,
+        cell_type="code",
+        language="r",
+        content=content,
+        created_by="test",
+    )
+    db_session.add(revision)
+    db_session.flush()
+    execution = CellExecution(
+        revision_id=revision.id,
+        attempt=1,
+        status="completed",
+        parameters={},
+    )
+    execution.input_fingerprint = input_fingerprint(content, "r", {})
+    db_session.add(execution)
+    db_session.commit()
+    return {
+        "cell_id": str(cell.id),
+        "revision_id": str(revision.id),
+        "execution_id": str(execution.id),
+        "path": "data_processing.R",
+        "strategy": "replace",
+    }
+
+
 def test_promote_writes_cell_into_project_code(db_session, project_with_dir, tmp_path):
     thread = _thread(db_session, project_with_dir)
+    arguments = _executed_cell(db_session, thread)
     result = _promote_cell_to_workspace(
         db_session,
         thread,
-        {"path": "data_processing.R", "content": "library(dplyr)\nfiltered <- df %>% filter(x > 1)\n"},
+        arguments,
         turn_id="turn-1",
     )
     assert result["status"] == "ok"
     assert result["path"] == "code/data_processing.R"
     written = (tmp_path / "code" / "data_processing.R").read_text()
     assert "filtered <- df" in written
+
+
+def test_promote_defaults_to_create_only(db_session, project_with_dir, tmp_path):
+    thread = _thread(db_session, project_with_dir)
+    arguments = _executed_cell(db_session, thread)
+    arguments.pop("strategy", None)
+    result = _promote_cell_to_workspace(db_session, thread, arguments, turn_id="turn-default")
+
+    assert result["status"] == "ok"
+    assert (tmp_path / "code" / "data_processing.R").read_text().startswith("library(dplyr)")
+
+
+def test_promote_existing_requires_matching_base_hash(db_session, project_with_dir, tmp_path):
+    target = tmp_path / "code" / "data_processing.R"
+    target.write_text("old <- TRUE\n")
+    thread = _thread(db_session, project_with_dir)
+    arguments = _executed_cell(db_session, thread)
+
+    missing = _promote_cell_to_workspace(db_session, thread, arguments, turn_id="turn-missing")
+    assert missing["status"] == "error"
+    assert missing["code"] == "edit_precondition_required"
+    assert target.read_text() == "old <- TRUE\n"
+
+    arguments["base_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+    updated = _promote_cell_to_workspace(db_session, thread, arguments, turn_id="turn-match")
+    assert updated["status"] == "ok"
+    assert "filtered <- df" in target.read_text()
+
+
+def test_promote_rejects_stale_existing_base_hash(db_session, project_with_dir, tmp_path):
+    target = tmp_path / "code" / "data_processing.R"
+    target.write_text("old <- TRUE\n")
+    thread = _thread(db_session, project_with_dir)
+    arguments = _executed_cell(db_session, thread)
+    arguments["base_sha256"] = "0" * 64
+
+    result = _promote_cell_to_workspace(db_session, thread, arguments, turn_id="turn-stale")
+
+    assert result["status"] == "error"
+    assert result["code"] == "edit_conflict"
+    assert target.read_text() == "old <- TRUE\n"
 
 
 def test_promote_requires_project_attachment(db_session):

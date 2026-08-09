@@ -493,7 +493,14 @@ async def execute_r_cell(
     shared_workspace = bool(getattr(settings, "note_execution_shared_workspace", True))
     quiet_package_startup = bool(getattr(settings, "note_execution_quiet_package_startup", True))
     capture_plots = bool(getattr(settings, "note_execution_capture_plots", True))
-    use_kernel = bool(getattr(settings, "note_kernel_enabled", True)) and shared_workspace
+    # The persistent kernel is a host R process and is therefore a local-dev
+    # optimization only. Outside dev mode, retain notebook state through the
+    # one-shot runner so runner.py can enforce the Docker isolation boundary.
+    use_kernel = (
+        bool(getattr(settings, "note_kernel_enabled", True))
+        and shared_workspace
+        and bool(getattr(settings, "dev_mode", False))
+    )
     parameters_path.write_text(encoded_parameters, encoding="utf-8")
 
     lock_handle = None
@@ -606,4 +613,3 @@ async def execute_r_cell(
     if had_errors:
         return "completed_with_errors", metadata, None
     return "completed", metadata, None
-

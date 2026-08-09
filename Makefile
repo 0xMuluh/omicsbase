@@ -1,9 +1,19 @@
-.PHONY: dev dev-local dev-docker docker-build r-deps r-deps-check dev-frontend dev-backend worker migrate db-up db-down setup check-docker
+.PHONY: dev up dev-local dev-docker docker-build r-deps r-deps-check dev-frontend dev-backend worker migrate db-up db-down setup check-docker
 
 # Recommended dev path: Docker backend/worker/db, local frontend with HMR.
 dev: check-docker
 	@echo "Starting Docker backend, worker, Postgres, and Redis..."
 	docker compose build backend
+	docker compose up -d backend worker
+	@echo "Starting frontend at http://localhost:3000..."
+	$(MAKE) dev-frontend
+
+# Fast iteration path: start from the existing image without rebuilding.
+# Backend code, prompts, and registry are bind-mounted, so code changes are
+# live. Rebuild (make dev) only when the Dockerfile, requirements, or asset
+# directories (skills/, templates/) change.
+up: check-docker
+	@echo "Starting Docker backend and worker from the existing image..."
 	docker compose up -d backend worker
 	@echo "Starting frontend at http://localhost:3000..."
 	$(MAKE) dev-frontend

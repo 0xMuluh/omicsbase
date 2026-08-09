@@ -1,0 +1,474 @@
+---
+title: "DAA Methods Comparison"
+author: ""
+---
+
+In this report, we compare the findings of our three DAA methods (**Wilcoxon Paired**, **MaAsLin3**, and **LimROTS**) for longitudinal within-group comparisons (Week 8 vs. Baseline) within each of the three intervention arms (**Control**, **HWP**, and **HWP + LGG**).
+
+Comparing multiple DAA methods helps validate findings: taxa identified by multiple methods represent highly robust biological signals.
+
+```{r setup, message=FALSE, warning=FALSE}
+# Source helper functions and load packages
+source("../funct.R")
+library(mia)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(ggVennDiagram)
+library(DT)
+library(knitr)
+library(patchwork)
+library(tidyr)
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+# Mapping of Intervention groups to Treatment codes in MaAsLin3 output folder names
+treatment_map <- c("Control" = "4", "HWP" = "B", "HWP + LGG" = "C")
+
+# Helper to run Wilcoxon paired analysis on CLR abundances
+run_wilcoxon_paired <- function(tse_obj, assay_name, group_name) {
+  # Subset to group
+  tse_g <- tse_obj[, tse_obj$Intervention == group_name]
+  tse1 <- tse_g[, tse_g$timepoint == "before"]
+  tse2 <- tse_g[, tse_g$timepoint == "after"]
+  
+  # Ensure pairing is aligned
+  tse1 <- tse1[, order(tse1$subject)]
+  tse2 <- tse2[, order(tse2$subject)]
+  
+  pvs <- sapply(rownames(tse_obj), function(tax) {
+    wilcox.test(assay(tse1, "clr")[tax, ], assay(tse2, "clr")[tax, ], paired = TRUE)$p.value
+  })
+  
+  log2fc <- sapply(rownames(tse_obj), function(tax) {
+    mean(assay(tse2, "clr")[tax, ] - assay(tse1, "clr")[tax, ], na.rm = TRUE)
+  })
+  
+  padj <- p.adjust(pvs, "BH")
+  
+  data.frame(
+    feature = rownames(tse_obj),
+    logFC = log2fc,
+    p.value = pvs,
+    FDR = padj
+  )
+}
+
+# Helper to load MaAsLin3 longitudinal results
+load_maaslin3_results <- function(group_code, level) {
+  file_path <- file.path("../../output/daa/daa_taxa", group_code, level, "all_results.tsv")
+  if (!file.exists(file_path)) {
+    return(data.frame(feature = character(), coef = numeric(), FDR = numeric()))
+  }
+  read_tsv(file_path, show_col_types = FALSE) %>%
+    filter(!is.na(feature), model == "abundance") %>%
+    select(feature, coef, FDR = qval_joint)
+}
+
+# Helper to run LimROTS longitudinal analysis
+run_limrots_long <- function(tse_obj, assay_name, group_name) {
+  temp_tse <- tse_obj[, tse_obj$Intervention == group_name]
+  res <- run_limrots_analysis(
+    tse = temp_tse, 
+    assay_name = assay_name, 
+    group_col = "time", 
+    formula_str = "~ 0 + time",
+    niter = 200 # For fast rendering while preserving statistical validity
+  )
+  res %>% select(feature, logFC, p.value, FDR)
+}
+
+# Helper to plot Venn Diagram of overlaps
+plot_venn_overlap <- function(sig_w, sig_m, sig_l, group_name) {
+  all_sig <- unique(c(sig_w, sig_m, sig_l))
+  if (length(all_sig) > 0) {
+    x <- list(Wilcoxon = sig_w, MaAsLin3 = sig_m, LimROTS = sig_l)
+    ggVennDiagram(x, label_alpha = 0.5) +
+      scale_fill_distiller(palette = "Blues", direction = 1) +
+      labs(title = paste("Significant Taxa Overlap (FDR < 0.25) -", group_name)) +
+      theme(plot.title = element_text(size = 14, face = "bold"))
+  } else {
+    ggplot() + 
+      annotate("text", x = 0.5, y = 0.5, label = "No significant features (FDR < 0.25) found by any method.") +
+      theme_void() +
+      labs(title = paste("Significant Taxa Overlap (FDR < 0.25) -", group_name))
+  }
+}
+
+# Helper to plot effect size correlation scatter plots
+plot_correlations <- function(df, group_name) {
+  if (nrow(df) == 0) return(ggplot() + theme_void())
+  
+  # Correlation helper
+  make_scatter <- function(df_sub, x_col, y_col, x_label, y_label) {
+    corr_val <- cor(df_sub[[x_col]], df_sub[[y_col]], method = "spearman", use = "complete.obs")
+    ggplot(df_sub, aes_string(x = x_col, y = y_col)) +
+      geom_point(alpha = 0.7, color = "#4A5568", size = 2) +
+      geom_smooth(method = "lm", color = "red", linetype = "dashed", se = FALSE) +
+      annotate("text", x = min(df_sub[[x_col]], na.rm = TRUE), y = max(df_sub[[y_col]], na.rm = TRUE),
+               label = paste("Spearman r =", round(corr_val, 3)), hjust = 0, vjust = 1, size = 4, fontface = "bold") +
+      labs(x = x_label, y = y_label) +
+      theme_minimal(base_size = 12)
+  }
+  
+  p1 <- make_scatter(df, "logFC_wilcox", "logFC_limrots", "Wilcoxon log2FC", "LimROTS logFC")
+  p2 <- make_scatter(df, "logFC_wilcox", "coef_maaslin", "Wilcoxon log2FC", "MaAsLin3 Coefficient")
+  p3 <- make_scatter(df, "logFC_limrots", "coef_maaslin", "LimROTS logFC", "MaAsLin3 Coefficient")
+  
+  (p1 | p2 | p3) + plot_annotation(title = paste("Effect Size Correlations -", group_name))
+}
+
+# Helper to plot heatmap of effect sizes with significance asterisks
+plot_heatmap_comparison <- function(df, group_name) {
+  sig_df <- df %>%
+    filter(FDR_wilcox < 0.25 | FDR_maaslin < 0.25 | FDR_limrots < 0.25)
+  
+  if (nrow(sig_df) == 0) {
+    return(ggplot() + 
+             annotate("text", x = 0.5, y = 0.5, label = "No significant features (FDR < 0.25) for heatmap.") +
+             theme_void() +
+             labs(title = paste("Comparison Heatmap -", group_name)))
+  }
+  
+  # Reshape to long format for ggplot tiles
+  df_long <- sig_df %>%
+    select(feature, Wilcoxon = logFC_wilcox, MaAsLin3 = coef_maaslin, LimROTS = logFC_limrots) %>%
+    pivot_longer(cols = c(Wilcoxon, MaAsLin3, LimROTS), names_to = "Method", values_to = "EffectSize")
+  
+  df_anno <- sig_df %>%
+    select(feature, Wilcoxon = FDR_wilcox, MaAsLin3 = FDR_maaslin, LimROTS = FDR_limrots) %>%
+    pivot_longer(cols = c(Wilcoxon, MaAsLin3, LimROTS), names_to = "Method", values_to = "FDR") %>%
+    mutate(signif = ifelse(FDR < 0.25, "*", ""))
+  
+  df_plot <- df_long %>%
+    dplyr::inner_join(df_anno, by = c("feature", "Method"))
+  
+  ggplot(df_plot, aes(x = Method, y = feature, fill = EffectSize)) +
+    geom_tile(color = "white", size = 0.5) +
+    scale_fill_gradient2(low = "#3182bd", mid = "white", high = "#de2d26", midpoint = 0, name = "Effect Size") +
+    geom_text(aes(label = signif), color = "black", size = 6, vjust = 0.7) +
+    labs(x = "Method", y = "Taxon", title = paste("Effect Sizes & Significance (* FDR < 0.25) -", group_name)) +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      axis.text.y = element_text(size = 10, face = "italic"),
+      plot.title = element_text(size = 14, face = "bold")
+    )
+}
+```
+
+---
+
+## Species-Level Comparison
+
+We load the species altExp and run/retrieve results for each method.
+
+```{r species-run, message=FALSE, warning=FALSE}
+# Extract species level tse and compute CLR assay
+tse_species <- mia::transformAssay(
+  altExp(tse, "species_prevalent"), 
+  assay.type = "relabundance",
+  method = "clr",
+  pseudocount = TRUE
+)
+
+species_results <- list()
+for (group_name in names(treatment_map)) {
+  # 1. Wilcoxon paired
+  wilcox_res <- run_wilcoxon_paired(tse_species, "species_prevalent", group_name)
+  # 2. MaAsLin3
+  maaslin_res <- load_maaslin3_results(treatment_map[[group_name]], "species")
+  # 3. LimROTS
+  limrots_res <- run_limrots_long(tse, "species_prevalent", group_name)
+  
+  # Merge by feature
+  merged_df <- wilcox_res %>%
+    select(feature, logFC_wilcox = logFC, pval_wilcox = p.value, FDR_wilcox = FDR) %>%
+    dplyr::inner_join(maaslin_res %>% select(feature, coef_maaslin = coef, FDR_maaslin = FDR), by = "feature") %>%
+    dplyr::inner_join(limrots_res %>% select(feature, logFC_limrots = logFC, pval_limrots = p.value, FDR_limrots = FDR), by = "feature")
+  
+  species_results[[group_name]] <- merged_df
+}
+```
+
+### Control Group (Species)
+
+```{r species-control, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_ctrl <- species_results[["Control"]]
+sig_w <- df_ctrl %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_ctrl %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_ctrl %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "Control (Species)")
+p_cor  <- plot_correlations(df_ctrl, "Control (Species)")
+p_heat <- plot_heatmap_comparison(df_ctrl, "Control (Species)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Species Concordance Table (Control)
+
+```{r species-control-table}
+#| label: tbl-species-concordance-control
+datatable(
+  df_ctrl %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for Control Arm (Species Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+### HWP Group (Species)
+
+```{r species-hwp, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_hwp <- species_results[["HWP"]]
+sig_w <- df_hwp %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_hwp %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_hwp %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "HWP (Species)")
+p_cor  <- plot_correlations(df_hwp, "HWP (Species)")
+p_heat <- plot_heatmap_comparison(df_hwp, "HWP (Species)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Species Concordance Table (HWP)
+
+```{r species-hwp-table}
+#| label: tbl-species-concordance-hwp
+datatable(
+  df_hwp %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for HWP Arm (Species Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+### HWP + LGG Group (Species)
+
+```{r species-hwplgg, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_hwplgg <- species_results[["HWP + LGG"]]
+sig_w <- df_hwplgg %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_hwplgg %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_hwplgg %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "HWP + LGG (Species)")
+p_cor  <- plot_correlations(df_hwplgg, "HWP + LGG (Species)")
+p_heat <- plot_heatmap_comparison(df_hwplgg, "HWP + LGG (Species)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Species Concordance Table (HWP + LGG)
+
+```{r species-hwplgg-table}
+#| label: tbl-species-concordance-hwplgg
+datatable(
+  df_hwplgg %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for HWP + LGG Arm (Species Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+## Genus-Level Comparison
+
+We load the genus altExp and run/retrieve results for each method.
+
+```{r genus-run, message=FALSE, warning=FALSE}
+# Extract genus level tse and compute CLR assay
+tse_genus <- mia::transformAssay(
+  altExp(tse, "genus_prevalent"), 
+  assay.type = "relabundance",
+  method = "clr",
+  pseudocount = TRUE
+)
+
+genus_results <- list()
+for (group_name in names(treatment_map)) {
+  # 1. Wilcoxon paired
+  wilcox_res <- run_wilcoxon_paired(tse_genus, "genus_prevalent", group_name)
+  # 2. MaAsLin3
+  maaslin_res <- load_maaslin3_results(treatment_map[[group_name]], "genus")
+  # 3. LimROTS
+  limrots_res <- run_limrots_long(tse, "genus_prevalent", group_name)
+  
+  # Merge by feature
+  merged_df <- wilcox_res %>%
+    select(feature, logFC_wilcox = logFC, pval_wilcox = p.value, FDR_wilcox = FDR) %>%
+    dplyr::inner_join(maaslin_res %>% select(feature, coef_maaslin = coef, FDR_maaslin = FDR), by = "feature") %>%
+    dplyr::inner_join(limrots_res %>% select(feature, logFC_limrots = logFC, pval_limrots = p.value, FDR_limrots = FDR), by = "feature")
+  
+  genus_results[[group_name]] <- merged_df
+}
+```
+
+### Control Group (Genus)
+
+```{r genus-control, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_ctrl_g <- genus_results[["Control"]]
+sig_w <- df_ctrl_g %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_ctrl_g %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_ctrl_g %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "Control (Genus)")
+p_cor  <- plot_correlations(df_ctrl_g, "Control (Genus)")
+p_heat <- plot_heatmap_comparison(df_ctrl_g, "Control (Genus)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Genus Concordance Table (Control)
+
+```{r genus-control-table}
+#| label: tbl-genus-concordance-control
+datatable(
+  df_ctrl_g %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for Control Arm (Genus Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+### HWP Group (Genus)
+
+```{r genus-hwp, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_hwp_g <- genus_results[["HWP"]]
+sig_w <- df_hwp_g %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_hwp_g %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_hwp_g %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "HWP (Genus)")
+p_cor  <- plot_correlations(df_hwp_g, "HWP (Genus)")
+p_heat <- plot_heatmap_comparison(df_hwp_g, "HWP (Genus)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Genus Concordance Table (HWP)
+
+```{r genus-hwp-table}
+#| label: tbl-genus-concordance-hwp
+datatable(
+  df_hwp_g %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for HWP Arm (Genus Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+### HWP + LGG Group (Genus)
+
+```{r genus-hwplgg, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+df_hwplgg_g <- genus_results[["HWP + LGG"]]
+sig_w <- df_hwplgg_g %>% filter(FDR_wilcox < 0.25) %>% pull(feature)
+sig_m <- df_hwplgg_g %>% filter(FDR_maaslin < 0.25) %>% pull(feature)
+sig_l <- df_hwplgg_g %>% filter(FDR_limrots < 0.25) %>% pull(feature)
+
+p_venn <- plot_venn_overlap(sig_w, sig_m, sig_l, "HWP + LGG (Genus)")
+p_cor  <- plot_correlations(df_hwplgg_g, "HWP + LGG (Genus)")
+p_heat <- plot_heatmap_comparison(df_hwplgg_g, "HWP + LGG (Genus)")
+
+p_venn
+p_cor
+p_heat
+```
+
+#### Genus Concordance Table (HWP + LGG)
+
+```{r genus-hwplgg-table}
+#| label: tbl-genus-concordance-hwplgg
+datatable(
+  df_hwplgg_g %>%
+    select(feature, Wilcoxon_logFC = logFC_wilcox, Wilcoxon_FDR = FDR_wilcox,
+           Maaslin_coef = coef_maaslin, Maaslin_FDR = FDR_maaslin,
+           Limrots_logFC = logFC_limrots, Limrots_FDR = FDR_limrots) %>%
+    mutate(across(where(is.numeric), ~ signif(.x, digits = 3))),
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = "Master Concordance Table for HWP + LGG Arm (Genus Level)",
+  rownames = FALSE
+)
+```
+
+---
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::

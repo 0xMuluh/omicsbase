@@ -13,6 +13,7 @@ import {
   Database,
   Download,
   Eye,
+  FileImage,
   FileText,
   Files,
   History,
@@ -28,14 +29,30 @@ import {
   Sun,
   Table2,
   Upload,
+  X,
 } from "lucide-react";
 
-import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteExecutionArtifact, WorkspaceResult, type ImportableDataset } from "@/lib/api";
+function formatBytes(bytes: number | null | undefined): string | null {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
+}
+
+import { api, NoteCell, NoteCellExecution, NoteCellRevision, NoteCellType, NoteDataFile, NoteExecutionArtifact, WorkspaceResult, type ImportableDataset } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
+import { MessageAttachments } from "@/components/MessageAttachments";
 import { CodeBlock } from "@/components/CodeBlock";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExecutionBlocks } from "@/components/ExecutionBlocks";
@@ -253,6 +270,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const [activeExecution, setActiveExecution] = useState<{ cellId: string; executionId: string } | null>(null);
   const [reuseCache] = useReuseCache();
   const [editingCellId, setEditingCellId] = useState<string | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [turnDraft, setTurnDraft] = useState("");
   const [emptyPrompt, setEmptyPrompt] = useState("");
   const [workspaceResults, setWorkspaceResults] = useState<WorkspaceResult[] | null>(null);
@@ -272,6 +290,11 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const [downloadingResult, setDownloadingResult] = useState<string | null>(null);
   const [datasetOpen, setDatasetOpen] = useState(false);
   const [datasets, setDatasets] = useState<ImportableDataset[] | null>(null);
+  const [promotionReviewOpen, setPromotionReviewOpen] = useState(false);
+  const [promotionName, setPromotionName] = useState("");
+  const [promotionQuestion, setPromotionQuestion] = useState("");
+  const [promotionNotes, setPromotionNotes] = useState("");
+  const [promotionAutoBuild, setPromotionAutoBuild] = useState(false);
 
   const openDatasetPicker = useCallback(async () => {
     setComposerMenuOpen(false);
@@ -297,6 +320,7 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
         await api.importStandaloneNoteDataset(threadId, dataset.package, dataset.dataset);
         queryClient.invalidateQueries({ queryKey: ["note-thread", scopeId, threadId] });
       }
+      queryClient.invalidateQueries({ queryKey: ["note-thread-files", scopeId, threadId] });
     },
     onSuccess: () => {
       setDatasetOpen(false);
@@ -358,9 +382,16 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     queryFn: () => getScopedThread(selectedThreadId as string),
     enabled: Boolean(scopeId && selectedThreadId),
   });
-
+  const threadFilesQuery = useQuery<NoteDataFile[]>({
+    queryKey: ["note-thread-files", scopeId, selectedThreadId],
+    queryFn: () => workspaceId
+      ? api.listProjectNoteFiles(workspaceId, selectedThreadId as string)
+      : api.listStandaloneNoteFiles(selectedThreadId as string),
+    enabled: Boolean(scopeId && selectedThreadId),
+  });
   const threads = threadsQuery.data || [];
   const currentThread = threadQuery.data;
+  const threadFiles = threadFilesQuery.data || [];
 
   useEffect(() => {
     setActiveExecution(null);
@@ -469,12 +500,27 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
   const promoteThread = useMutation({
     mutationFn: () => {
       if (workspaceId || !selectedThreadId) throw new Error("Only a standalone thread can be promoted.");
-      return api.createWorkspaceFromStandaloneNoteThread(selectedThreadId, { auto_build: true });
+      return api.createWorkspaceFromStandaloneNoteThread(selectedThreadId, {
+        name: promotionName.trim() || undefined,
+        question: promotionQuestion.trim() || undefined,
+        notes: promotionNotes.trim() || undefined,
+        auto_build: promotionAutoBuild,
+      });
     },
     onSuccess: (result) => {
+      setPromotionReviewOpen(false);
       window.location.assign("/projects/" + result.project_id + "/workspace");
     },
   });
+
+  const openPromotionReview = () => {
+    if (workspaceId || !currentThread) return;
+    setPromotionName(currentThread.title || "");
+    setPromotionQuestion("");
+    setPromotionNotes("");
+    setPromotionAutoBuild(false);
+    setPromotionReviewOpen(true);
+  };
   const exportReport = useMutation({
     mutationFn: () => {
       if (!workspaceId || !selectedThreadId) throw new Error("Only an attached NoteThread can be exported.");
@@ -617,9 +663,28 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   };
 
-  const submitTurn = () => {
+  const submitTurn = async () => {
     if (!selectedThreadId || !currentThread || currentThread.status !== "active") return;
-    void runTurn(selectedThreadId, turnDraft.trim());
+    const filesToUpload = [...stagedFiles];
+    setStagedFiles([]);
+    if (filesToUpload.length > 0) {
+      setTurnStatus("Uploading attached files...");
+      for (const file of filesToUpload) {
+        try {
+          if (workspaceId) {
+            await api.uploadProjectNoteFile(workspaceId, selectedThreadId, file);
+          } else {
+            await api.uploadStandaloneNoteFile(selectedThreadId, file);
+          }
+        } catch (error) {
+          console.error("Failed to upload note attachment:", file.name, error);
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["note-thread-files", scopeId, selectedThreadId] });
+    }
+    const message = turnDraft.trim() || (filesToUpload.length ? "I attached study files to this note." : "");
+    if (!message) return;
+    void runTurn(selectedThreadId, message);
   };
 
   const handleEmptySubmit = async () => {
@@ -656,6 +721,13 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
     }
   };
 
+  const handleThreadFileSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    setComposerMenuOpen(false);
+    if (!files.length) return;
+    setStagedFiles((prev) => [...prev, ...files]);
+  };
   const addCellWithEnsure = async (cellType: NoteCellType) => {
     const threadId = await ensureThread();
     if (!threadId) return;
@@ -714,6 +786,13 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
       ) : null}
 
       <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleThreadFileSelection}
+        />
         <header className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-4 md:px-6">
           <div className="flex min-w-0 items-center gap-3">
             {!sidebarOpen ? (
@@ -728,10 +807,31 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
               <ArrowLeft className="h-3.5 w-3.5" /> {workspaceId ? "Workspace" : "Home"}
             </Link>
           </div>
+          {promotionReviewOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Review workspace transfer">
+              <div className="w-full max-w-lg space-y-4 rounded-xl border border-border bg-background p-5 shadow-2xl">
+                <div>
+                  <h2 className="text-sm font-semibold">Review workspace transfer</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">Notebook files, tested cells, findings, and provenance will be carried forward. Review the project context before creating the workspace.</p>
+                </div>
+                <input value={promotionName} onChange={(event) => setPromotionName(event.target.value)} placeholder="Workspace name" className="h-9 w-full rounded-md border border-border bg-muted/30 px-3 text-sm outline-none focus:ring-2 focus:ring-teal-500/40" />
+                <Textarea value={promotionQuestion} onChange={(event) => setPromotionQuestion(event.target.value)} placeholder="Research question (optional)" rows={3} />
+                <Textarea value={promotionNotes} onChange={(event) => setPromotionNotes(event.target.value)} placeholder="Planning notes and constraints (optional)" rows={4} />
+                <label className="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 p-3 text-xs">
+                  <input type="checkbox" checked={promotionAutoBuild} onChange={(event) => setPromotionAutoBuild(event.target.checked)} className="mt-0.5" />
+                  <span><strong className="font-medium">Build automatically after transfer</strong><br /><span className="text-muted-foreground">Leave off to inspect the carried-forward inputs and approve a plan first.</span></span>
+                </label>
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="ghost" onClick={() => setPromotionReviewOpen(false)}>Cancel</Button>
+                  <Button type="button" onClick={() => promoteThread.mutate()} disabled={promoteThread.isPending}>{promoteThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Create workspace</Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2">
             {!workspaceId && selectedThreadId ? (
-              <Button size="sm" variant="outline" onClick={() => promoteThread.mutate()} disabled={promoteThread.isPending}>
-                {promoteThread.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Promote to workspace
+              <Button size="sm" variant="outline" onClick={openPromotionReview} disabled={promoteThread.isPending}>
+                Promote to workspace
               </Button>
             ) : null}
             <ThemeToggle />
@@ -1156,6 +1256,14 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                   );
                 })}
               </div>
+              {threadFiles.length ? (
+                <article data-overview-block data-overview-type="user" data-overview-id={`${selectedThreadId}-files`} className="flex justify-end pt-2">
+                  <div className="max-w-[85%] rounded-3xl bg-muted/80 px-4 py-3 text-foreground shadow-sm">
+                    <p className="mb-2 text-xs font-medium text-muted-foreground">Attached files</p>
+                    <MessageAttachments attachments={threadFiles} />
+                  </div>
+                </article>
+              ) : null}
               {liveTurnBlock}
               <div ref={threadBottomRef} className="h-px" />
               {turnStreaming ? (
@@ -1176,38 +1284,8 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
             containerRef={threadScrollRef}
             refreshKey={currentThread ? currentThread.id + "-" + currentThread.updated_at : "empty"}
           />
-          {selectedSummary && currentThread && currentThread.cells.length > 0 ? (
+          {selectedSummary && currentThread ? (
             <div className="mx-auto w-full max-w-4xl shrink-0 px-4 pb-3 pt-2 md:px-6">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={async (event) => {
-                  const files = Array.from(event.target.files || []);
-                  event.target.value = "";
-                  setComposerMenuOpen(false);
-                  if (!files.length) return;
-                  let threadId = selectedThreadId;
-                  if (!threadId) {
-                    threadId = await ensureThread();
-                    if (!threadId) return;
-                  }
-                  try {
-                    if (workspaceId) {
-                      for (const file of files) await api.uploadFile(workspaceId, file, "auto");
-                      queryClient.invalidateQueries({ queryKey: ["projects"] });
-                    } else {
-                      for (const file of files) await api.uploadStandaloneNoteFile(threadId, file);
-                      queryClient.invalidateQueries({ queryKey: ["note-thread", scopeId, threadId] });
-                    }
-                    setTurnError(null);
-                    setTurnStatus(files.length === 1 ? files[0].name + " added" : files.length + " files added");
-                  } catch (error) {
-                    setTurnError(error instanceof Error ? error.message : "The files could not be added.");
-                  }
-                }}
-              />
                 <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
                   {resultPickerOpen ? (
                     <>
@@ -1248,6 +1326,35 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       onPick={(dataset) => importDataset.mutate(dataset)}
                       pending={importDataset.isPending}
                     />
+                  ) : null}
+                  {stagedFiles.length > 0 ? (
+                    <div className="mb-1.5 flex flex-wrap gap-2 px-1">
+                      {stagedFiles.map((file, index) => {
+                        const Icon = isImageFile(file) ? FileImage : FileText;
+                        const sizeStr = formatBytes(file.size);
+                        return (
+                          <div
+                            key={`${file.name}-${index}`}
+                            className="group flex min-w-0 max-w-60 items-center gap-2 rounded-xl border border-border bg-background/80 px-2.5 py-1.5 text-left shadow-sm backdrop-blur"
+                            title={file.name}
+                          >
+                            <Icon className="h-4 w-4 shrink-0 text-red-500" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium text-foreground">{file.name}</span>
+                              {sizeStr ? <span className="block text-[10px] uppercase text-muted-foreground">{sizeStr}</span> : null}
+                            </span>
+                            <button
+                              type="button"
+                              className="rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                              onClick={() => setStagedFiles((prev) => prev.filter((_, i) => i !== index))}
+                              aria-label={`Remove ${file.name}`}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   ) : null}
                   <div className="flex items-end gap-1.5">
                   <ComposerAddButton
@@ -1290,7 +1397,15 @@ export function NotesSurface({ workspaceId, initialThreadId }: { workspaceId?: s
                       className="max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:opacity-60"
                       placeholder="Ask OmicsBase..."
                     />
-                    <Button type="button" size="icon" className="h-10 w-10 shrink-0 rounded-full" onClick={() => void submitTurn()} disabled={turnStreaming || !turnDraft.trim() || currentThread.status !== "active"} title="Send" aria-label="Send">
+                    <Button
+                      type="button"
+                      size="icon"
+                      className="h-10 w-10 shrink-0 rounded-full"
+                      onClick={() => void submitTurn()}
+                      disabled={turnStreaming || (!turnDraft.trim() && stagedFiles.length === 0) || currentThread.status !== "active"}
+                      title="Send"
+                      aria-label="Send"
+                    >
                       {turnStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                     </Button>
                 </div>

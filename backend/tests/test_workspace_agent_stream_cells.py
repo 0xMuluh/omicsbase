@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models.project import Project, ProjectMessage
+from app.models.runs import RunTelemetry
 from app.services import home_agent, workspace_agent
 
 
@@ -46,6 +47,8 @@ def test_workspace_agent_stream_persists_typed_cells(monkeypatch):
             db.close()
 
     async def fake_stream(*args, **kwargs):
+        yield {"type": "usage", "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}}
+        yield {"type": "usage", "usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11}}
         yield {"type": "final", "message": "Grounded response"}
 
     async def fake_title(prompt: str) -> str:
@@ -76,8 +79,16 @@ def test_workspace_agent_stream_persists_typed_cells(monkeypatch):
         assert all(message.cell_revision == 1 for message in messages)
         assert len({message.execution_id for message in messages}) == 1
         assert all(message.cell_id for message in messages)
+        telemetry = (
+            verify_db.query(RunTelemetry)
+            .filter(RunTelemetry.operation == "workspace_turn")
+            .one()
+        )
+        assert telemetry.input_tokens == 18
+        assert telemetry.output_tokens == 7
+        assert telemetry.total_tokens == 25
+        assert telemetry.telemetry_metadata["provider_usage"]["total_tokens"] == 25
         verify_db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(bind=engine)
-

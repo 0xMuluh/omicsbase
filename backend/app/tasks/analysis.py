@@ -190,6 +190,7 @@ def _schedule_pending_guidance_followup(db, project, project_id: str) -> str | N
 def run_planning(*args, **kwargs):
     """Generate an analysis plan via LLM."""
     project_id, job_id = _parse_task_args(args)
+    allow_auto_build = kwargs.get("allow_auto_build", True) is not False
 
     db = _get_db_session()
     try:
@@ -210,18 +211,6 @@ def run_planning(*args, **kwargs):
         files = db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
         file_summaries = [f.file_summary for f in files if f.file_summary]
 
-        # Combine first-class pasted guidance with any uploaded analysis plan files.
-        custom_plan_parts = []
-        if project.custom_plan_text and project.custom_plan_text.strip():
-            custom_plan_parts.append(project.custom_plan_text.strip())
-        for f in files:
-            if f.file_role == "analysis_plan" and f.file_path:
-                try:
-                    custom_plan_parts.append(Path(f.file_path).read_text(errors="replace"))
-                except Exception as ex:
-                    logger.warning("Failed to read analysis plan file %s: %s", f.file_path, ex)
-        custom_plan_text = "\n\n".join(part for part in custom_plan_parts if part.strip()) or None
-
         # Run the async planner in a sync context
         from app.schemas.schemas import ClarificationAnswer, ClarificationRequest
 
@@ -234,6 +223,21 @@ def run_planning(*args, **kwargs):
 
         loop = asyncio.new_event_loop()
         try:
+            # Agentic classification: identify plan documents vs data, extract
+            # plan text (size-capped), and reclassify mislabeled uploads.
+            from app.services.document_classify import agentic_plan_sources
+
+            plan_sources = loop.run_until_complete(agentic_plan_sources(files))
+            if any(f.file_role == "analysis_plan" for f in files):
+                db.commit()
+
+            # Combine first-class pasted guidance with any plan documents.
+            custom_plan_parts = []
+            if project.custom_plan_text and project.custom_plan_text.strip():
+                custom_plan_parts.append(project.custom_plan_text.strip())
+            custom_plan_parts.extend(plan_sources)
+            custom_plan_text = "\n\n".join(part for part in custom_plan_parts if part.strip()) or None
+
             plan = loop.run_until_complete(generate_plan(
                 question=project.question or "",
                 file_summaries=file_summaries,
@@ -259,10 +263,25 @@ def run_planning(*args, **kwargs):
 
         # Save plan to project
         project.analysis_plan = plan.model_dump()
+        from app.services.provider_guard import (
+            active_provider_block,
+            clear_provider_block,
+        )
+        from app.services.providers import is_configured
+        from app.services.llm import resolve_target
+
+        planner_provider, _ = resolve_target("planner")
+        planner_provider = planner_provider or settings.llm_provider
+        # A real successful planner call is evidence that this provider is
+        # available again. Deterministic offline fallback is not.
+        if is_configured(planner_provider):
+            clear_provider_block(project, planner_provider)
         manifest_ready = (project.study_manifest or {}).get("status") == "ready"
         manifest_domain = (project.study_manifest or {}).get("domain")
         auto_build = bool(
-            project.auto_build
+            allow_auto_build
+            and project.auto_build
+            and active_provider_block(project, settings.llm_provider) is None
             and manifest_ready
             and manifest_domain in {"microbiome", "metabolomics"}
             and plan.domain == manifest_domain
@@ -342,9 +361,23 @@ def run_planning(*args, **kwargs):
             p = db.query(Project).filter(Project.id == project_id).first()
             if p:
                 from app.services.agent_runtime import record_agent_action, set_agent_state
+                from app.services.provider_errors import LLMProviderError
+                from app.services.provider_guard import record_provider_block
+                if isinstance(e, LLMProviderError):
+                    record_provider_block(p, e)
                 p.status = "failed"
                 db.commit()
-                set_agent_state(db, p, "failed", "Planning failed")
+                set_agent_state(
+                    db,
+                    p,
+                    "failed",
+                    (
+                        "Planning blocked by the language-model provider"
+                        if isinstance(e, LLMProviderError)
+                        else "Planning failed"
+                    ),
+                    {"provider_failure": e.as_dict()} if isinstance(e, LLMProviderError) else None,
+                )
                 record_agent_action(db, p, "plan", "failed", str(e), job_id=job_id)
         except Exception:
             pass
@@ -427,6 +460,8 @@ def run_generation(*args, **kwargs):
         loop.close()
 
         project.status = "generated"
+        from app.services.provider_guard import clear_provider_block
+        clear_provider_block(project, settings.llm_provider)
         db.commit()
 
         generated_relative_paths = [str(Path(path).resolve().relative_to(project_dir.resolve())) for path in generated if Path(path).exists()]
@@ -502,9 +537,23 @@ def run_generation(*args, **kwargs):
             p = db.query(Project).filter(Project.id == project_id).first()
             if p:
                 from app.services.agent_runtime import record_agent_action, set_agent_state
+                from app.services.provider_errors import LLMProviderError
+                from app.services.provider_guard import record_provider_block
+                if isinstance(e, LLMProviderError):
+                    record_provider_block(p, e)
                 p.status = "failed"
                 db.commit()
-                set_agent_state(db, p, "failed", "Generation failed")
+                set_agent_state(
+                    db,
+                    p,
+                    "failed",
+                    (
+                        "Generation blocked by the language-model provider"
+                        if isinstance(e, LLMProviderError)
+                        else "Generation failed"
+                    ),
+                    {"provider_failure": e.as_dict()} if isinstance(e, LLMProviderError) else None,
+                )
                 record_agent_action(db, p, "generate", "failed", str(e), job_id=job_id)
         except Exception:
             pass
@@ -529,7 +578,7 @@ def run_rendering(*args, **kwargs):
         )
         from app.services.repair import repair_generated_project
         from app.services.reviewer import review_render_output
-        from app.services.runner import run_project
+        from app.services.runner import repairs_require_analysis_rerun, run_project
 
         _update_job(db, job_id, status="running", progress=[{"step": "rendering", "status": "running"}])
 
@@ -630,7 +679,10 @@ def run_rendering(*args, **kwargs):
                     progress_callback("repair", "completed", f"Applied repair pass #{repair_pass} to: {repaired_paths}")
                     progress_callback("rerender", "running", f"Rerendering after repair pass #{repair_pass}...")
                     repaired_files = [item.get("path", "") for item in repair_result.get("repairs", [])]
-                    rerun_data = any(Path(file_path).name == "data.R" for file_path in repaired_files)
+                    rerun_data = repairs_require_analysis_rerun(
+                        project.project_dir,
+                        repaired_files,
+                    )
                     result = loop.run_until_complete(run_project(
                         project_dir=project.project_dir,
                         progress_callback=progress_callback,
@@ -944,7 +996,7 @@ def run_recipe_execution(*args, **kwargs):
 
 @task_decorator
 def run_editing(*args, **kwargs):
-    """Execute AI editing on project source code followed by re-rendering."""
+    """Execute OmicsBase editing on project source code followed by re-rendering."""
     project_id, job_id = _parse_task_args(args)
     instruction = kwargs.get("instruction") or ""
 
@@ -960,7 +1012,7 @@ def run_editing(*args, **kwargs):
         from app.services.editor import edit_generated_project
         from app.services.repair import repair_generated_project
         from app.services.reviewer import review_render_output
-        from app.services.runner import run_project
+        from app.services.runner import repairs_require_analysis_rerun, run_project
 
         _update_job(db, job_id, status="running", progress=[{"step": "editing", "status": "running", "detail": instruction}])
 
@@ -971,14 +1023,28 @@ def run_editing(*args, **kwargs):
         set_agent_state(db, project, "editing", "Editing generated source", {"instruction": instruction})
 
         loop = asyncio.new_event_loop()
-        edit_result = loop.run_until_complete(edit_generated_project(project.project_dir, instruction))
+        edit_result = loop.run_until_complete(edit_generated_project(
+            project.project_dir,
+            instruction,
+            project_context={
+                "project": {
+                    "name": project.name,
+                    "question": project.question,
+                    "status": project.status,
+                    "agent_state": project.agent_state,
+                },
+                "agent_memory": project.agent_memory or {},
+            },
+            analysis_plan=project.analysis_plan,
+            study_manifest=project.study_manifest,
+        ))
 
         if edit_result.get("status") != "completed":
-            reason = edit_result.get("reason", "AI editing failed to modify files.")
+            reason = edit_result.get("reason", "OmicsBase editing failed to modify files.")
             _update_job(db, job_id, status="failed", error=reason)
             project.status = "failed"
             db.commit()
-            set_agent_state(db, project, "failed", "AI edit failed")
+            set_agent_state(db, project, "failed", "OmicsBase edit failed")
             record_agent_action(db, project, "edit", "failed", reason, {"instruction": instruction}, job_id=job_id)
             record_project_message(
                 db,
@@ -1077,7 +1143,10 @@ def run_editing(*args, **kwargs):
                 run_project(
                     project.project_dir,
                     start_page=render_result.get("failed_page"),
-                    run_data=any(Path(path).name == "data.R" for path in repaired_files),
+                    run_data=repairs_require_analysis_rerun(
+                        project.project_dir,
+                        repaired_files,
+                    ),
                 )
             )
         loop.close()

@@ -7,6 +7,7 @@ and guaranteed event loop cleanup in background execution tasks.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import pytest
 
 from app.services import repair
@@ -69,3 +70,68 @@ def test_build_repair_prompt_sanitization():
 
     assert "sk-proj-" not in prompt
     assert "[REDACTED_SECRET]" in prompt
+
+
+@pytest.mark.asyncio
+async def test_automatic_repair_cannot_weaken_contract_validator(tmp_path, monkeypatch):
+    code = tmp_path / "code"
+    output = tmp_path / "output"
+    code.mkdir()
+    output.mkdir()
+    analysis = code / "analysis.R"
+    validator = code / "validate.R"
+    main = code / "main.R"
+    analysis.write_text("result <- data.frame(value = 0)\n")
+    validator.write_text("stopifnot(result$value > 0)\n")
+    main.write_text("quarto::quarto_render()\n")
+    (tmp_path / "execution_contract.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "report_pack": {
+                    "id": "assurance-test",
+                    "version": "1",
+                    "domain": "test",
+                    "manifest_sha256": "a" * 64,
+                    "source_tree_sha256": "b" * 64,
+                },
+                "working_directory": "code",
+                "render": "entrypoint",
+                "entrypoint": "code/main.R",
+                "steps": [
+                    {"id": "analyze", "path": "code/analysis.R", "role": "analysis"},
+                    {"id": "validate", "path": "code/validate.R", "role": "validator"},
+                ],
+                "artifacts": ["output/index.html"],
+            }
+        )
+    )
+    proposed = {
+        "reason": "Make the assertion pass",
+        "repairs": [
+            {
+                "path": "code/validate.R",
+                "search": "stopifnot(result$value > 0)",
+                "replace": "stopifnot(TRUE)",
+            }
+        ],
+    }
+
+    async def mock_call_llm(*args, **kwargs):
+        return json.dumps(proposed)
+
+    monkeypatch.setattr(repair, "call_llm", mock_call_llm)
+
+    result = await repair.repair_generated_project(
+        str(tmp_path),
+        {
+            "status": "failed",
+            "errors": [
+                {"step": "validator", "file": "code/validate.R", "error": "assertion failed"}
+            ],
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert validator.read_text() == "stopifnot(result$value > 0)\n"
+    assert any(item["strategy"] == "protected" for item in result["apply_results"])

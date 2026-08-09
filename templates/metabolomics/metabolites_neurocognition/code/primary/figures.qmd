@@ -1,0 +1,570 @@
+---
+title: "Association plots"
+---
+
+Visual summaries of the association analyses linking child serum metabolites to neurodevelopmental outcomes at 2 years. Volcano plots display the full distribution of effect sizes against statistical significance; forest plots highlight the strongest individual associations per visit (top 10 by nominal p-value).
+
+Continuous outcomes (OLS models) and binary outcomes (logistic models) are plotted separately to ensure that different regression scales are not combined. Continuous OLS models plot standardized beta coefficients (outcome change in standard deviations per 1 SD increase in log-metabolite concentration); logistic HINE optimality models plot log odds ratios. Point colors represent the official NMR metabolite groups annotated in the `MultiAssayExperiment` metadata.
+
+::: {.callout-note title="Model scale in these plots"}
+A positive OLS estimate means a higher standardized metabolite value is associated with a higher standardized neurodevelopmental score. HINE logistic models predict **suboptimal** status; plots use log(OR), so a positive value means higher odds of suboptimal HINE (worse neurological outcome) and a negative value means lower odds of suboptimal. These scales are separated because beta coefficients and log odds ratios are not directly interchangeable.
+:::
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+# Load regression results
+res_path <- "../output/results/neurocognition_study_results.rds"
+if (!file.exists(res_path)) {
+  stop("Required regression result object not found: ", res_path)
+}
+results_obj <- readRDS(res_path)
+if (!("primary_results" %in% names(results_obj))) {
+  stop("Regression result object missing required element: primary_results")
+}
+primary_df <- results_obj[["primary_results"]]
+required_result_cols <- c("outcome", "exposure", "analysis_type", "n", "estimate", "std.error", "conf.low", "conf.high", "p.value", "q.value", "visit", "note")
+missing_primary_cols <- setdiff(required_result_cols, names(primary_df))
+if (length(missing_primary_cols) > 0) {
+  stop("Primary result table missing required column(s): ", paste(missing_primary_cols, collapse = ", "))
+}
+if (nrow(primary_df) == 0) {
+  stop("Primary result table must not be empty.")
+}
+
+# NMR feature metadata (official Group labels from MAE)
+mae_path <- "../data/MAE.rds"
+if (!file.exists(mae_path)) {
+  stop("Required MAE object not found: ", mae_path)
+}
+mae <- readRDS(mae_path)
+rd <- as.data.frame(rowData(experiments(mae)[["visit_all"]]), stringsAsFactors = FALSE)
+rd[["feature"]] <- rownames(rd)
+required_feature_cols <- c("Group", "Biomarker.name", "Subgroup")
+missing_feature_cols <- setdiff(required_feature_cols, names(rd))
+if (length(missing_feature_cols) > 0) {
+  stop("MAE feature metadata missing required column(s): ", paste(missing_feature_cols, collapse = ", "))
+}
+if (any(is.na(rd[["Group"]]) | trimws(as.character(rd[["Group"]])) == "")) {
+  stop("MAE feature metadata contains missing or blank Group values.")
+}
+if (anyDuplicated(rd[["feature"]]) > 0) {
+  stop("MAE feature metadata contains duplicated feature names.")
+}
+rd[["feature_group"]] <- as.character(rd[["Group"]])
+feature_meta <- rd
+
+add_nmr_group <- function(df) {
+  if (nrow(df) == 0) {
+    stop("No rows supplied for NMR group annotation.")
+  }
+  out <- df %>%
+    left_join(
+      feature_meta[, c("feature", "feature_group", "Biomarker.name")],
+      by = c("exposure" = "feature")
+    )
+  missing_group <- unique(out[["exposure"]][is.na(out[["feature_group"]]) | out[["feature_group"]] == ""])
+  if (length(missing_group) > 0) {
+    stop(
+      "Primary results contain feature(s) without MAE Group metadata: ",
+      paste(utils::head(missing_group, 10), collapse = ", "),
+      if (length(missing_group) > 10) " ..." else ""
+    )
+  }
+  out %>% mutate(NMR_group = feature_group)
+}
+
+metabolite_group_lookup <- feature_meta %>%
+  transmute(
+    Feature = feature,
+    `Biomarker name` = Biomarker.name,
+    `NMR group` = feature_group,
+    Subgroup = as.character(Subgroup)
+  ) %>%
+  arrange(`NMR group`, Feature)
+
+nmr_group_summary <- metabolite_group_lookup %>%
+  count(`NMR group`, name = "Metabolites, n") %>%
+  arrange(desc(`Metabolites, n`))
+
+# Pretty printing outcome helper
+pretty_outcome <- function(x) {
+  dplyr::case_when(
+    x == "CCognition_indexpoints6" ~ "Bayley Cognitive",
+    x == "CLanguage_indexpoints6" ~ "Bayley Language",
+    x == "CExpressivelanguage_standardpoints6" ~ "Bayley Expressive Language",
+    x == "CReceptivelanguage_standardpoints6" ~ "Bayley Receptive Language",
+    x == "CMotor_indexpoints6" ~ "Bayley Motor",
+    x == "CFinemotor_standardpoints6" ~ "Bayley Fine Motor",
+    x == "CGrossmotor_standardpoints6" ~ "Bayley Gross Motor",
+    x == "Hammersmith6" ~ "HINE Global Score",
+    x == "HINE_optimal" ~ "HINE Optimality",
+    TRUE ~ x
+  )
+}
+
+continuous_outcomes <- c(
+  "CCognition_indexpoints6",
+  "CLanguage_indexpoints6",
+  "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6",
+  "CMotor_indexpoints6",
+  "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6",
+  "Hammersmith6"
+)
+
+sensitivity_map <- list(
+  CCognition_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CLanguage_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CExpressivelanguage_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CReceptivelanguage_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CMotor_indexpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CFinemotor_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  CGrossmotor_standardpoints6 = c("CAgePsychologist6", "CAgePhysiotherapist6"),
+  Hammersmith6 = "CAgePhysiotherapist6",
+  HINE_optimal = "CAgePhysiotherapist6"
+)
+
+core_covars_used <- results_obj[["covariates_used"]]
+analysis_visits <- c(4L, 5L, 6L)
+visit_data <- lapply(analysis_visits, function(v) {
+  vn <- paste0("visit_", v)
+  tse <- experiments(mae)[[vn]]
+  cd <- as.data.frame(colData(tse), stringsAsFactors = FALSE)
+  cd[["sample_id"]] <- rownames(cd)
+  mat <- as.data.frame(t(assay(tse, "mbo")), check.names = FALSE)
+  mat[["sample_id"]] <- rownames(mat)
+  df <- left_join(cd, mat, by = "sample_id")
+  df[["visit"]] <- v
+  df
+})
+names(visit_data) <- as.character(analysis_visits)
+
+model_covars_for <- function(outcome, analysis_type) {
+  covars <- core_covars_used
+  if (identical(analysis_type, "sensitivity")) {
+    sens_vars <- sensitivity_map[[outcome]]
+    if (!is.null(sens_vars)) {
+      covars <- unique(c(covars, sens_vars))
+    }
+  }
+  covars
+}
+
+complete_case_data_for <- function(row) {
+  v_key <- as.character(row[["visit"]][1])
+  df <- visit_data[[v_key]]
+  if (is.null(df)) {
+    stop("No analysis data found for visit ", v_key)
+  }
+  covars <- model_covars_for(row[["outcome"]][1], row[["analysis_type"]][1])
+  needed <- unique(c(row[["outcome"]][1], row[["exposure"]][1], covars))
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Cannot reconstruct complete cases; missing column(s): ", paste(missing_cols, collapse = ", "))
+  }
+  dd <- df[, needed, drop = FALSE]
+  dd <- dd[complete.cases(dd), , drop = FALSE]
+  expected_n <- as.integer(row[["n"]][1])
+  if (nrow(dd) != expected_n) {
+    stop(
+      "Complete-case n mismatch for visit ", row[["visit"]][1],
+      ", outcome ", row[["outcome"]][1],
+      ", exposure ", row[["exposure"]][1],
+      ", analysis ", row[["analysis_type"]][1],
+      ": saved n=", expected_n, ", reconstructed n=", nrow(dd)
+    )
+  }
+  dd
+}
+
+calc_outcome_sd <- function(row) {
+  if (!(row[["outcome"]][1] %in% continuous_outcomes)) {
+    return(NA_real_)
+  }
+  dd <- complete_case_data_for(row)
+  y <- as.numeric(dd[[row[["outcome"]][1]]])
+  sd_y <- sd(y, na.rm = TRUE)
+  if (!is.finite(sd_y) || sd_y <= 0) {
+    stop("Invalid outcome SD for standardized effect calculation: ", row[["outcome"]][1])
+  }
+  sd_y
+}
+
+
+
+add_standardized_outcome_effects <- function(res_df) {
+  sd_lookup <- res_df %>%
+    filter(outcome %in% continuous_outcomes) %>%
+    distinct(analysis_type, visit, outcome, exposure, n)
+  sd_lookup[["outcome_sd"]] <- vapply(seq_len(nrow(sd_lookup)), function(i) {
+    calc_outcome_sd(sd_lookup[i, , drop = FALSE])
+  }, numeric(1))
+  res_df %>%
+    left_join(sd_lookup, by = c("analysis_type", "visit", "outcome", "exposure", "n")) %>%
+    mutate(
+      std.estimate = ifelse(outcome %in% continuous_outcomes, estimate / outcome_sd, NA_real_),
+      std.conf.low = ifelse(outcome %in% continuous_outcomes, conf.low / outcome_sd, NA_real_),
+      std.conf.high = ifelse(outcome %in% continuous_outcomes, conf.high / outcome_sd, NA_real_)
+    )
+}
+
+primary_df <- add_standardized_outcome_effects(primary_df)
+
+is_unpchild_dietble_hine <- function(df, require_ci = FALSE) {
+  hine_idx <- df[["outcome"]] == "HINE_optimal"
+  bad <- hine_idx & (
+    is.na(df[["estimate"]]) |
+      !is.finite(df[["estimate"]]) |
+      df[["estimate"]] <= 0
+  )
+  if (require_ci) {
+    bad <- bad | (hine_idx & (
+      is.na(df[["conf.low"]]) |
+        !is.finite(df[["conf.low"]]) |
+        df[["conf.low"]] <= 0 |
+        is.na(df[["conf.high"]]) |
+        !is.finite(df[["conf.high"]]) |
+        df[["conf.high"]] <= 0
+    ))
+  }
+  bad
+}
+
+pchild_dietble_rows <- function(df, require_ci, context) {
+  if (nrow(df) == 0) {
+    stop("No result rows available for ", context, ".")
+  }
+  bad <- is_unpchild_dietble_hine(df, require_ci = require_ci)
+  out <- df[!bad, , drop = FALSE]
+  if (nrow(out) == 0) {
+    stop("No pchild_dietble rows remain after excluding non-finite HINE odds-ratio rows for ", context, ".")
+  }
+  out
+}
+
+# Helper to plot OLS volcano panel
+plot_ols_volcano <- function(df, v_num) {
+  plot_df <- df %>%
+    filter(visit == v_num & (outcome %in% continuous_outcomes)) %>%
+    add_nmr_group() %>%
+    mutate(
+      Outcome = pretty_outcome(outcome),
+      plot_x = std.estimate,
+      plot_y = -log10(p.value)
+    )
+  
+  ggplot(plot_df, aes(x = plot_x, y = plot_y, color = NMR_group)) +
+    geom_point(alpha = 0.7, size = 2) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey50") +
+    facet_wrap(~ Outcome, scales = "free_x") +
+    theme_minimal(base_size = 13) +
+    labs(
+      x = "Estimate (Std. Beta Coefficient)",
+      y = expression(-log[10](p)),
+      color = "NMR group"
+    ) +
+    theme(legend.position = "bottom")
+}
+
+# Helper to plot HINE volcano panel
+plot_hine_volcano <- function(df, v_num) {
+  plot_df <- df %>%
+    filter(visit == v_num & outcome == "HINE_optimal") %>%
+    pchild_dietble_rows(require_ci = FALSE, context = "HINE volcano plot") %>%
+    add_nmr_group() %>%
+    mutate(
+      Outcome = pretty_outcome(outcome),
+      plot_x = log(estimate),
+      plot_y = -log10(p.value)
+    )
+  
+  ggplot(plot_df, aes(x = plot_x, y = plot_y, color = NMR_group)) +
+    geom_point(alpha = 0.7, size = 2) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey50") +
+    theme_minimal(base_size = 13) +
+    labs(
+      x = "Estimate (Log Odds Ratio)",
+      y = expression(-log[10](p)),
+      color = "NMR group"
+    ) +
+    theme(legend.position = "bottom")
+}
+
+# Helper to plot OLS forest panel
+plot_ols_forest <- function(df, v_num) {
+  plot_df <- df %>%
+    filter(visit == v_num & (outcome %in% continuous_outcomes)) %>%
+    add_nmr_group() %>%
+    mutate(
+      Outcome = pretty_outcome(outcome),
+      plot_est = std.estimate,
+      plot_low = std.conf.low,
+      plot_high = std.conf.high,
+      label = stringr::str_wrap(paste0(Outcome, " vs ", exposure), width = 35)
+    ) %>%
+    slice_min(order_by = p.value, n = 10)
+  
+  ggplot(plot_df, aes(x = plot_est, y = fct_reorder(label, plot_est), color = NMR_group)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_errorbarh(aes(xmin = plot_low, xmax = plot_high), height = 0.2, linewidth = 0.8) +
+    geom_point(size = 3) +
+    theme_minimal(base_size = 13) +
+    labs(
+      x = "Estimate (Std. Beta Coefficient, 95% CI)",
+      y = NULL,
+      color = "NMR group"
+    ) +
+    theme(legend.position = "bottom")
+}
+
+# Helper to plot HINE forest panel
+plot_hine_forest <- function(df, v_num) {
+  plot_df <- df %>%
+    filter(visit == v_num & outcome == "HINE_optimal") %>%
+    pchild_dietble_rows(require_ci = TRUE, context = "HINE forest plot") %>%
+    add_nmr_group() %>%
+    mutate(
+      Outcome = pretty_outcome(outcome),
+      plot_est = log(estimate),
+      plot_low = log(conf.low),
+      plot_high = log(conf.high),
+      label = stringr::str_wrap(paste0(Outcome, " vs ", exposure), width = 35)
+    ) %>%
+    slice_min(order_by = p.value, n = 10)
+  
+  ggplot(plot_df, aes(x = plot_est, y = fct_reorder(label, plot_est), color = NMR_group)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_errorbarh(aes(xmin = plot_low, xmax = plot_high), height = 0.2, linewidth = 0.8) +
+    geom_point(size = 3) +
+    theme_minimal(base_size = 13) +
+    labs(
+      x = "Estimate (Log Odds Ratio, 95% CI)",
+      y = NULL,
+      color = "NMR group"
+    ) +
+    theme(legend.position = "bottom")
+}
+```
+
+## NMR metabolite groups used for figure colouring
+
+Volcano and forest plots colour points by the official NMR **`Group`** annotation stored in the MAE (`visit_all` row metadata).
+
+::: {.callout-note collapse="true" title="NMR group summary counts"}
+
+```{r}
+#| label: nmr-group-summary-table
+make_table(nmr_group_summary, table_mode = "compact", export = TRUE)
+```
+
+:::
+
+::: {.callout-note collapse="true" title="Full metabolite-to-group lookup (all features)"}
+
+Each row lists the MAE feature name, biomarker label, NMR group, and subgroup annotation used for figure colouring below.
+
+```{r}
+#| label: metabolite-group-lookup-table
+make_table(metabolite_group_lookup, page_len = 10, export = TRUE, table_mode = "wide")
+```
+
+:::
+
+## Volcano plots
+
+Volcano plots show the association estimate on the x-axis against statistical significance (-log10 p) on the y-axis for all 250 metabolite features. The dashed horizontal line marks nominal p = 0.05.
+
+::: {.callout-note title="Reading volcano plots"}
+Higher points have smaller nominal p-values, but the dashed line is not an FDR threshold. Points far from zero show larger estimated effects; they should still be interpreted with the q-value and model status from the result tables.
+:::
+
+::: {.panel-tabset}
+
+### Continuous Outcomes (OLS)
+
+::: {.panel-tabset}
+
+#### Q1. 6-Month
+
+```{r}
+#| label: fig-volcano-ols-q1
+#| fig-cap: "Volcano plot of OLS metabolite associations at 6 months of age."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+plot_ols_volcano(primary_df, 4L)
+```
+
+#### Q2. 1-Year
+
+```{r}
+#| label: fig-volcano-ols-q2
+#| fig-cap: "Volcano plot of OLS metabolite associations at 1 year of age."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+plot_ols_volcano(primary_df, 5L)
+```
+
+#### Q3. 2-Year (Concurrent)
+
+```{r}
+#| label: fig-volcano-ols-q3
+#| fig-cap: "Volcano plot of concurrent OLS metabolite associations at 2 years of age."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+plot_ols_volcano(primary_df, 6L)
+```
+
+:::
+
+### HINE Optimality Status (Logistic)
+
+::: {.panel-tabset}
+
+#### Q1. 6-Month
+
+```{r}
+#| label: fig-volcano-hine-q1
+#| fig-cap: "Volcano plot of HINE optimality associations at 6 months of age."
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 5
+plot_hine_volcano(primary_df, 4L)
+```
+
+#### Q2. 1-Year
+
+```{r}
+#| label: fig-volcano-hine-q2
+#| fig-cap: "Volcano plot of HINE optimality associations at 1 year of age."
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 5
+plot_hine_volcano(primary_df, 5L)
+```
+
+#### Q3. 2-Year (Concurrent)
+
+```{r}
+#| label: fig-volcano-hine-q3
+#| fig-cap: "Volcano plot of HINE optimality associations at 2 years of age."
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 5
+plot_hine_volcano(primary_df, 6L)
+```
+
+:::
+
+:::
+
+## Forest plots of top associations (top 10 by p-value)
+
+Forest plots display the estimate and 95% confidence interval for the ten smallest-p-value associations per visit.
+
+::: {.callout-note title="Reading forest plots"}
+These panels are ranked by nominal p-value, so inclusion in a forest plot is not evidence of FDR significance. Confidence intervals crossing zero are compatible with no association on the plotted scale.
+:::
+
+::: {.panel-tabset}
+
+### Continuous Outcomes (OLS)
+
+::: {.panel-tabset}
+
+#### Q1. 6-Month
+
+```{r}
+#| label: fig-forest-ols-q1
+#| fig-cap: "Forest plot of top 10 OLS associations at 6 months of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_ols_forest(primary_df, 4L)
+```
+
+#### Q2. 1-Year
+
+```{r}
+#| label: fig-forest-ols-q2
+#| fig-cap: "Forest plot of top 10 OLS associations at 1 year of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_ols_forest(primary_df, 5L)
+```
+
+#### Q3. 2-Year (Concurrent)
+
+```{r}
+#| label: fig-forest-ols-q3
+#| fig-cap: "Forest plot of top 10 concurrent OLS associations at 2 years of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_ols_forest(primary_df, 6L)
+```
+
+:::
+
+### HINE Optimality Status (Logistic)
+
+::: {.panel-tabset}
+
+#### Q1. 6-Month
+
+```{r}
+#| label: fig-forest-hine-q1
+#| fig-cap: "Forest plot of top 10 HINE optimality associations at 6 months of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_hine_forest(primary_df, 4L)
+```
+
+#### Q2. 1-Year
+
+```{r}
+#| label: fig-forest-hine-q2
+#| fig-cap: "Forest plot of top 10 HINE optimality associations at 1 year of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_hine_forest(primary_df, 5L)
+```
+
+#### Q3. 2-Year (Concurrent)
+
+```{r}
+#| label: fig-forest-hine-q3
+#| fig-cap: "Forest plot of top 10 HINE optimality associations at 2 years of age."
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+plot_hine_forest(primary_df, 6L)
+```
+
+:::
+
+:::
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::

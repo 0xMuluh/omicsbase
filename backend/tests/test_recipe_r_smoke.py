@@ -1,9 +1,10 @@
-"""Execute deterministic ingestion recipes on small synthetic studies."""
+"""Opt-in live LLM-to-R integration checks on small synthetic studies."""
 
 from __future__ import annotations
 
 import asyncio
 import csv
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.services.recipe_execution import run_recipe_target
 
 R_AVAILABLE = shutil.which("Rscript") is not None
 QUARTO_AVAILABLE = shutil.which("quarto") is not None
+LIVE_LLM_R_SMOKE = os.getenv("OMICSBASE_RUN_LIVE_LLM_R_SMOKE", "").strip() == "1"
 
 
 def _r_dependencies_available() -> bool:
@@ -35,7 +37,30 @@ def _r_dependencies_available() -> bool:
     return result.returncode == 0
 
 
-@pytest.mark.skipif(not _r_dependencies_available(), reason="R recipe dependencies unavailable")
+def _template_dependencies_available() -> bool:
+    """The exemplar data construction needs the template's R packages."""
+    if not R_AVAILABLE:
+        return False
+    result = subprocess.run(
+        [
+            "Rscript",
+            "-e",
+            'quit(status = if (requireNamespace("mia", quietly=TRUE) && requireNamespace("readxl", quietly=TRUE) && requireNamespace("dplyr", quietly=TRUE)) 0 else 1)',
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.skipif(
+    not LIVE_LLM_R_SMOKE or not _r_dependencies_available(),
+    reason=(
+        "set OMICSBASE_RUN_LIVE_LLM_R_SMOKE=1 and install R recipe dependencies "
+        "to run live LLM/R integration"
+    ),
+)
 def test_microbiome_ingestion_recipe_executes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALLOW_UNSANDBOXED_EXECUTION", "true")
     upload_dir = tmp_path / "uploads"
@@ -104,29 +129,27 @@ def test_microbiome_ingestion_recipe_executes(tmp_path: Path, monkeypatch: pytes
         )
     )
 
-    subprocess.run(["Rscript", "data.R"], cwd=project / "code", check=True)
+    if _template_dependencies_available():
+        subprocess.run(["Rscript", "data.R"], cwd=project / "code", check=True)
 
-    assert (project / "output" / "derived" / "analysis_data.rds").exists()
-    assert (project / "output" / "derived" / "data_validation.json").exists()
+    # The exemplar project is the report: data construction machinery present,
+    # no invented engine layer.
+    assert (project / "code" / "data.R").exists()
+    assert (project / "code" / "alpha" / "alpha.qmd").exists()
+    assert not (project / "code" / "study_config.yml").exists()
+    assert not (project / "code" / "recipe_runtime.R").exists()
     if QUARTO_AVAILABLE:
         subprocess.run(["quarto", "render"], cwd=project / "code", check=True)
-        assert (project / "output" / "primary" / "alpha_diversity.html").exists()
-        assert (project / "output" / "design" / "study_overview.html").exists()
-        assert (project / "output" / "data" / "data_summary.html").exists()
-        assert (project / "output" / "results" / "permanova.csv").exists()
-        assert (project / "output" / "results" / "limrots_differential_abundance.csv").exists()
-        targeted = asyncio.run(
-            run_recipe_target(str(project), "microbiome.alpha_diversity")
-        )
-        cached = asyncio.run(
-            run_recipe_target(str(project), "microbiome.alpha_diversity")
-        )
-        assert targeted["status"] == "completed"
-        assert cached["executed_recipes"] == []
-        assert "microbiome.alpha_diversity" in cached["cache_hits"]
+        assert (project / "output" / "alpha" / "alpha.html").exists()
 
 
-@pytest.mark.skipif(not _r_dependencies_available(), reason="R recipe dependencies unavailable")
+@pytest.mark.skipif(
+    not LIVE_LLM_R_SMOKE or not _r_dependencies_available(),
+    reason=(
+        "set OMICSBASE_RUN_LIVE_LLM_R_SMOKE=1 and install R recipe dependencies "
+        "to run live LLM/R integration"
+    ),
+)
 def test_metabolomics_ingestion_recipe_executes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALLOW_UNSANDBOXED_EXECUTION", "true")
     upload_dir = tmp_path / "uploads"

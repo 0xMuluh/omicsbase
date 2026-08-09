@@ -1,0 +1,102 @@
+---
+title: "Analysis plan"
+---
+
+## Primary and secondary questions
+
+The study is designed to answer two sets of questions regarding the link between early-life circulating metabolites and toddlerhood neurocognitive function:
+
+* **Predictive associations:** Do circulating serum metabolites at 6 months (`visit_4`) or 1 year (`visit_5`) of age predict neurocognitive, language, or motor outcomes at 2 years of age (`visit_6`)?
+* **Concurrent associations:** Are circulating serum metabolites at 2 years of age (`visit_6`) concurrently associated with neurocognitive, language, or motor outcomes measured at the same age?
+
+---
+
+## Hypotheses
+
+1. **Pathway specificity:** Distinct metabolite profiles at 6 months and 1 year of age are associated with cognitive, language, and motor development outcomes at 2 years of age.
+2. **Lipid and amino acid importance:** Circulating metabolites related to lipid metabolism (particularly polyunsaturated fatty acids like DHA, EPA, omega-3, and arachidonic acid) and amino acid pathways show the strongest predictive associations with later cognition.
+
+---
+
+## Analysis components
+
+| Component | Exposure panel | Outcome panel | Primary model formula | Measurement-condition covariate |
+|:---|:---|:---|:---|:---|
+| Predictive 6-month model | `visit_4` serum metabolites | 2-year Bayley-III and HINE outcomes | `Outcome_2y ~ Metabolite_6m + core_covariates + CFastingHoursBloodSample4` | `CFastingHoursBloodSample4` |
+| Predictive 1-year model | `visit_5` serum metabolites | 2-year Bayley-III and HINE outcomes | `Outcome_2y ~ Metabolite_1y + core_covariates + CFastingHoursBloodSample5` | `CFastingHoursBloodSample5` |
+| Concurrent 2-year model | `visit_6` serum metabolites | 2-year Bayley-III and HINE outcomes | `Outcome_2y ~ Metabolite_2y + core_covariates + CFastingHoursBloodSample6` | `CFastingHoursBloodSample6` |
+
+---
+
+## Covariate strategy
+
+Primary models adjust for the core block: `CGender`, `PRWLabor`, `CBW`, `MAge1`, `MprepBMI`, `MUniEdu`, `MPrimipara`, `MGDMOGTT1OR2Fi`, `MPRSmoke`, and `Bfdurationm`. Visit-specific fasting time is added as a measurement-condition covariate for the metabolite panel being tested.
+
+Sensitivity and descriptive candidates include `Premature`, `InterventionGroup`, `MLIVE1`, `MModeOfDeliv.1`, `CSGA`, `CMacrosomy`, `CApgar1`, `CApgar5`, `CAgePsychologist6`, and `CAgePhysiotherapist6`. These variables are summarized for transparency and can be used in sensitivity analyses, but they are not part of the primary core model.
+
+---
+
+## Data preparation
+
+1. Primary predictive panels are restricted to children with metabolomics at the exposure visit and the relevant 2-year neurodevelopment outcome.
+2. All NMR metabolite features represented in the MAE row data are analyzed after name harmonization.
+3. Skewed metabolite variables are log-transformed, then standardized within visit to represent a one-standard-deviation metabolite difference.
+4. Primary models use complete cases for the outcome, metabolite, core covariates, and visit-specific fasting variable.
+
+---
+
+## Statistical modeling framework
+
+A feature-wise modeling strategy is applied to examine each metabolite separately:
+
+### Continuous outcomes (linear regression)
+For continuous neurocognitive scales, feature-wise ordinary least squares (OLS) linear regression models are fit:
+
+$$\text{Outcome}_{2y} = \beta_0 + \beta_1 \cdot \text{Metabolite}_{t} + \mathbf{\Gamma} \cdot \mathbf{Z} + \epsilon$$
+
+* **$\text{Outcome}_{2y}$** represents continuous composite or standard scores at 2 years:
+  - `CCognition_indexpoints6` (Composite Cognitive)
+  - `CLanguage_indexpoints6` (Composite Language)
+    - `CExpressivelanguage_standardpoints6` (Expressive Language)
+    - `CReceptivelanguage_standardpoints6` (Receptive Language)
+  - `CMotor_indexpoints6` (Composite Motor)
+    - `CFinemotor_standardpoints6` (Fine Motor)
+    - `CGrossmotor_standardpoints6` (Gross Motor)
+  - `Hammersmith6` (HINE Global Score)
+* **$\text{Metabolite}_{t}$** is the log-transformed and Z-score standardized concentration of the metabolite at timepoint $t$ ($t \in \{\text{6 months, 1 year, 2 years}\}$).
+* **$\mathbf{Z}$** is the vector of adjusted core and measurement-condition covariates.
+
+The same outcome set is used for each exposure visit so that the 6-month, 1-year, and 2-year metabolite panels can be compared descriptively. Predictive models are interpreted as temporally ordered associations; the concurrent 2-year models are interpreted as cross-sectional associations.
+
+### Binary/categorical outcomes (logistic regression)
+For HINE optimality (which is defined after excluding premature infants), feature-wise logistic regression models are fit:
+
+$$\text{logit}(P(\text{HINE\_optimal} = \text{Suboptimal})) = \beta_0 + \beta_1 \cdot \text{Metabolite}_{t} + \mathbf{\Gamma} \cdot \mathbf{Z}$$
+
+* **$\text{HINE\_optimal}$** is the binary factor (`Optimal` vs `Suboptimal`).
+
+---
+
+## Sensitivity analyses
+
+Sensitivity analyses evaluate preterm birth, intervention group, maternal living arrangement, dichotomized mode of delivery, small-for-gestational-age, macrosomy, Apgar scores, and child age at the neurodevelopment visit. 
+
+For HINE optimality models, premature children are excluded by construction of `HINE_optimal`. The continuous HINE global score can be modeled in the full matched sample with prematurity handled according to the primary covariate specification.
+
+---
+
+## Multiple testing correction
+
+Multiple comparison correction uses the **Benjamini-Hochberg (BH) False Discovery Rate (FDR)** method.
+
+* BH correction is applied independently within each outcome, visit-specific panel, and model family.
+* Associations are considered statistically significant at $q < 0.10$ for discovery-oriented reporting, with $q < 0.05$ treated as a more stringent threshold.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::

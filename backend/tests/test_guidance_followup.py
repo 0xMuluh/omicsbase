@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.guidance_followup import decide_guidance_action
+from app.services.provider_errors import LLMQuotaError
 from app.tasks import analysis
 
 
@@ -23,6 +24,26 @@ async def test_decide_guidance_falls_back_to_edit(monkeypatch):
     decision = await decide_guidance_action(project, "Add a caption to alpha diversity")
     assert decision["action"] == "edit_project"
     assert "caption" in decision["instruction"]
+
+
+@pytest.mark.asyncio
+async def test_decide_guidance_does_not_turn_quota_failure_into_edit(monkeypatch):
+    async def quota_failure(**kwargs):
+        raise LLMQuotaError(
+            "qwen",
+            "quota exhausted",
+            code="AllocationQuota.FreeTierOnly",
+            status_code=403,
+        )
+
+    monkeypatch.setattr("app.services.guidance_followup.call_llm", quota_failure)
+    project = SimpleNamespace(
+        analysis_plan={"domain": "microbiome", "workflow": []},
+        study_manifest={"domain": "microbiome"},
+    )
+
+    with pytest.raises(LLMQuotaError):
+        await decide_guidance_action(project, "Add a caption to alpha diversity")
 
 
 def test_schedule_pending_guidance_dispatches_followup(monkeypatch):

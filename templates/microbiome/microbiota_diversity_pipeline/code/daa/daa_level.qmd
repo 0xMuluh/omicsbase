@@ -1,0 +1,524 @@
+---
+title: "Differential abundance analysis"
+author: ""
+params: 
+  tax.level: default
+---
+
+# Wilcoxon Tests
+
+```{r setup}
+# Source group-assignment
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+# Define variables and formulas
+variable <- "diet" 
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+tax.level <- params$tax.level
+tax.level <- "species_prevalent"
+
+# Add CLR transformation
+tse <- transformAssay(
+  altExp(tse, tax.level), assay.type = "relabundance",
+  method = "clr",
+  pseudocount=TRUE
+)
+
+tse$diet <- factor(tse$diet, levels=c("oat", "rice"))
+```
+
+Analysis information:
+
+-   Taxonomic level: `r tax.level`
+
+Taxa that are less prevalent than this (in relabundance) have been agglomerated:
+
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+-   Number of taxonomic groups: `r nrow(tse)`
+
+```{r tsesub}
+# pick tse for time point 1 and 2 separately
+tse <- tse[, tse$paired=="yes"]
+tse1 <- tse[, tse$timepoint=="before"]
+tse2 <- tse[, tse$timepoint=="after"]
+
+```
+
+```{r within_timepoint_analysis}
+# Calculate adjusted p-values within each time point
+# to test if any taxonomic group differs between treatments (Kruskal test)
+pvals <- NULL
+for (tp in unique(tse$duration)) {
+  # Pick data for the given time point
+  tse2 <- tse[, tse$duration==tp]
+  pvs <- apply(assay(tse2, "clr"), 1, function (x) {kruskal.test(x ~ tse2$diet)$p.value})
+  padj <- p.adjust(pvs, "BH")
+  pvals <- cbind(pvals, padj)
+}
+colnames(pvals) <- unique(tse$duration)
+pvals.timepoints <- pvals
+```
+
+Number of significant findings within time points (Kruskal test, Benjamini-Hochberg FDR adjustment).
+
+```{r between_timepoint_analysis2}
+print(colSums(pvals.timepoints<0.25))
+```
+
+```{r between_timepoint_analysis}
+# Calculate adjusted p-values within each time point
+# to test if any taxonomic group differs between treatments (Kruskal test)
+pvals <- NULL
+for (g in unique(tse$diet)) {
+  # Pick data for the given Treatment for time points 1 and 2
+  tse1  <- tse[, tse$diet==g & tse$timepoint=="before"]
+  tse2  <- tse[, tse$diet==g & tse$timepoint=="after"]
+  # Ensure that subject match (pairing ok)
+  if (!all(tse1$id==tse2$id)) {stop("Subjects do not match!")}
+  pvs   <- sapply(rownames(tse), function (tax) {
+               wilcox.test(assay(tse1, "clr")[tax,], assay(tse2, "clr")[tax,], paired=TRUE)$p.value
+	     }
+	   )
+  padj  <- p.adjust(pvs, "BH")
+  pvals <- cbind(pvals, padj)
+}
+colnames(pvals) <- unique(tse$diet)
+pvals.treatments <- pvals
+```
+
+Number of significant findings within treatments (Paired Wilcoxon test, Benjamini-Hochberg FDR adjustment).
+
+-   **Multiple testing correction:** BH
+-   **Statistical test:** Paired Wilcoxon
+
+```{r between_timepoint_analysis3}
+print(colSums(pvals.treatments<0.25))
+```
+
+Let us look more closely to the significant hits. The logFC corresponds to logFC in CLR (tp2-tp1).
+
+```{r tsefix}
+file_path1 <- file.path("../../output/daa/daa_taxa/species/all_results.tsv")
+file_path2 <- file.path("../../output/daa/daa_taxa/genus/all_results.tsv")
+
+
+signif.features <- names(which(pvals.treatments[, 1] < 0.25 | pvals.treatments[, 2] < 0.25 #| pvals.treatments[, 3] < 0.25 | pvals.treatments[, 4] < 0.25
+                               ))
+
+taxa_of_interest <- c(signif.features)
+
+daa_tab1 <- read_tsv(file_path1, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% taxa_of_interest) %>%
+      select(feature,metadata, value, qval_joint) 
+daa_tab2 <- read_tsv(file_path2, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% taxa_of_interest) %>%
+      select(feature,metadata, value, qval_joint)
+
+daa_tab <- rbind(daa_tab1, daa_tab2) %>%
+  mutate(qval_joint = signif(qval_joint, digits = 3)) 
+```
+
+```{r hits}
+tabs <- NULL 
+
+for (g in unique(tse$diet)) {
+    
+  if (length(signif.features)>0) {
+    tseg <- tse[, tse$diet==g] 
+    dfd <- as.data.frame(colData(tseg)) 
+    # for (tax in unique(rownames(tse))) {
+    for (tax in signif.features) {
+      dfd$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      dfd$clr <- as.vector(assay(tseg, "clr")[tax,])      
+      vars <- c("id", "timepoint", "signal")
+      dfm <- melt(dfd[, vars])
+      colnames(dfm) <- vars
+      pv <- pvals.treatments[tax, g]
+
+      tabs <-
+        rbind(tabs,
+        c(
+          Diet = g,
+          Taxon = tax,
+          mean1 = mean(subset(dfd, timepoint=="before")$signal),
+          mean2 = mean(subset(dfd, timepoint=="after")$signal),
+	  logFC.clr = mean(subset(dfd, timepoint=="after")$clr - subset(dfd, timepoint=="before")$clr),
+          FDR   = pv 
+        ))
+    }
+  }
+}
+```
+
+
+```{r}
+# Clean up the table
+tabs <- as.data.frame(tabs)
+tabs$mean.rel1 <- round(100 * as.numeric(tabs$mean1), 3); tabs$mean1 <- NULL
+tabs$mean.rel2 <- round(100 * as.numeric(tabs$mean2), 3); tabs$mean2 <- NULL
+tabs$FDR <- round(as.numeric(tabs$FDR), 4)
+tabs$logFC.clr <- round(as.numeric(tabs$logFC.clr), 4)
+tabs <- tabs %>%
+  arrange(FDR, desc(logFC.clr))
+```
+
+
+For a complete table of results, see [complete results](https://seafile.utu.fi/f/a5d57b061c3249e193da/)
+
+```{r}
+#| label: table
+if (knitr::is_html_output()) {
+  datatable(tabs,
+            options = list(pageLength = 10),
+            caption = "Table of significant hits within groups")
+} else {
+  kable(tabs)
+}
+```
+
+```{r}
+df <- mia::meltSE(tse, add.col = T, assay.type = "relabundance")
+
+df_not_zer0 <- df %>%
+    group_by(FeatureID, duration, diet) %>%
+    summarise(
+        nonzero_n = sum(relabundance > 0, na.rm = TRUE),
+        total_n = sum(!is.na(relabundance)),
+        pct_nonzero = round(100 * nonzero_n / total_n, 1),
+        .groups = "drop"
+    ) %>%
+    filter(nonzero_n > 0) %>%
+    pivot_wider(
+        names_from = c(duration, diet),
+        values_from = c(nonzero_n, total_n, pct_nonzero),
+        names_glue = "{diet}_{duration}_{.value}"
+    )
+
+plots_list <- list()
+plots_list <- setNames(lapply(taxa_of_interest, function(taxon_name) {
+    
+    p1 <- plotBoxplot( tse, assay.type = "relabundance", x = "Diet",  fill.by = "Duration", pair.by = "id", features = c(taxon_name), facet.by = "rownames", add.change = T, add.significance = F, ncol = 1, label.size = 5) +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  ) + scale_y_log10(labels = scales::percent_format(scale = 1)) + 
+        labs(
+      x = "Diet",
+      y = "Relative Abundance (%)\n(log10 scale)"
+    )
+
+    p2 <- plotBoxplot( tse, assay.type = "relabundance", x = "Duration",  fill.by = "Diet", features = c(taxon_name), facet.by = "rownames", add.significance = F, ncol = 1, label.size = 5) +
+        scale_fill_viridis_d(option = "D") +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  ) + scale_y_log10(labels = scales::percent_format(scale = 1)) + 
+        labs(
+      x = "Duration",
+      y = "Relative Abundance (%)\n(log10 scale)"
+    )
+    
+    label_text <- generate_prevalence_label(df_not_zer0, taxon_name)
+    
+    p12 <- wrap_plots(p1, p2, axes = "collect") + 
+      labs(caption = label_text) +
+      theme(
+    plot.caption = element_text(size = 10, 
+                                face = "bold.italic", 
+                                hjust = 1, color = "darkblue") )
+    
+    return(p12)
+    
+}
+    ),
+ taxa_of_interest)
+```
+
+```{r significant-hit-taxa}
+#| layout-ncol: 1
+#| fig-width: 10
+#| fig-height: 6
+
+ordered_plots <- plots_list[order(names(plots_list))]
+
+for (plot_name in names(ordered_plots)) {
+  print(ordered_plots[[plot_name]])
+}
+```
+
+```{r volcano-tab}
+tabs_all <- NULL
+for (g in unique(tse$diet)) {
+  # P-values
+  all_features <-  names(pvals.treatments[, g])
+
+  if (length(all_features)>0) {
+    tseg <- tse[, tse$diet==g] 
+    df <- as.data.frame(colData(tseg)) 
+    for (tax in all_features) {
+      df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      df$clr <- as.vector(assay(tseg, "clr")[tax,])      
+      vars <- c("id", "timepoint", "signal")
+      dfm <- melt(df[, vars], verbose = FALSE)
+      colnames(dfm) <- vars
+      pv <- pvals.treatments[tax, g]
+
+      tabs_all <-
+        rbind(tabs_all,
+        c(
+          Diet = g,
+          Taxon = tax,
+          mean1 = mean(subset(df, timepoint=="before")$signal),
+          mean2 = mean(subset(df, timepoint=="after")$signal),
+          # Standard Deviations
+        # sd1 = sd(subset(df, timepoint == "before")$signal),
+        # sd2 = sd(subset(df, timepoint == "after")$signal),
+        # 
+        # # Medians
+        # median1 = median(subset(df, timepoint == "before")$signal),
+        # median2 = median(subset(df, timepoint == "after")$signal),
+        # 
+        # # IQR (25th and 75th percentiles)
+        # iqr25_1 = quantile(subset(df, timepoint == "before")$signal, 0.25),
+        # iqr75_1 = quantile(subset(df, timepoint == "before")$signal, 0.75),
+        # 
+        # iqr25_2 = quantile(subset(df, timepoint == "after")$signal, 0.25),
+        # iqr75_2 = quantile(subset(df, timepoint == "after")$signal, 0.75),
+	  logFC.clr = mean(subset(df, timepoint=="after")$clr - subset(df, timepoint=="before")$clr),
+          FDR   = pv 
+        ))
+    }
+  }
+}
+```
+
+
+```{r volcano-tab-fix}
+tabs_all <- as.data.frame(tabs_all)
+tabs_all$mean.rel1 <- round(100 * as.numeric(tabs_all$mean1), 1); tabs_all$mean1 <- NULL
+tabs_all$mean.rel2 <- round(100 * as.numeric(tabs_all$mean2), 1); tabs_all$mean2 <- NULL
+tabs_all$FDR <- round(as.numeric(tabs_all$FDR), 3)
+tabs_all$logFC.clr <- round(as.numeric(tabs_all$logFC.clr), 4)
+```
+
+```{r}
+tabs_all_tp <- NULL
+for ( bigG in unique(tse$diet)){
+    for (g in unique(tse$duration)) {
+      # P-values
+      all_features <-  names(pvals.timepoints[, g])
+    
+      if (length(all_features)>0) {
+        tseg <- tse[, tse$duration==g] 
+        df <- as.data.frame(colData(tseg)) 
+        for (tax in all_features) {
+          df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+          df$clr <- as.vector(assay(tseg, "clr")[tax,])      
+          vars <- c("id", "duration", "signal")
+          dfm <- melt(df[, vars], verbose = FALSE)
+          colnames(dfm) <- vars
+          pv <- pvals.timepoints[tax, g]
+    
+          tabs_all_tp <-
+            rbind(tabs_all_tp,
+            c(
+              Diet = bigG,
+              Timepoint = g,
+              Taxon = tax,
+              mean = mean(subset(df, duration==g)$signal),
+    
+            # sd = sd(subset(df, duration == g)$signal),
+            # # Medians
+            # median = median(subset(df, duration == g)$signal),
+            # # IQR (25th and 75th percentiles)
+            # iqr25 = quantile(subset(df, duration == g)$signal, 0.25),
+            # iqr75 = quantile(subset(df, duration == g)$signal, 0.75),
+            logFC.clr = mean(subset(df, duration==g)$clr),
+              FDR   = pv 
+            ))
+        }
+      }
+    }
+}
+```
+
+```{r}
+tabs_all_tp <- as.data.frame(tabs_all_tp)
+tabs_all_tp$mean.rel <- round(100 * as.numeric(tabs_all_tp$mean), 1); tabs_all_tp$mean <- NULL
+
+tabs_all_tp$FDR <- round(as.numeric(tabs_all_tp$FDR), 3)
+tabs_all_tp$logFC.clr <- round(as.numeric(tabs_all_tp$logFC.clr), 4)
+
+# For a complete table of results, see [complete timepoint results]()
+```
+
+
+
+```{r}
+#| label: table_tp
+if (knitr::is_html_output()) {
+  datatable(tabs_all_tp,
+            options = list(pageLength = 10),
+            caption = "Table of features within timepoints between diet groups")
+} else {
+  kable(tabs_all_tp)
+}
+```
+
+```{r volcano-plot}
+#| fig.width: 12
+#| fig.height: 6
+
+volcano_plot <- ggplot(tabs_all, aes(x = logFC.clr, y = FDR, size = mean.rel2)) +
+  geom_point(aes(color = FDR < 0.25), alpha = 0.7) +  
+  labs(
+    title = "Volcano Plot: Effect Size vs Significance",
+    x = "Log Fold Change (CLR)",
+    y = "FDR"
+  ) +
+  scale_color_manual(values = c("blue", "red")) +  
+  theme_minimal(base_size = 14) +
+  facet_wrap(~ Diet) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+volcano_plot + 
+  geom_text_repel(data = subset(tabs_all, FDR < 0.25),
+                  aes(label = Taxon), size = 3, box.padding = 0.3)
+```
+
+```{r setup_m}
+# Source group-assignment
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+tse <- tse[, tse$paired=="yes"]
+taxa_levels <- c("species")
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Diet" 
+formula_used <- "~ diet * timepoint + (1 | id)"
+correction <- "Benjamini-Hochberg FDR adjustment"
+
+```
+
+## Significant species from the maaslin model.
+
+This section highlights significant taxa from maaslin3.
+
+Analysis information:
+
+-   Method: maaslin3
+-   Taxonomic level: `r taxa_levels`
+-   Group variable: `r variable`
+-   Formula used: **`r formula_used`**
+-   Correction: **`r correction`**
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+### N.B pvalues used in plot are from Wilcoxon tests
+
+```{r tsesub_m}
+file_path1 <- file.path("../../output/daa/daa_taxa/species/significant_results.tsv")
+file_path2 <- file.path("../../output/daa/daa_taxa/species/all_results.tsv")
+file_path3 <- file.path("../../output/daa/daa_taxa/oat/species/significant_results.tsv")
+file_path4 <- file.path("../../output/daa/daa_taxa/rice/species/significant_results.tsv")
+daa_tab1 <- read_tsv(file_path1, col_names = TRUE, show_col_types = FALSE)
+daa_tab3 <- read_tsv(file_path3, col_names = TRUE, show_col_types = FALSE)
+daa_tab4 <- read_tsv(file_path4, col_names = TRUE, show_col_types = FALSE)
+significant_species <- unique(c(daa_tab1$feature, daa_tab3$feature, daa_tab4$feature))
+
+daa_tab <- read_tsv(file_path2, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% significant_species) %>%
+      select(feature,metadata, value, qval_joint) %>%
+      mutate(qval_joint = signif(qval_joint, digits = 3)) 
+```
+
+```{r before-after_m}
+tse$diet <- factor(tse$diet, levels=c("oat", "rice"))
+
+```
+
+```{r}
+
+taxa_tse <- altExp(tse, "species_prevalent")
+df <- mia::meltSE(taxa_tse, add.col = T, assay.type = "relabundance")
+
+df_not_zer0 <- df %>%
+    group_by(FeatureID, duration, diet) %>%
+    summarise(
+        nonzero_n = sum(relabundance > 0, na.rm = TRUE),
+        total_n = sum(!is.na(relabundance)),
+        pct_nonzero = round(100 * nonzero_n / total_n, 1),
+        .groups = "drop"
+    ) %>%
+    filter(nonzero_n > 0) %>%
+    pivot_wider(
+        names_from = c(duration, diet),
+        values_from = c(nonzero_n, total_n, pct_nonzero),
+        names_glue = "{diet}_{duration}_{.value}"
+    )
+
+plots_list <- list()
+plots_list <- setNames(lapply(significant_species, function(taxon_name) {
+    
+    p1 <- plotBoxplot(taxa_tse, assay.type = "relabundance", x = "diet",  fill.by = "duration", pair.by = "id", features = c(taxon_name), facet.by = "rownames", add.change = T, add.significance = T, ncol = 1, label.size = 5) +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  )
+
+    p2 <- plotBoxplot(taxa_tse, assay.type = "relabundance", x = "duration",  fill.by = "diet", features = c(taxon_name), facet.by = "rownames", add.significance = T, ncol = 1, label.size = 5) +
+    scale_fill_viridis_d(option = "D") +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15), 
+        axis.text = element_text(face = "bold"),
+  )
+    
+    label_text <- generate_prevalence_label(df_not_zer0, taxon_name)
+    
+    p12 <- wrap_plots(p1, p2, axes = "collect") + 
+      labs(caption = label_text) +
+      theme(
+    plot.caption = element_text(size = 10, 
+                                face = "bold.italic", 
+                                hjust = 1, color = "darkblue") ) 
+    
+    return(p12)
+    
+}
+    ),
+ significant_species)
+
+```
+
+
+
+```{r}
+#| label: fig-figure-of-highlights
+#| layout-ncol: 1
+#| fig-width: 10 
+#| fig-height: 6 
+
+ordered_plots <- plots_list[order(names(plots_list))]
+
+for (plot_name in names(ordered_plots)) {
+  print(ordered_plots[[plot_name]])
+}
+
+```

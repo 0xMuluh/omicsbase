@@ -1,0 +1,113 @@
+---
+title: "Covariate and model specification"
+---
+
+```{r}
+#| label: report-context
+#| include: false
+find_first <- function(paths) {
+  hits <- paths[file.exists(paths)]
+  if (length(hits)) hits[[1]] else NA_character_
+}
+load_plan <- function() {
+  path <- find_first(c("config/analysis_plan.R", "../config/analysis_plan.R", "../../config/analysis_plan.R"))
+  if (is.na(path)) return(NULL)
+  env <- new.env(parent = baseenv())
+  sys.source(path, envir = env)
+  if (exists("analysis_plan", envir = env, inherits = FALSE)) get("analysis_plan", envir = env) else NULL
+}
+read_optional_table <- function(paths) {
+  path <- find_first(paths)
+  if (is.na(path)) return(NULL)
+  ext <- tolower(tools::file_ext(path))
+  if (ext %in% c("tsv", "txt")) read.delim(path, check.names = FALSE, stringsAsFactors = FALSE) else read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+}
+load_result_object <- function() {
+  path <- find_first(c(
+    "results/metabolomics_results.rds", "../results/metabolomics_results.rds", "../../results/metabolomics_results.rds",
+    "output/results/targeted_v2/results.rds", "../output/results/targeted_v2/results.rds", "../../output/results/targeted_v2/results.rds"
+  ))
+  if (is.na(path)) return(NULL)
+  readRDS(path)
+}
+empty_state <- function(text) cat(text)
+plan <- load_plan()
+result_obj <- load_result_object()
+model_spec <- read_optional_table(c("config/model_specification.csv", "../config/model_specification.csv", "../../config/model_specification.csv"))
+model_status <- if (!is.null(result_obj) && "model_status" %in% names(result_obj)) result_obj$model_status else read_optional_table(c("results/model_status.tsv", "../results/model_status.tsv", "../../results/model_status.tsv"))
+```
+
+
+## Analysis question
+
+Restate the exposure, outcome, timing, and target model families.
+
+## Covariate specification
+
+### Covariate selection framework
+
+Document the scientific role of core, measurement-condition, and sensitivity covariates.
+
+### Balance tests or distribution checks
+
+Use this section when intervention arms, groups, or strata require balance or distribution summaries.
+
+### Causal roles
+
+Define exposure, outcome, confounders, mediators, colliders, and precision variables when a causal rationale is used.
+
+### DAG or rationale
+
+Add a DAG or equivalent written rationale only when it is part of the analysis plan.
+
+### Covariate blocks
+
+```{r}
+if (is.null(plan) || is.null(plan$variables$covariates)) {
+  empty_state("Covariate blocks are pending in the config.")
+} else {
+  data.frame(block = names(plan$variables$covariates), variables = vapply(plan$variables$covariates, paste, collapse = "; ", FUN.VALUE = character(1)))
+}
+```
+
+### Collinearity
+
+Report pairwise and model-matrix collinearity checks where available. Preserve thresholds such as VIF limits in source and captions.
+
+### Exposure-covariate screening
+
+Summarize empirical support for sensitivity covariates without using p-values alone to override pre-specified core covariates.
+
+### Covariate-outcome screening
+
+Summarize covariate-outcome screening only as decision support unless the analysis plan assigns it a formal selection role.
+
+### Combined covariate screening summary
+
+Document retained, reviewed, dropped, and sensitivity-only covariates.
+
+### Covariate selection traceability
+
+Every material covariate decision should point to config, model spec, diagnostics, or decision log.
+
+### Missingness
+
+Report missingness and complete-case implications by visit/panel/model family.
+
+## Model specification
+
+### Proposed models
+
+List formulas by model family, exposure timing, outcome panel, and covariate block.
+
+### Mathematical model forms
+
+State the symbolic form of linear, logistic, mixed, mutual-timing, or sensitivity models as applicable.
+
+### Data snapshot
+
+Report sample, feature, and row counts for planned model families.
+
+### Variable key
+
+Define user-facing labels and source variable names.

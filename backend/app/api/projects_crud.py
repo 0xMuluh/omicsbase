@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_tenant, get_current_user_id, get_project_for_tenant
@@ -72,10 +72,12 @@ async def create_project(
     """Create a new project scoped to the current tenant and user."""
     from app.services.study_manifest import build_study_manifest
 
-    project_name = (data.name or "").strip() or "New project"
+    explicit_name = (data.name or "").strip()
+    project_name = explicit_name or "New project"
 
     project = Project(
         name=project_name,
+        name_source="user" if explicit_name else "default",
         question=data.question,
         notes=data.notes,
         custom_plan_text=data.custom_plan_text,
@@ -119,8 +121,23 @@ def update_project(
     project = get_project_for_tenant(db, project_id, tenant_id)
 
     update_data = data.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        requested_name = update_data["name"]
+        if requested_name is None or not requested_name.strip():
+            raise HTTPException(status_code=422, detail="Project name must not be blank")
+        update_data["name"] = requested_name.strip()
+
     for key, value in update_data.items():
         setattr(project, key, value)
+
+    if "name" in update_data:
+        project.name_source = "user"
+        memory = dict(project.agent_memory or {})
+        if memory:
+            project_summary = dict(memory.get("project") or {})
+            project_summary.update({"name": project.name, "name_source": project.name_source})
+            memory["project"] = project_summary
+            project.agent_memory = memory
 
     db.commit()
     db.refresh(project)
