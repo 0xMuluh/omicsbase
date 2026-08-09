@@ -3,7 +3,7 @@ import { Fraunces, Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AppHeader } from "@/components/app-header";
+import { AppHeader } from "@/components/AppHeader";
 
 const inter = Inter({
   subsets: ["latin"],

@@ -44,6 +44,7 @@ export function useProjectsSidebar() {
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(STORAGE_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate sidebar preference from local storage
       setOpen(stored === null ? false : stored === "1");
     } catch {
       setOpen(false);
@@ -454,7 +455,7 @@ export function ProjectsSidebar({
   );
 }
 
-export function SidebarProjectItem({ project }: { project: Project }) {
+function SidebarProjectItem({ project }: { project: Project }) {
   const params = useParams();
   const router = useRouter();
   const queryClient = useQueryClient();

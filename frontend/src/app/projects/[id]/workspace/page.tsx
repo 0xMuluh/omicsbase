@@ -1,61 +1,51 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, AgentStreamEvent, ChatMessage, EditTransaction, FileAttachment, FilePreview, FileTreeNode, Job, PendingQuestion, ProjectMessage } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { api, type EditTransaction } from "@/lib/api";
 import PlanReviewPanel from "@/components/PlanReviewPanel";
-import { WorkspaceComposer } from "@/components/WorkspaceComposer";
+import { WorkspaceComposer } from "@/features/workspace/components/WorkspaceComposer";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import {
   ActionEvent,
+  type ApplyResult,
   AgentActionCard,
   applyResultsToActionEvents,
   jobFailureToActionEvent,
 } from "@/components/AgentActionCard";
-import Editor from "@monaco-editor/react";
-import { InlineAiWidget } from "@/components/InlineAiWidget";
+import { useWorkspaceAgent } from "@/features/workspace/hooks/useWorkspaceAgent";
+import { useWorkspaceEdits } from "@/features/workspace/hooks/useWorkspaceEdits";
+import { useWorkspaceJobs } from "@/features/workspace/hooks/useWorkspaceJobs";
+import { useWorkspaceLayout } from "@/features/workspace/hooks/useWorkspaceLayout";
+import { WorkspaceEditorPanel } from "@/features/workspace/components/WorkspaceEditorPanel";
+import { useWorkspaceFiles } from "@/features/workspace/hooks/useWorkspaceFiles";
+import { flattenFileTree } from "@/features/workspace/utils/filePaths";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { MessageAttachments } from "@/components/MessageAttachments";
 import { ProjectsSidebarContent } from "@/components/ProjectsSidebar";
 import { ThreadOverviewRail } from "@/components/ThreadOverviewRail";
-import { friendlyToolLabel } from "@/lib/toolLabels";
-import { retryStageCopy, retryStageForFailure } from "@/lib/retryStage";
+import { retryStageCopy } from "@/lib/retryStage";
 import { useTheme } from "next-themes";
 import {
-  AlertCircle,
-  Braces,
-  Check,
-  ChevronsDownUp,
   ChevronsLeft,
   ChevronsRight,
-  ChevronsUpDown,
   ChevronDown,
-  ChevronRight,
   Code2,
   Download,
   ExternalLink,
-  File,
-  FileCode,
   FileText,
   Globe,
   HelpCircle,
   History,
-  Image,
   Loader2,
-  Lock,
   MessageSquare,
   Play,
   RefreshCw,
-  Save,
-  Search,
-  Table2,
-  Unlock,
-  X,
   ArrowRight,
 } from "lucide-react";
 
@@ -81,526 +71,80 @@ function statusTone(status: string | null | undefined) {
   return "bg-teal-500/15 text-teal-700 border-teal-500/20 dark:text-teal-300";
 }
 
-function getLanguage(path: string | null) {
-  if (!path) return "plaintext";
-  const ext = path.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "r":
-      return "r";
-    case "qmd":
-    case "md":
-      return "markdown";
-    case "yml":
-    case "yaml":
-      return "yaml";
-    case "json":
-      return "json";
-    case "html":
-      return "html";
-    case "css":
-      return "css";
-    case "js":
-    case "ts":
-    case "tsx":
-      return "typescript";
-    case "csv":
-    case "tsv":
-      return "plaintext";
-    default:
-      return "plaintext";
-  }
-}
-
-function isImagePath(path: string | null | undefined) {
-  if (!path) return false;
-  return /\.(png|jpe?g|gif|svg|webp)$/i.test(path);
-}
-
-function isTabularPath(path: string | null | undefined) {
-  if (!path) return false;
-  return /\.(csv|tsv|xlsx|xls|sav)$/i.test(path);
-}
-
-function isEditableTabularPath(path: string | null | undefined) {
-  if (!path) return false;
-  return /\.(csv|tsv)$/i.test(path);
-}
-
-function tabLabel(path: string) {
-  return path.split("/").pop() || path;
-}
-
-function flattenFileTree(nodes: FileTreeNode[]): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.type === "file") {
-      paths.push(node.path);
-    }
-    if (node.children?.length) {
-      paths.push(...flattenFileTree(node.children));
-    }
-  }
-  return paths;
-}
-
-function projectMessageToChatMessage(message: ProjectMessage): ChatMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    kind: message.kind,
-    content: message.content,
-    time: message.created_at,
-    metadata: message.metadata,
-    attachments: Array.isArray(message.metadata?.attachments) ? message.metadata.attachments as FileAttachment[] : [],
-    cell_id: message.cell_id,
-    cell_type: message.cell_type,
-    cell_revision: message.cell_revision,
-    execution_id: message.execution_id,
-  };
-}
-
-function collectDirPaths(nodes: FileTreeNode[]): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.type === "directory") {
-      paths.push(node.path);
-      if (node.children?.length) paths.push(...collectDirPaths(node.children));
-    }
-  }
-  return paths;
-}
-
-function filterFileTree(nodes: FileTreeNode[], query: string): FileTreeNode[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return nodes;
-  const filtered: FileTreeNode[] = [];
-  for (const node of nodes) {
-    if (node.type === "directory") {
-      const children = filterFileTree(node.children || [], q);
-      if (children.length > 0 || node.name.toLowerCase().includes(q)) {
-        filtered.push({ ...node, children });
-      }
-      continue;
-    }
-    if (node.name.toLowerCase().includes(q) || node.path.toLowerCase().includes(q)) {
-      filtered.push(node);
-    }
-  }
-  return filtered;
-}
-
-function FileTypeIcon({ name, isDir }: { name: string; isDir: boolean }) {
-  if (isDir) return null;
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".qmd") || lower.endsWith(".md")) {
-    return <FileText className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-400" />;
-  }
-  if (lower.endsWith(".r")) {
-    return <FileCode className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />;
-  }
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) {
-    return <FileCode className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />;
-  }
-  if (lower.endsWith(".json")) {
-    return <Braces className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-400" />;
-  }
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) {
-    return <Globe className="h-3.5 w-3.5 shrink-0 text-orange-600 dark:text-orange-400" />;
-  }
-  if (lower.endsWith(".css") || lower.endsWith(".scss")) {
-    return <FileCode className="h-3.5 w-3.5 shrink-0 text-pink-600 dark:text-pink-400" />;
-  }
-  if (/\.(png|jpe?g|gif|svg|webp)$/.test(lower)) {
-    return <Image className="h-3.5 w-3.5 shrink-0 text-violet-600 dark:text-violet-400" />;
-  }
-  if (/\.(csv|tsv)$/.test(lower)) {
-    return <Table2 className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />;
-  }
-  if (/\.(xlsx|xls|sav)$/.test(lower)) {
-    return <Table2 className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-400" />;
-  }
-  if (lower.endsWith(".rds") || lower.endsWith(".rda")) {
-    return <File className="h-3.5 w-3.5 shrink-0 text-indigo-600 dark:text-indigo-400" />;
-  }
-  return <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
-}
-
-function TabularPreview({ preview }: { preview: FilePreview }) {
-  const columns = preview.columns || [];
-  const rows = preview.preview_rows || [];
-  const dims = preview.dimensions;
-  const formatLabel =
-    preview.format === "spss"
-      ? "SPSS"
-      : preview.format === "excel"
-        ? "Excel"
-        : preview.format?.toUpperCase() || "Table";
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2 text-[11px] text-muted-foreground">
-        <span className="font-medium text-foreground">{formatLabel}</span>
-        {dims?.rows != null && dims?.columns != null ? (
-          <span>
-            {dims.rows.toLocaleString()} rows × {dims.columns.toLocaleString()} columns
-          </span>
-        ) : null}
-        {preview.selected_sheet ? <span>Sheet: {preview.selected_sheet}</span> : null}
-        {preview.preview_truncated ? <span>Showing first {rows.length.toLocaleString()} rows</span> : null}
-        {preview.editable === false ? <span>Read-only preview</span> : null}
-      </div>
-      {preview.error && !rows.length ? (
-        <div className="flex h-full items-center justify-center p-6 text-center text-xs text-muted-foreground">
-          <div className="max-w-md space-y-2">
-            <p>{preview.note || "Could not preview this file."}</p>
-            <p className="font-mono text-[10px] opacity-70">{preview.error}</p>
-          </div>
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-auto">
-          <table className="min-w-full border-collapse text-left text-[12px]">
-            <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
-              <tr>
-                <th className="border-b border-border px-2 py-1.5 font-mono text-[10px] font-normal text-muted-foreground">#</th>
-                {columns.map((column) => (
-                  <th
-                    key={column}
-                    className="border-b border-border px-2 py-1.5 font-medium text-foreground"
-                    title={preview.column_types?.[column] || column}
-                  >
-                    <span className="block max-w-[14rem] truncate">{column}</span>
-                    {preview.column_types?.[column] ? (
-                      <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">
-                        {preview.column_types[column]}
-                      </span>
-                    ) : null}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex} className="odd:bg-background even:bg-muted/30">
-                  <td className="border-b border-border/60 px-2 py-1 font-mono text-[10px] text-muted-foreground">
-                    {rowIndex + 1}
-                  </td>
-                  {columns.map((column, colIndex) => (
-                    <td key={`${rowIndex}-${column}`} className="max-w-[16rem] truncate border-b border-border/60 px-2 py-1 text-foreground">
-                      {row[colIndex] ?? ""}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {preview.note ? (
-            <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">{preview.note}</p>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TreeNode({
-  node,
-  selectedPath,
-  expandedPaths,
-  onToggle,
-  onSelect,
-}: {
-  node: FileTreeNode;
-  selectedPath: string | null;
-  expandedPaths: Set<string>;
-  onToggle: (path: string) => void;
-  onSelect: (path: string) => void;
-}) {
-  const isDir = node.type === "directory";
-  const isSelected = selectedPath === node.path;
-  const open = isDir && expandedPaths.has(node.path);
-
-  return (
-    <div>
-      <div
-        onClick={() => (isDir ? onToggle(node.path) : onSelect(node.path))}
-        className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] transition-colors ${
-          isSelected
-            ? "bg-teal-500/15 text-teal-800 dark:bg-teal-500/20 dark:text-teal-200"
-            : "text-muted-foreground hover:bg-muted hover:text-foreground"
-        }`}
-      >
-        {isDir ? (
-          open ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          )
-        ) : (
-          <span className="w-3.5 shrink-0" />
-        )}
-        <FileTypeIcon name={node.name} isDir={isDir} />
-        <span className="truncate">{node.name}</span>
-      </div>
-      {isDir && open && node.children ? (
-        <div className="ml-2 mt-0.5 space-y-0.5 border-l border-border/40 pl-2.5">
-          {node.children.map((child) => (
-            <TreeNode
-              key={child.path}
-              node={child}
-              selectedPath={selectedPath}
-              expandedPaths={expandedPaths}
-              onToggle={onToggle}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default function WorkspacePage() {
   const params = useParams();
   const router = useRouter();
-  const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
   const projectId = params.id as string;
-
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [assistantPending, setAssistantPending] = useState(false);
-  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
-  const [agentActivity, setAgentActivity] = useState("Understanding the workspace...");
-  const [chatMode, setChatMode] = useState<"build" | "discuss">("build");
-  const workspaceChatScrollRef = useRef<HTMLDivElement>(null);
-  const [actionEvents, setActionEvents] = useState<ActionEvent[]>([]);
-  const [quickActions, setQuickActions] = useState<{ type: string; label: string; prompt: string }[]>([]);
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [fileSaveError, setFileSaveError] = useState<string | null>(null);
-  const [dataViewMode, setDataViewMode] = useState<"table" | "source">("table");
-  const [iframeKey, setIframeKey] = useState(0);
-  const [workspaceMode, setWorkspaceMode] = useState<"preview" | "code">("preview");
-  const [viewMode, setViewMode] = useState<"chat" | "workspace">("chat");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarWidth, setSidebarWidth] = useState<number | null>(null);
-  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
-  const [showProjectMenu, setShowProjectMenu] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [selectedEditId, setSelectedEditId] = useState<string | null>(null);
-  const [showConflictDialog, setShowConflictDialog] = useState(false);
-  const [fileSearch, setFileSearch] = useState("");
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const treeExpandedInitRef = useRef(false);
-  const completedJobSignatureRef = useRef("");
 
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
   });
 
-  useQuery({
-    queryKey: ["projects"],
-    queryFn: api.listProjects,
-  });
-
-  const { data: projectMessages } = useQuery({
-    queryKey: ["projectMessages", projectId],
-    queryFn: () => api.listMessages(projectId),
-  });
-
-  const { data: jobs } = useQuery({
-    queryKey: ["jobs", projectId],
-    queryFn: () => api.listJobs(projectId),
-  });
-
-  const { data: fileTree, isLoading: treeLoading } = useQuery({
-    queryKey: ["fileTree", projectId],
-    queryFn: () => api.getFileTree(projectId),
-    // Live streaming: while generation runs, files appear as they are written.
-    refetchInterval: project?.status === "generating" ? 2000 : false,
-  });
-
-  const { data: editHistory } = useQuery({
-    queryKey: ["editTransactions", projectId],
-    queryFn: () => api.listEditTransactions(projectId),
-    enabled: Boolean(project?.project_dir),
-  });
-  const { data: selectedEdit } = useQuery({
-    queryKey: ["editTransaction", projectId, selectedEditId],
-    queryFn: () => api.getEditTransaction(projectId, selectedEditId as string),
-    enabled: Boolean(project?.project_dir && selectedEditId),
-  });
-  const { data: executionRuns } = useQuery({
-    queryKey: ["executionRuns", projectId],
-    queryFn: () => api.listExecutionRuns(projectId, 10),
-    enabled: Boolean(project?.project_dir),
-  });
-
-  const { data: projectFiles } = useQuery({
-    queryKey: ["projectFiles", projectId],
-    queryFn: () => api.listFiles(projectId),
-    enabled: project?.status === "created",
-  });
-  const hasUploadedFiles = Boolean(projectFiles && projectFiles.length > 0);
-
-  const { data: locksData } = useQuery({
-    queryKey: ["locks", projectId],
-    queryFn: () => api.getLocks(projectId),
-    enabled: Boolean(project?.project_dir),
-  });
-  const lockedPaths = locksData?.paths || [];
-  const hasProjectFiles = Boolean(project?.project_dir || (fileTree && fileTree.length > 0));
-
-  const showTableView = Boolean(activeTab && isTabularPath(activeTab) && dataViewMode === "table");
-  const needsTextContent = Boolean(
-    activeTab
-    && !isImagePath(activeTab)
-    && (!isTabularPath(activeTab) || (isEditableTabularPath(activeTab) && dataViewMode === "source"))
-  );
-
-  const { data: fileContent, isLoading: contentLoading } = useQuery({
-    queryKey: ["fileContent", projectId, activeTab],
-    queryFn: () => (activeTab ? api.getFileContent(projectId, activeTab) : null),
-    enabled: needsTextContent,
-  });
-
-  const { data: filePreview, isLoading: previewLoading } = useQuery({
-    queryKey: ["filePreview", projectId, activeTab],
-    queryFn: () => (activeTab ? api.getFilePreview(projectId, activeTab) : null),
-    enabled: Boolean(activeTab) && isTabularPath(activeTab),
-  });
-
-  useEffect(() => {
-    setDataViewMode("table");
-  }, [activeTab]);
-
-  useEffect(() => {
-    return api.subscribeProjectEvents(projectId, (event) => {
-      queryClient.setQueryData(["project", projectId], (current: typeof project) => (
-        current
-          ? {
-              ...current,
-              status: event.status,
-              agent_state: event.agent_state,
-              agent_memory: {
-                ...(current.agent_memory || {}),
-                summary: event.agent_summary || current.agent_memory?.summary,
-                pending_guidance: event.pending_guidance || current.agent_memory?.pending_guidance,
-              },
-            }
-          : current
-      ));
-      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-      const currentJobs = queryClient.getQueryData<Job[]>(["jobs", projectId]);
-      if (event.jobs.some((eventJob) => !currentJobs?.some((job) => job.id === eventJob.id))) {
-        void queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
-      }
-      queryClient.setQueryData<Job[]>(["jobs", projectId], (current) => {
-        if (!current) return current;
-        const updates = new Map(event.jobs.map((job) => [job.id, job]));
-        return current.map((job) => {
-          const update = updates.get(job.id);
-          return update
-            ? {
-                ...job,
-                status: update.status,
-                progress: update.progress,
-                error: update.error,
-                updated_at: update.updated_at || job.updated_at,
-              }
-            : job;
-        });
-      });
-      if (event.latest_message_id) {
-        void queryClient.invalidateQueries({ queryKey: ["projectMessages", projectId] });
-      }
-
-      const liveJob = event.jobs.find((job) => job.status === "running" || job.status === "pending");
-      const latestStep = [...(liveJob?.progress || [])].reverse().find((step) => step.detail || step.step);
-      if (latestStep) {
-        setAgentActivity(latestStep.detail || `${latestStep.step} ${latestStep.status}`);
-      } else if (event.agent_summary) {
-        setAgentActivity(event.agent_summary);
-      }
-
-      const completedSignature = event.jobs
-        .filter((job) => job.status === "completed" || job.status === "failed")
-        .map((job) => `${job.id}:${job.status}:${job.updated_at}`)
-        .join("|");
-      if (
-        completedJobSignatureRef.current
-        && completedJobSignatureRef.current !== completedSignature
-      ) {
-        void queryClient.invalidateQueries({ queryKey: ["fileTree", projectId] });
-        void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId] });
-        void queryClient.invalidateQueries({ queryKey: ["filePreview", projectId] });
-        void queryClient.invalidateQueries({ queryKey: ["executionRuns", projectId] });
-        setIframeKey((value) => value + 1);
-      }
-      completedJobSignatureRef.current = completedSignature;
-    });
-  }, [projectId, queryClient]);
-
+  const workspaceFiles = useWorkspaceFiles({ projectId, project });
+  const { activeDraft, activeTab, clearDrafts, closeConflictDialog, fileTree, hasProjectFiles, hasUploadedFiles, isDirty, selectTab } = workspaceFiles;
   const isLive = ["planning", "generating", "generated", "rendering"].includes(project?.status || "");
   const isFailed = project?.status === "failed";
   const hasPreview = Boolean(project?.project_dir);
   const agentState = project?.agent_state || "idle";
-  const latestFailedJob = useMemo(
-    () => [...(jobs || [])]
-      .filter((job) => job.status === "failed")
-      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0],
-    [jobs],
-  );
-  const retryStage = retryStageForFailure(latestFailedJob?.job_type, {
-    hasPlan: Boolean(project?.analysis_plan),
-    hasWorkspace: Boolean(project?.project_dir),
+  const previewReportPath = useMemo(() => {
+    const allPaths = flattenFileTree(fileTree || []);
+    const renderedPages = allPaths.filter((path) => path.startsWith("output/") && path.endsWith(".html") && !path.includes("/site_libs/"));
+    const firstContentPage = renderedPages.find((path) => path !== "output/index.html");
+    if (firstContentPage && isFailed) return firstContentPage.replace(/^output\//, "");
+    return "index.html";
+  }, [fileTree, isFailed]);
+  const {
+    actionEvents, agentActivity, answerQuestion, askAgent, assistantPending, chatMode, displayChatMessages,
+    handleSendPrompt, pendingQuestion, quickActions, setAgentActivity, setChatMode,
+  } = useWorkspaceAgent({ projectId, project, activeTab, activeDraft, isDirty, previewReportPath });
+  const { buildError, buildNow, buildPending, executionRuns, latestFailedJob, previewProgressSignature, retryMutation, retryStage, workspaceRefreshKey } = useWorkspaceJobs({
+    projectId,
+    project,
+    onAgentActivity: setAgentActivity,
   });
-  const revertEditMutation = useMutation({
-    mutationFn: (transactionId: string) => api.revertEditTransaction(projectId, transactionId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["editTransactions", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["fileTree", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["filePreview", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-      setDrafts({});
-      setFileSaveError(null);
-      setShowConflictDialog(false);
-      setIframeKey((value) => value + 1);
+  const {
+    iframeKey,
+    isResizingSidebar,
+    refreshPreview,
+    setIsResizingSidebar,
+    setShowHistory,
+    setShowProjectMenu,
+    setSidebarOpen,
+    setSidebarWidth,
+    setViewMode,
+    setWorkspaceMode,
+    showHistory,
+    showProjectMenu,
+    sidebarOpen,
+    sidebarWidth,
+    viewMode,
+    workspaceChatScrollRef,
+    workspaceMode,
+  } = useWorkspaceLayout({ project, previewProgressSignature, workspaceRefreshKey });
+  const { editHistory, revertEditMutation, selectedEdit, selectedEditId, setSelectedEditId } = useWorkspaceEdits({
+    projectId,
+    project,
+    onReverted: () => {
+      clearDrafts();
+      closeConflictDialog();
+      refreshPreview();
     },
   });
-
   const recentAgentActions = useMemo(() => [...(project?.agent_actions || [])].reverse().slice(0, 5), [project?.agent_actions]);
   const applyActionEvents = useMemo(() => {
     const editAction = [...(project?.agent_actions || [])]
       .reverse()
       .find((action) => action.type === "edit" && Array.isArray(action.details?.apply_results));
     if (!editAction || !editAction.details) return [] as ActionEvent[];
-    return applyResultsToActionEvents(editAction.details.apply_results, String(editAction.time || "edit"));
+    const applyResults = editAction.details.apply_results;
+    if (!Array.isArray(applyResults)) return [] as ActionEvent[];
+    return applyResultsToActionEvents(applyResults as ApplyResult[], String(editAction.time || "edit"));
   }, [project?.agent_actions]);
   const failureActionEvent = useMemo(
     () => (latestFailedJob ? jobFailureToActionEvent(latestFailedJob) : null),
     [latestFailedJob],
-  );
-  const displayChatMessages = useMemo(() => {
-    const durable = (projectMessages || [])
-      .filter((message) => message.role === "user" || message.role === "assistant")
-      .map(projectMessageToChatMessage);
-    const durableIds = new Set(durable.map((message) => message.id).filter(Boolean));
-    return [
-      ...durable,
-      ...chatMessages.filter((message) => !message.id || !durableIds.has(message.id)),
-    ];
-  }, [chatMessages, projectMessages]);
-  const previewProgressSignature = useMemo(
-    () =>
-      (jobs || [])
-        .filter((job) => job.job_type === "render" || job.job_type === "edit")
-        .flatMap((job) => job.progress || [])
-        .map((entry) => `${entry.step}:${entry.status}:${entry.time || ""}`)
-        .join("|"),
-    [jobs]
   );
   const reviewChecks = useMemo(() => {
     const reviewAction = [...(project?.agent_actions || [])].reverse().find((action) => action.type === "review");
@@ -612,575 +156,9 @@ export default function WorkspacePage() {
     };
   }, [project?.agent_actions]);
 
-  useEffect(() => {
-    if (project?.project_dir) {
-      setIframeKey((value) => value + 1);
-    }
-  }, [project?.project_dir, project?.status, previewProgressSignature]);
-
-  useEffect(() => {
-    if (project?.project_dir || ["generated", "completed", "rendering"].includes(project?.status || "")) {
-      setViewMode("workspace");
-    } else if (project?.status === "created") {
-      setViewMode("chat");
-    }
-  }, [project?.project_dir, project?.status]);
-
-  const activeDraft = activeTab ? drafts[activeTab] : undefined;
-  const editorValue = activeDraft ?? fileContent?.content ?? "";
-  const isDirty = Boolean(
-    activeTab
-    && activeDraft !== undefined
-    && fileContent?.path === activeTab
-    && activeDraft !== fileContent.content
-  );
-
-  const monacoEditorRef = useRef<any>(null);
-  const inlineDecorationsRef = useRef<string[]>([]);
-
-  const [inlineWidget, setInlineWidget] = useState<{
-    show: boolean;
-    top: number;
-    left: number;
-    selectionText?: string;
-    range?: any;
-    originalCode?: string;
-    isGenerating: boolean;
-    hasGenerated: boolean;
-    diffStats?: { added: number; removed: number };
-  }>({ show: false, top: 20, left: 40, isGenerating: false, hasGenerated: false });
-
-  const clearInlineDiffDecorations = () => {
-    const editor = monacoEditorRef.current;
-    if (editor && inlineDecorationsRef.current.length) {
-      inlineDecorationsRef.current = editor.deltaDecorations(inlineDecorationsRef.current, []);
-    }
-  };
-
-  const triggerInlineAi = () => {
-    const editor = monacoEditorRef.current;
-    if (!editor) return;
-    const pos = editor.getScrolledVisiblePosition(editor.getPosition());
-    const selection = editor.getModel()?.getValueInRange(editor.getSelection());
-    const fullContent = editor.getValue();
-
-    clearInlineDiffDecorations();
-
-    setInlineWidget({
-      show: true,
-      top: (pos?.top ?? 40) + 30,
-      left: Math.min((pos?.left ?? 40) + 40, 450),
-      selectionText: selection,
-      range: editor.getSelection(),
-      originalCode: fullContent,
-      isGenerating: false,
-      hasGenerated: false,
-    });
-  };
-
-  const handleInlineGenerate = async (prompt: string) => {
-    const editor = monacoEditorRef.current;
-    if (!editor || !activeTab) return;
-    const model = editor.getModel();
-    const selection = editor.getSelection();
-    const selectedText = model.getValueInRange(selection);
-    const fullContent = editor.getValue();
-
-    setInlineWidget((prev) => ({ ...prev, isGenerating: true }));
-
-    // Rich domain context
-    const projectCtx = project
-      ? `Project: ${project.name}\nQuestion: ${project.question || ""}\nDataset: ${project.agent_memory?.summary || ""}`
-      : undefined;
-    const errorCtx = latestFailedJob ? `Error detail: ${latestFailedJob.error || ""}` : undefined;
-
-    try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const response = await fetch(`${baseUrl}/api/inline-edit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: projectId,
-          path: activeTab,
-          prompt: prompt,
-          selection: selectedText || null,
-          content: fullContent,
-          base_sha256: fileContent?.sha256,
-          project_context: projectCtx,
-          error_context: errorCtx,
-        }),
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error("Failed to start inline edit stream");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let streamedTokens = "";
-      const startLine = selection ? selection.startLineNumber : 1;
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const data = JSON.parse(line);
-            if (data.type === "token" && data.token) {
-              // Keep the live Monaco model unchanged while the provider streams.
-              // Applying each token against a fixed range corrupts offsets and can
-              // leave a partial, accidentally saveable edit after a failed stream.
-              streamedTokens += data.token;
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }
-      }
-
-      if (!streamedTokens) {
-        throw new Error("Inline edit provider returned an empty preview");
-      }
-      // Commit the complete provider response to Monaco as one preview edit.
-      // Accept still only stages it in the draft buffer; persistence remains the
-      // separate If-Match save transaction.
-      editor.executeEdits("inline-ai-preview", [{
-        range: selectedText ? selection : model.getFullModelRange(),
-        text: streamedTokens,
-        forceMoveMarkers: true,
-      }]);
-
-      // Compute diff stats
-      const originalLines = (selectedText || fullContent).split("\n").length;
-      const streamedLines = streamedTokens.split("\n").length;
-      const added = Math.max(0, streamedLines - originalLines);
-      const removed = Math.max(0, originalLines - streamedLines);
-
-      // Apply Monaco green background deltaDecorations
-      const monacoWindow = (window as any).monaco;
-      if (monacoWindow && editor) {
-        const endLine = startLine + streamedLines - 1;
-        inlineDecorationsRef.current = editor.deltaDecorations(
-          inlineDecorationsRef.current,
-          [
-            {
-              range: new monacoWindow.Range(startLine, 1, Math.max(startLine, endLine), 1),
-              options: {
-                isWholeLine: true,
-                className: "bg-emerald-500/15 border-l-2 border-emerald-400",
-              },
-            },
-          ]
-        );
-      }
-
-      setInlineWidget((prev) => ({
-        ...prev,
-        isGenerating: false,
-        hasGenerated: true,
-        diffStats: { added, removed },
-      }));
-    } catch (err) {
-      console.error("Inline AI edit failed:", err);
-      setInlineWidget((prev) => ({ ...prev, isGenerating: false }));
-    }
-  };
-
-  const handleInlineAccept = () => {
-    clearInlineDiffDecorations();
-    if (monacoEditorRef.current) {
-      updateActiveDraft(monacoEditorRef.current.getValue() || "");
-    }
-    setInlineWidget({ show: false, top: 20, left: 40, isGenerating: false, hasGenerated: false });
-  };
-
-  const handleInlineReject = () => {
-    clearInlineDiffDecorations();
-    if (inlineWidget.originalCode !== undefined && monacoEditorRef.current) {
-      monacoEditorRef.current.setValue(inlineWidget.originalCode);
-    }
-    setInlineWidget({ show: false, top: 20, left: 40, isGenerating: false, hasGenerated: false });
-  };
-  const dirtyTabs = useMemo(() => new Set(Object.keys(drafts)), [drafts]);
-  const previewReportPath = useMemo(() => {
-    const allPaths = flattenFileTree(fileTree || []);
-    const renderedPages = allPaths.filter((path) => path.startsWith("output/") && path.endsWith(".html") && !path.includes("/site_libs/"));
-    const firstContentPage = renderedPages.find((path) => path !== "output/index.html");
-    if (firstContentPage && isFailed) {
-      return firstContentPage.replace(/^output\//, "");
-    }
-    return "index.html";
-  }, [fileTree, isFailed]);
   const reportUrl = api.getReportUrl(projectId, previewReportPath);
   const downloadUrl = api.getDownloadUrl(projectId);
 
-  const saveMutation = useMutation({
-    mutationFn: () => {
-      if (!activeTab || activeDraft === undefined) return Promise.reject("No file selected");
-      if (!fileContent?.sha256) return Promise.reject("Reload the file before saving so its SHA-256 is known.");
-      return api.saveFileContent(projectId, activeTab, activeDraft, fileContent.sha256);
-    },
-    onMutate: () => setFileSaveError(null),
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : "Save failed; reload the file before retrying.";
-      setFileSaveError(message);
-      if (/409|conflict|changed since/i.test(message)) setShowConflictDialog(true);
-    },
-    onSuccess: () => {
-      setFileSaveError(null);
-      if (activeTab) {
-        setDrafts((prev) => {
-          const next = { ...prev };
-          delete next[activeTab];
-          return next;
-        });
-      }
-      queryClient.invalidateQueries({ queryKey: ["fileContent", projectId, activeTab] });
-      queryClient.invalidateQueries({ queryKey: ["filePreview", projectId, activeTab] });
-      queryClient.invalidateQueries({ queryKey: ["fileTree", projectId] });
-    },
-  });
-
-  const retryMutation = useMutation({
-    mutationFn: () => {
-      if (retryStage === "plan") return api.startPlanning(projectId);
-      if (retryStage === "generate") return api.startGeneration(projectId);
-      return api.startRendering(projectId);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
-    },
-  });
-
-  const runChunkMutation = useMutation({
-    mutationFn: () => {
-      const codeToRun = activeDraft ?? fileContent?.content ?? "";
-      return api.runCodeChunk(projectId, codeToRun, activeTab);
-    },
-  });
-
-  const locksMutation = useMutation({
-    mutationFn: (paths: string[]) => api.updateLocks(projectId, paths),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["locks", projectId] });
-    },
-  });
-
-  const toggleActiveLock = () => {
-    if (!activeTab) return;
-    const next = lockedPaths.includes(activeTab)
-      ? lockedPaths.filter((path) => path !== activeTab)
-      : [...lockedPaths, activeTab];
-    locksMutation.mutate(next);
-  };
-
-  const saveMutationRef = useRef<() => void>(() => {});
-  saveMutationRef.current = () => {
-    if (isDirty && !saveMutation.isPending) saveMutation.mutate();
-  };
-
-  const handleSendPrompt = async (
-    event?: React.FormEvent,
-    override?: { message?: string; mode?: "build" | "discuss"; attachments?: FileAttachment[]; files?: File[] },
-  ) => {
-    event?.preventDefault();
-    const rawMessage = (override?.message ?? "").trim();
-    const mode = override?.mode ?? chatMode;
-
-    let attachments: FileAttachment[] = override?.attachments ? [...override.attachments] : [];
-    if (override?.files?.length) {
-      for (const file of override.files) {
-        try {
-          const uploaded = await api.uploadFile(projectId, file, "auto");
-          attachments.push({
-            id: uploaded.id,
-            name: uploaded.original_name || file.name,
-            format: uploaded.detected_format,
-            mime_type: file.type || null,
-            size_bytes: file.size,
-            source: "project",
-          });
-        } catch (err) {
-          console.error("Failed to upload attached file:", file.name, err);
-        }
-      }
-    }
-
-    const message = rawMessage || (attachments.length ? "I attached files for the analysis." : "");
-    if (!message || assistantPending) return;
-
-    setPendingQuestion(null);
-    const optimisticId = `local-${Date.now()}`;
-    const userMessage: ChatMessage = {
-      id: optimisticId,
-      role: "user",
-      content: message,
-      time: new Date().toISOString(),
-      attachments: attachments,
-    };
-    setChatMessages((prev) => [...prev, userMessage]);
-    setAssistantPending(true);
-    setQuickActions([]);
-    setActionEvents([]);
-    setAgentActivity(mode === "discuss" ? "Discussing the analysis..." : "Understanding the workspace...");
-    try {
-      await api.streamAgentMessage(
-        projectId,
-        {
-          message,
-          selected_file: activeTab,
-          selected_content: isDirty ? activeDraft ?? null : null,
-          selected_content_dirty: isDirty,
-          preview_path: previewReportPath,
-          chat_mode: mode,
-          attachments: attachments,
-        },
-        (streamEvent: AgentStreamEvent) => {
-          if (streamEvent.type === "question" && streamEvent.question) {
-            setPendingQuestion(streamEvent.question);
-          }
-          if (streamEvent.type === "final" && streamEvent.awaiting_answer) {
-            setPendingQuestion(streamEvent.awaiting_answer);
-          }
-          if (streamEvent.type === "title_update" && typeof streamEvent.name === "string") {
-            const updatedTitle = streamEvent.name;
-            queryClient.setQueryData(["project", projectId], (old: any) =>
-              old?.name_source === "user"
-                ? old
-                : old
-                  ? { ...old, name: updatedTitle, name_source: streamEvent.name_source || "auto" }
-                  : old
-            );
-            queryClient.setQueryData(["projects"], (old: any) =>
-              Array.isArray(old)
-                ? old.map((p: any) =>
-                    p.id !== projectId || p.name_source === "user"
-                      ? p
-                      : { ...p, name: updatedTitle, name_source: streamEvent.name_source || "auto" }
-                  )
-                : old
-            );
-          }
-          if (streamEvent.type === "status" && typeof streamEvent.message === "string") {
-            setAgentActivity(streamEvent.message);
-          }
-          if (streamEvent.type === "action_event" && streamEvent.event) {
-            const next = streamEvent.event as ActionEvent;
-            setActionEvents((prev) => {
-              const without = prev.filter((item) => item.id !== next.id && !item.id.endsWith("-start"));
-              return [...without, next];
-            });
-          }
-          if (streamEvent.type === "tool_started") {
-            setAgentActivity(streamEvent.reason || friendlyToolLabel(streamEvent.tool) || "Inspecting the workspace...");
-          }
-          if (streamEvent.type === "tool_completed") {
-            setAgentActivity(streamEvent.summary || "Workspace inspection completed");
-          }
-          if ((streamEvent.type === "token" || streamEvent.type === "token_chunk") && typeof streamEvent.token === "string") {
-            setChatMessages((prev) => {
-              const existing = prev.find((item) => item.id === "streaming-assistant");
-              if (existing) {
-                return prev.map((item) =>
-                  item.id === "streaming-assistant"
-                    ? { ...item, content: `${item.content}${streamEvent.token}` }
-                    : item
-                );
-              }
-              return [
-                ...prev,
-                {
-                  id: "streaming-assistant",
-                  role: "assistant",
-                  content: streamEvent.token as string,
-                  time: new Date().toISOString(),
-                },
-              ];
-            });
-          }
-          if (
-            streamEvent.type === "message"
-            && typeof streamEvent.message === "object"
-            && streamEvent.message
-          ) {
-            const persisted = projectMessageToChatMessage(streamEvent.message);
-            setChatMessages((prev) => [
-              ...prev.filter((item) => item.id !== optimisticId),
-              persisted,
-            ]);
-          }
-          if (
-            (streamEvent.type === "final" || streamEvent.type === "action_queued")
-            && typeof streamEvent.message === "string"
-          ) {
-            if (streamEvent.quick_actions?.length) {
-              setQuickActions(streamEvent.quick_actions);
-            }
-            setChatMessages((prev) => [
-              ...prev.filter((item) => item.id !== "streaming-assistant"),
-              {
-                id: streamEvent.message_id,
-                role: "assistant",
-                content: streamEvent.message as string,
-                time: new Date().toISOString(),
-                metadata: streamEvent.job_id ? { job_id: streamEvent.job_id } : null,
-              },
-            ]);
-          }
-        },
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projectMessages", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["jobs", projectId] }),
-      ]);
-      setChatMessages([]);
-    } catch (error) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: error instanceof Error ? error.message : "Could not reach the assistant.", time: new Date().toISOString() },
-      ]);
-    } finally {
-      setAssistantPending(false);
-      setAgentActivity("Understanding the workspace...");
-    }
-  };
-
-  const askAgent = (prompt: string, mode: "build" | "discuss" = "build") => {
-    setChatMode(mode);
-    void handleSendPrompt(undefined, { message: prompt, mode });
-  };
-
-  const answerQuestion = (answer: string) => {
-    setPendingQuestion(null);
-    void handleSendPrompt(undefined, { message: answer, mode: chatMode });
-  };
-
-  const handleAddFiles = async (files: File[]) => {
-    const failures: string[] = [];
-    const attachments: FileAttachment[] = [];
-    for (const file of files) {
-      try {
-        const uploaded = await api.uploadFile(projectId, file, "auto");
-        attachments.push({
-          id: uploaded.id,
-          name: uploaded.original_name || file.name,
-          format: uploaded.detected_format,
-          mime_type: file.type || null,
-          size_bytes: file.size,
-          source: "project",
-        });
-      } catch {
-        failures.push(file.name);
-      }
-    }
-    const failedText = failures.length
-      ? ` The following files could not be uploaded: ${failures.join(", ")}.`
-      : "";
-    void handleSendPrompt(undefined, {
-      message: attachments.length
-        ? `I attached ${attachments.length === 1 ? "a file" : "files"} for the analysis.${failedText}`
-        : `I could not attach the selected files.${failedText}`,
-      mode: chatMode,
-      attachments,
-    });
-    void queryClient.invalidateQueries({ queryKey: ["projects"] });
-  };
-
-  useEffect(() => {
-    const pending = project?.agent_memory?.pending_question as PendingQuestion | undefined;
-    if (pending && !assistantPending) {
-      setPendingQuestion(pending);
-    }
-  }, [project?.agent_memory?.pending_question, assistantPending]);
-
-  const [buildError, setBuildError] = useState<string | null>(null);
-  const [buildPending, setBuildPending] = useState(false);
-  const buildNow = async () => {
-    setBuildError(null);
-    setBuildPending(true);
-    try {
-      await api.startPlanning(projectId);
-      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-    } catch (error) {
-      setBuildError(error instanceof Error ? error.message : "Planning could not be started.");
-    } finally {
-      setBuildPending(false);
-    }
-  };
-
-  const handleFileSelect = (path: string) => {
-    setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
-    setFileSaveError(null);
-    setActiveTab(path);
-  };
-
-  const closeTab = (path: string) => {
-    setOpenTabs((prev) => {
-      const index = prev.indexOf(path);
-      const next = prev.filter((item) => item !== path);
-      if (activeTab === path) {
-        const fallback = next[Math.min(index, Math.max(next.length - 1, 0))] ?? null;
-        setActiveTab(fallback);
-      }
-      return next;
-    });
-    setDrafts((prev) => {
-      if (!(path in prev)) return prev;
-      const next = { ...prev };
-      delete next[path];
-      return next;
-    });
-  };
-
-  const updateActiveDraft = (value: string) => {
-    if (!activeTab) return;
-    setDrafts((prev) => {
-      if (fileContent?.path === activeTab && value === fileContent.content) {
-        if (!(activeTab in prev)) return prev;
-        const next = { ...prev };
-        delete next[activeTab];
-        return next;
-      }
-      return { ...prev, [activeTab]: value };
-    });
-  };
-
-  const visibleFileTree = useMemo(
-    () => filterFileTree(fileTree || [], fileSearch),
-    [fileTree, fileSearch]
-  );
-
-  const allDirPaths = useMemo(
-    () => collectDirPaths(fileTree || []),
-    [fileTree]
-  );
-
-  useEffect(() => {
-    if (!fileTree?.length || treeExpandedInitRef.current) return;
-    setExpandedPaths(new Set(collectDirPaths(fileTree)));
-    treeExpandedInitRef.current = true;
-  }, [fileTree]);
-
-  const searching = Boolean(fileSearch.trim());
-  const effectiveExpandedPaths = useMemo(() => {
-    if (searching) return new Set(collectDirPaths(visibleFileTree));
-    return expandedPaths;
-  }, [searching, visibleFileTree, expandedPaths]);
-
-  const toggleDir = (path: string) => {
-    setExpandedPaths((current) => {
-      const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -1363,7 +341,7 @@ export default function WorkspacePage() {
               <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                 Agent
               </div>
-              <p className="mt-2">{project?.agent_memory?.summary || "Ask for a change or inspect the current report."}</p>
+              <p className="mt-2">{typeof project?.agent_memory?.summary === "string" ? project.agent_memory.summary : "Ask for a change or inspect the current report."}</p>
             </div>
 
             {isLive ? (
@@ -1407,7 +385,7 @@ export default function WorkspacePage() {
                 <AgentActionCard
                   event={failureActionEvent}
                   onAskAgent={(prompt) => askAgent(prompt, "build")}
-                  onOpenPath={handleFileSelect}
+                  onOpenPath={selectTab}
                 />
                 <Button
                   type="button"
@@ -1439,7 +417,7 @@ export default function WorkspacePage() {
                   key={event.id}
                   event={event}
                   onAskAgent={(prompt) => askAgent(prompt, "build")}
-                  onOpenPath={handleFileSelect}
+                  onOpenPath={selectTab}
                 />
               ))}
 
@@ -1539,7 +517,6 @@ export default function WorkspacePage() {
             }}
             onAnswer={answerQuestion}
             onModeChange={setChatMode}
-            onAddFiles={handleAddFiles}
           />
         </div>
         ) : null}
@@ -1661,7 +638,7 @@ export default function WorkspacePage() {
               {isDirty ? <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300">unsaved code</Badge> : null}
               {viewMode === "workspace" ? (
                 <>
-                  <Button variant="ghost" size="sm" onClick={() => setIframeKey((value) => value + 1)} className="h-8 gap-1.5 px-2 text-muted-foreground hover:text-foreground">
+                  <Button variant="ghost" size="sm" onClick={refreshPreview} className="h-8 gap-1.5 px-2 text-muted-foreground hover:text-foreground">
                     <RefreshCw className="h-3.5 w-3.5" />
                     Reload
                   </Button>
@@ -1699,7 +676,6 @@ export default function WorkspacePage() {
                   }}
                   onAnswer={answerQuestion}
                   onModeChange={setChatMode}
-                  onAddFiles={handleAddFiles}
                 />
               </div>
             </div>
@@ -1784,310 +760,23 @@ export default function WorkspacePage() {
                 />
               </div>
             </div>
-          ) : workspaceMode === "preview" ? (
-            <div className="min-h-0 flex-1 overflow-hidden bg-white">
-              {hasPreview ? (
-                <iframe key={iframeKey} src={reportUrl} className="h-full w-full border-0 bg-white" title="Quarto Report Preview" />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center bg-background px-8 text-center">
-                  {isFailed ? <AlertCircle className="mb-4 h-10 w-10 text-red-400" /> : <Globe className="mb-4 h-10 w-10 text-teal-300" />}
-                  <h2 className="text-xl font-semibold text-foreground">
-                    {isFailed
-                      ? "Preview was not produced"
-                      : isLive
-                        ? "The report is being assembled"
-                        : "No report yet"}
-                  </h2>
-                  <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
-                    {isFailed
-                      ? "Use Ask agent to fix in the left sidebar. Generated files stay visible, so the build can be inspected and fixed."
-                      : isLive
-                        ? "As soon as OmicsBase renders the first valid page, it will appear here as the primary canvas."
-                        : "Attach data, or ask the agent to import an example dataset (e.g. GlobalPatterns) and build a report."}
-                  </p>
-                </div>
-              )}
-            </div>
           ) : (
-            <section className="grid min-h-0 flex-1 grid-cols-[minmax(240px,300px)_minmax(0,1fr)] overflow-hidden rounded-[28px] border border-border bg-card shadow-sm dark:bg-[#0b0d15]/95 dark:shadow-[0_20px_80px_rgba(0,0,0,0.35)]">
-              <div className="flex min-h-0 flex-col border-r border-border bg-muted/30">
-                <div className="shrink-0 border-b border-border px-3 py-2.5">
-                  <div className="flex items-center gap-1.5">
-                    <div className="relative min-w-0 flex-1">
-                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                      <input
-                        type="search"
-                        value={fileSearch}
-                        onChange={(event) => setFileSearch(event.target.value)}
-                        placeholder="Search code"
-                        className="h-8 w-full rounded-lg border border-border bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-teal-500/40"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedPaths(new Set(allDirPaths))}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                      title="Expand all"
-                    >
-                      <ChevronsUpDown className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedPaths(new Set())}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                      title="Collapse all"
-                    >
-                      <ChevronsDownUp className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                <ScrollArea className="min-h-0 flex-1 p-2">
-                  {treeLoading ? (
-                    <div className="flex justify-center p-4">
-                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : !fileTree?.length ? (
-                    <p className="p-3 text-xs text-muted-foreground">No files written yet.</p>
-                  ) : !visibleFileTree.length ? (
-                    <p className="p-3 text-xs text-muted-foreground">No files match “{fileSearch.trim()}”.</p>
-                  ) : (
-                    <div className="space-y-0.5">
-                      {visibleFileTree.map((node) => (
-                        <TreeNode
-                          key={node.path}
-                          node={node}
-                          selectedPath={activeTab}
-                          expandedPaths={effectiveExpandedPaths}
-                          onToggle={toggleDir}
-                          onSelect={handleFileSelect}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </ScrollArea>
-              </div>
-
-              <div className="flex min-h-0 flex-col overflow-hidden bg-background">
-                <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40">
-                  <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
-                    {openTabs.length ? (
-                      openTabs.map((path) => {
-                        const active = path === activeTab;
-                        const dirty = dirtyTabs.has(path);
-                        return (
-                          <div
-                            key={path}
-                            className={`group inline-flex max-w-[12rem] items-center gap-1 border-r border-border px-1 py-1 text-[12px] transition-colors ${
-                              active
-                                ? "bg-background text-foreground"
-                                : "bg-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setActiveTab(path)}
-                              className="inline-flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left"
-                              title={path}
-                            >
-                              <FileTypeIcon name={tabLabel(path)} isDir={false} />
-                              <span className="truncate">{tabLabel(path)}</span>
-                              {dirty ? (
-                                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" aria-label="Unsaved" />
-                              ) : null}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => closeTab(path)}
-                              className="rounded p-1 text-muted-foreground opacity-70 transition hover:bg-muted hover:text-foreground group-hover:opacity-100"
-                              title="Close tab"
-                              aria-label={`Close ${tabLabel(path)}`}
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="px-3 py-2 text-[12px] text-muted-foreground">No open files</div>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2 px-2 py-1.5">
-                    {fileSaveError ? (
-                      <span className="max-w-[260px] truncate text-[11px] text-red-600 dark:text-red-300" title={fileSaveError}>
-                        Save conflict — reload before retrying
-                      </span>
-                    ) : null}
-                    {saveMutation.isSuccess && !isDirty && !fileSaveError ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                        <Check className="h-3 w-3" />
-                        Saved
-                      </span>
-                    ) : null}
-                    {isTabularPath(activeTab) ? (
-                      <div className="inline-flex overflow-hidden rounded-md border border-border">
-                        <button
-                          type="button"
-                          onClick={() => setDataViewMode("table")}
-                          className={`px-2 py-1 text-[11px] ${
-                            dataViewMode === "table"
-                              ? "bg-muted text-foreground"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
-                        >
-                          Table
-                        </button>
-                        {isEditableTabularPath(activeTab) ? (
-                          <button
-                            type="button"
-                            onClick={() => setDataViewMode("source")}
-                            className={`border-l border-border px-2 py-1 text-[11px] ${
-                              dataViewMode === "source"
-                                ? "bg-muted text-foreground"
-                                : "text-muted-foreground hover:text-foreground"
-                            }`}
-                          >
-                            Source
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {(activeTab?.endsWith(".R") || activeTab?.endsWith(".qmd")) ? (
-                      <Button variant="ghost" size="sm" onClick={() => runChunkMutation.mutate()} disabled={runChunkMutation.isPending} className="h-7 gap-1 bg-blue-600/80 px-2 text-[11px] text-white hover:bg-blue-500">
-                        {runChunkMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                        Run
-                      </Button>
-                    ) : null}
-                    {activeTab ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={toggleActiveLock}
-                        disabled={locksMutation.isPending || !project?.project_dir}
-                        className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-                        title={lockedPaths.includes(activeTab) ? "Unlock for agent edits" : "Lock against agent edits"}
-                      >
-                        {lockedPaths.includes(activeTab) ? <Lock className="h-3 w-3 text-amber-500" /> : <Unlock className="h-3 w-3" />}
-                        {lockedPaths.includes(activeTab) ? "Locked" : "Lock"}
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => saveMutation.mutate()}
-                      disabled={!isDirty || saveMutation.isPending || isImagePath(activeTab) || (isTabularPath(activeTab) && !isEditableTabularPath(activeTab))}
-                      className="h-7 gap-1 bg-teal-600/80 px-2 text-[11px] text-white hover:bg-teal-500 disabled:opacity-40"
-                    >
-                      {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-                      Save
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="min-h-0 flex-1 bg-muted/40 dark:bg-[#1e1e1e]">
-                  {!activeTab ? (
-                    <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
-                      Select a file to inspect or edit the generated source.
-                    </div>
-                  ) : isImagePath(activeTab) ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={api.getRawFileUrl(projectId, activeTab)}
-                        alt={tabLabel(activeTab)}
-                        className="max-h-full max-w-full rounded-lg border border-border object-contain shadow-sm"
-                      />
-                      <p className="font-mono text-[11px] text-muted-foreground">{activeTab}</p>
-                    </div>
-                  ) : showTableView ? (
-                    previewLoading ? (
-                      <div className="flex h-full items-center justify-center">
-                        <Loader2 className="h-5 w-5 animate-spin text-teal-400" />
-                      </div>
-                    ) : filePreview ? (
-                      <TabularPreview preview={filePreview} />
-                    ) : (
-                      <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
-                        Could not preview this table.
-                      </div>
-                    )
-                  ) : contentLoading ? (
-                    <div className="flex h-full items-center justify-center">
-                      <Loader2 className="h-5 w-5 animate-spin text-teal-400" />
-                    </div>
-                  ) : (
-                    <div className="relative h-full w-full">
-                      {inlineWidget.show ? (
-                        <InlineAiWidget
-                          top={inlineWidget.top}
-                          left={inlineWidget.left}
-                          selectedText={inlineWidget.selectionText}
-                          onGenerate={handleInlineGenerate}
-                          onAccept={handleInlineAccept}
-                          onReject={handleInlineReject}
-                          onClose={handleInlineReject}
-                          isGenerating={inlineWidget.isGenerating}
-                          hasGenerated={inlineWidget.hasGenerated}
-                          diffStats={inlineWidget.diffStats}
-                        />
-                      ) : null}
-                      <Editor
-                        key={activeTab}
-                        height="100%"
-                        language={getLanguage(activeTab)}
-                        theme={resolvedTheme === "light" ? "light" : "vs-dark"}
-                        value={editorValue}
-                        onChange={(value) => updateActiveDraft(value ?? "")}
-                        onMount={(editor, monaco) => {
-                          monacoEditorRef.current = editor;
-                          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveMutationRef.current());
-                          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () => triggerInlineAi());
-                          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => triggerInlineAi());
-                        }}
-                        options={{
-                          fontSize: 13,
-                          minimap: { enabled: false },
-                          scrollBeyondLastLine: false,
-                          wordWrap: "on",
-                          automaticLayout: true,
-                          padding: { top: 8, bottom: 8 },
-                          tabSize: 2,
-                          lineNumbersMinChars: 3,
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
+            <WorkspaceEditorPanel
+              projectId={projectId}
+              project={project}
+              files={workspaceFiles}
+              latestFailedJob={latestFailedJob}
+              workspaceMode={workspaceMode}
+              resolvedTheme={resolvedTheme}
+              iframeKey={iframeKey}
+              reportUrl={reportUrl}
+              hasPreview={hasPreview}
+              isFailed={isFailed}
+              isLive={isLive}
+            />
           )}
         </div>
       </main>
-
-      {showConflictDialog ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="alertdialog" aria-modal="true" aria-label="Save conflict">
-          <div className="w-full max-w-md space-y-4 rounded-xl border border-red-500/30 bg-background p-5 shadow-2xl">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
-              <div>
-                <h2 className="text-sm font-semibold">This file changed elsewhere</h2>
-                <p className="mt-1 text-xs text-muted-foreground">Reload the latest file before applying your draft. Your unsaved text remains in this editor until you choose an action.</p>
-              </div>
-            </div>
-            <p className="max-h-20 overflow-auto rounded bg-muted p-2 font-mono text-[10px] text-muted-foreground">{fileSaveError}</p>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setShowConflictDialog(false)}>Keep editing</Button>
-              <Button type="button" size="sm" onClick={() => {
-                if (activeTab) {
-                  void queryClient.invalidateQueries({ queryKey: ["fileContent", projectId, activeTab] });
-                  setDrafts((prev) => { const next = { ...prev }; delete next[activeTab]; return next; });
-                }
-                setFileSaveError(null);
-                setShowConflictDialog(false);
-              }}>Reload latest</Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

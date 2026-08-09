@@ -124,8 +124,18 @@ export function jobFailureToActionEvent(job: {
   };
 }
 
+export interface ApplyResult {
+  ok?: boolean;
+  strategy?: string;
+  reason?: string;
+  diagnostics?: string[];
+  path?: string;
+  diff?: string | null;
+  hint?: string | null;
+}
+
 export function applyResultsToActionEvents(
-  applyResults: Array<Record<string, any>>,
+  applyResults: ApplyResult[],
   sourceId: string,
 ): ActionEvent[] {
   return applyResults.map((item, index) => ({

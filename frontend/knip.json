@@ -1,0 +1,8 @@
+{
+  "ignore": [
+    "src/components/ui/dialog.tsx",
+    "src/components/ui/input.tsx",
+    "src/components/ui/tabs.tsx"
+  ],
+  "ignoreExportsUsedInFile": true
+}

@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
-import { NotesSurface } from "@/components/NotesSurface";
+import { NotesSurface } from "@/features/notes/components/NotesSurface";
 
 function NotesPageInner() {
   const searchParams = useSearchParams();

@@ -14,15 +14,15 @@ import {
   ArrowUp,
   ChevronDown,
   Database,
-  FileImage,
-  FileText,
   Loader2,
-  Mic,
-  Plus,
-  X,
+  Mic,  X,
 } from "lucide-react";
 
-import { api, type ImportableDataset } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { ImportableDataset } from "@/lib/api/types/projects";
+import { FileChips } from "@/components/composer/FileChips";
+import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
+import { DatasetPicker } from "@/components/composer/DatasetPicker";
 import { Button } from "@/components/ui/button";
 
 type LaunchMode = "notes" | "build" | "plan";
@@ -30,20 +30,6 @@ type LaunchMode = "notes" | "build" | "plan";
 interface AttachedFile {
   file: File;
   role: string;
-}
-
-function formatBytes(bytes: number | null | undefined): string | null {
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-function isImageFile(file: File): boolean {
-  if (file.type.startsWith("image/")) return true;
-  const ext = file.name.split(".").pop()?.toLowerCase() || "";
-  return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "svg"].includes(ext);
 }
 
 function inferRole(file: File): string {
@@ -256,112 +242,38 @@ export function StartComposer({
           if (event.dataTransfer.files?.length) addFiles(event.dataTransfer.files);
         }}
       >
-        <AnimatePresence>
-          {files.length > 0 ? (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mb-1.5 flex flex-wrap gap-2 px-1"
+        <FileChips
+          files={files.map((item) => item.file)}
+          onRemove={(index) => setFiles((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
+          className="mb-1.5 flex flex-wrap gap-2 px-1"
+        />
+
+        {selectedDataset ? (
+          <div className="mb-1.5 inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-xs text-foreground">
+            <Database className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
+            <span className="truncate">{selectedDataset.package}::{selectedDataset.dataset}</span>
+            <button
+              type="button"
+              className="rounded-full p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+              onClick={() => setSelectedDataset(null)}
+              aria-label="Remove example dataset"
             >
-              {files.map((item, index) => {
-                const Icon = isImageFile(item.file) ? FileImage : FileText;
-                const sizeStr = formatBytes(item.file.size);
-                return (
-                  <div
-                    key={`${item.file.name}-${index}`}
-                    className="group flex min-w-0 max-w-60 items-center gap-2 rounded-xl border border-border bg-background/80 px-2.5 py-1.5 text-left shadow-sm backdrop-blur"
-                    title={item.file.name}
-                  >
-                    <Icon className="h-4 w-4 shrink-0 text-red-500" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium text-foreground">{item.file.name}</span>
-                      {sizeStr ? <span className="block text-[10px] uppercase text-muted-foreground">{sizeStr}</span> : null}
-                    </span>
-                    <button
-                      type="button"
-                      className="rounded-full p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                      onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))}
-                      aria-label={`Remove ${item.file.name}`}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                );
-              })}
-              {selectedDataset ? (
-                <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-xs text-foreground">
-                  <Database className="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
-                  <span className="truncate">
-                    {selectedDataset.package}::{selectedDataset.dataset}
-                  </span>
-                  <button
-                    type="button"
-                    className="rounded-full p-1 text-muted-foreground hover:bg-background hover:text-foreground"
-                    onClick={() => setSelectedDataset(null)}
-                    aria-label="Remove example dataset"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ) : null}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
 
         {datasetOpen ? (
-          <div className="mb-1.5 px-1">
-            <div className="rounded-2xl border border-border bg-popover p-2 text-sm shadow-xl">
-              <div className="mb-1 flex items-center justify-between px-1">
-                <p className="text-xs font-medium text-muted-foreground">Import example dataset</p>
-                <button
-                  type="button"
-                  className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  onClick={() => setDatasetOpen(false)}
-                  aria-label="Close dataset picker"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              {datasets === null ? (
-                <p className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading datasets…
-                </p>
-              ) : datasets.length === 0 ? (
-                <p className="px-1 py-2 text-xs text-muted-foreground">
-                  No example datasets available right now.
-                </p>
-              ) : (
-                <div className="max-h-48 space-y-1 overflow-y-auto">
-                  {datasets.map((dataset) => (
-                    <button
-                      key={`${dataset.package}::${dataset.dataset}`}
-                      type="button"
-                      onClick={() => {
-                        setSelectedDataset(dataset);
-                        setDatasetOpen(false);
-                      }}
-                      className={`flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left transition hover:bg-muted ${
-                        selectedDataset?.package === dataset.package &&
-                        selectedDataset?.dataset === dataset.dataset
-                          ? "bg-teal-500/10"
-                          : ""
-                      }`}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium text-foreground">
-                          {dataset.package}::{dataset.dataset}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {dataset.description}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <DatasetPicker
+            datasets={datasets}
+            onClose={() => setDatasetOpen(false)}
+            onPick={(dataset) => {
+              setSelectedDataset(dataset);
+              setDatasetOpen(false);
+            }}
+            placement="top"
+            selected={selectedDataset}
+          />
         ) : null}
 
         <div className="flex items-end gap-1.5">
@@ -375,52 +287,17 @@ export function StartComposer({
               event.target.value = "";
             }}
           />
-          <div className="relative shrink-0">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => setAddMenuOpen((open) => !open)}
-              disabled={createMutation.isPending}
-              className="h-10 w-10 shrink-0 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-              title="Add files or an example dataset"
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-            <AnimatePresence>
-              {addMenuOpen ? (
-                <>
-                  <div className="fixed inset-0 z-20" onClick={() => setAddMenuOpen(false)} />
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.96, y: -6 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.96, y: -6 }}
-                    transition={{ type: "spring", stiffness: 420, damping: 32, mass: 0.9 }}
-                    style={{ transformOrigin: "top left" }}
-                    className="absolute left-0 top-[calc(100%+8px)] z-30 w-56 overflow-hidden rounded-2xl border border-border bg-[var(--composer-elevated)] p-1 shadow-2xl"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        fileInputRef.current?.click();
-                      }}
-                      className="w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-foreground transition hover:bg-muted"
-                    >
-                      Add files
-                    </button>
-                    <button
-                      type="button"
-                      onClick={openDatasetPicker}
-                      className="w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-foreground transition hover:bg-muted"
-                    >
-                      Import example dataset
-                    </button>
-                  </motion.div>
-                </>
-              ) : null}
-            </AnimatePresence>
-          </div>
+          <ComposerAddMenu
+            open={addMenuOpen}
+            onToggle={() => setAddMenuOpen((open) => !open)}
+            onAddFiles={() => {
+              setAddMenuOpen(false);
+              fileInputRef.current?.click();
+            }}
+            onImportDataset={openDatasetPicker}
+            disabled={createMutation.isPending}
+            placement="top"
+          />
 
           <div className="min-w-0 flex-1">
             <ComposerTextarea

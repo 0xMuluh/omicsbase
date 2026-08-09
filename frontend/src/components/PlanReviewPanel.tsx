@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ClarificationQuestion, Job, WorkflowStep } from "@/lib/api";
+import { api, type Job } from "@/lib/api";
+import type { ClarificationQuestion, WorkflowStep } from "@/lib/api/types/projects";
 import { retryStageCopy, retryStageForFailure } from "@/lib/retryStage";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";

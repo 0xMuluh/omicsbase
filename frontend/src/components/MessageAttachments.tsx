@@ -3,14 +3,7 @@
 import { FileImage, FileText } from "lucide-react";
 
 import type { FileAttachment } from "@/lib/api";
-
-function formatBytes(bytes: number | null | undefined): string | null {
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return null;
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
+import { formatFileSize } from "@/lib/file";
 
 function isImageAttachment(attachment: FileAttachment): boolean {
   const format = String(attachment.format || "").toLowerCase();
@@ -26,7 +19,7 @@ export function MessageAttachments({ attachments, className = "" }: { attachment
         const Icon = isImageAttachment(attachment) ? FileImage : FileText;
         const details = [
           attachment.format || attachment.mime_type?.split("/").pop(),
-          formatBytes(attachment.size_bytes),
+          formatFileSize(attachment.size_bytes),
         ].filter(Boolean).join(" · ");
         return (
           <div
