@@ -115,6 +115,9 @@ class Settings(BaseSettings):
 
     # Workspace agent autonomy
     agent_max_steps: int = 6
+    agent_max_budget_units: int = 12
+    agent_max_tool_calls: int = 24
+    agent_max_mutations: int = 4
     agent_run_stale_after_seconds: int = 300
     agent_allow_acquisition: bool = True
 

@@ -291,7 +291,7 @@ def test_classify_intent_invalid_output_routes_to_tool_loop(monkeypatch):
 
 def test_classify_intent_disabled(monkeypatch):
     monkeypatch.setattr(settings, "fast_path_judge_enabled", False)
-    assert asyncio.run(classify_intent("What is a p-value?")) == "conceptual"
+    assert asyncio.run(classify_intent("What is a p-value?")) == "needs_tools"
 
 
 def test_friendly_tool_label_never_leaks_identifiers():

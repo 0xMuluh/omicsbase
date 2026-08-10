@@ -28,6 +28,7 @@ from app.services.agent_runs import (
     create_or_get_agent_run,
     list_run_events,
 )
+from scripts.agent_harness import run_harness
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -122,6 +123,7 @@ def run_benchmark(iterations: int = 25) -> dict:
             "database": "sqlite",
             "iterations": iterations,
             "results": results,
+            "agent_harness": run_harness(),
             "interpretation": {
                 "external_comparison": "not_measured",
                 "required_for_competitor_claim": "Run the same scenario through provider/tool adapters with identical model, prompt, tool, and network conditions.",

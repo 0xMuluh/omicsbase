@@ -863,7 +863,7 @@ def _promote_cell_to_workspace(
 def _note_agent_context(db: Session, thread: NoteThread) -> dict[str, Any]:
     cells: list[dict[str, Any]] = []
     ordered_cells = sorted(thread.cells, key=lambda item: (int(item.position or 0), item.created_at))
-    for cell in ordered_cells[-24:]:
+    for cell in ordered_cells[-12:]:
         revision = cell.revisions[-1] if cell.revisions else None
         if revision is None:
             continue
@@ -1015,6 +1015,14 @@ async def note_thread_turn(
     thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
     if thread.status != "active":
         raise HTTPException(status_code=409, detail="Cannot add turns to an archived NoteThread")
+    from app.services.agent_plans import (
+        attach_continuation_plan,
+        build_continuation_plan,
+        continuation_is_ready,
+        continuation_prompt,
+        get_continuation_plan,
+        mark_continuation_running,
+    )
     from app.services.agent_runs import (
         IdempotencyConflict,
         get_agent_run,
@@ -1050,11 +1058,17 @@ async def note_thread_turn(
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    continuation_plan = get_continuation_plan(run)
+    continuation_resume = (
+        not run_created
+        and continuation_is_ready(run)
+        and not is_run_task_active(str(run.id))
+    )
     resume_existing_run = (
         not run_created
-        and run.status == "paused"
-        and bool(run.resumable)
         and not is_run_task_active(str(run.id))
+        and bool(run.resumable)
+        and (run.status == "paused" or continuation_resume)
     )
     if not run_created and not resume_existing_run:
         async def replay_existing_run():
@@ -1073,6 +1087,8 @@ async def note_thread_turn(
 
     turn_id = str(run.id)
     if resume_existing_run:
+        if continuation_resume and continuation_plan:
+            mark_continuation_running(run)
         transition_agent_run(db, run, "running", event_type="run_resumed")
         run.result_payload = None
         db.commit()
@@ -1119,6 +1135,7 @@ async def note_thread_turn(
         active_thread = _get_note_thread_for_tenant(db, thread_id, tenant_id)
 
     context = _note_agent_context(db, active_thread)
+    agent_message = continuation_prompt(continuation_plan) if continuation_resume and continuation_plan else message
     generated_code_cells = 0
     generated_note_cells = 0
     knowledge_sources: list[str] = []
@@ -1394,7 +1411,7 @@ async def note_thread_turn(
         default=str) + "\n"
         try:
             async for event in stream_note_agent(
-                message=message,
+                message=agent_message,
                 cells=prior_cells,
                 context=context,
                 action_handler=action_handler,
@@ -1452,6 +1469,21 @@ async def note_thread_turn(
                         output_event["role"] = "assistant"
                         output_event["cell"] = _cell_payload(assistant_cell)
                         final_written = True
+                if output_event.get("type") == "execution_queued" and isinstance(output_event.get("execution"), dict):
+                    execution = output_event["execution"]
+                    execution_id = execution.get("id")
+                    if execution_id:
+                        plan = build_continuation_plan(
+                            run,
+                            action="run_r_cell",
+                            dependency_kind="execution",
+                            dependency_id=str(execution_id),
+                            instruction=str(message),
+                            arguments={},
+                            dependency_status=str(execution.get("status") or "queued"),
+                        )
+                        attach_continuation_plan(run, plan)
+
                 event_type = str(output_event.get("type") or event_type)
                 if event_type in {"final", "cancelled"} and token_buffer:
                     record_stream_event(

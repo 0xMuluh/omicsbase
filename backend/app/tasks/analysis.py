@@ -91,6 +91,20 @@ def _update_job(db, job_id: str | None, **kwargs):
             setattr(job, k, v)
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
+        if str(job.status or "").lower() in {"completed", "failed", "cancelled"}:
+            try:
+                from app.services.agent_plans import mark_dependency_complete
+
+                mark_dependency_complete(
+                    db,
+                    dependency_kind="job",
+                    dependency_id=str(job.id),
+                    dependency_status=str(job.status),
+                    result={"status": job.status, "error": job.error, "progress": job.progress},
+                )
+                db.commit()
+            except Exception:
+                logger.exception("Could not advance continuation plan for job %s", job.id)
         publish_project_event(
             str(job.project_id),
             {

@@ -1,8 +1,7 @@
 """Fast-intent path: answer messages without the tool loop.
 
-Routing is fully semantic: the fast-model judge decides between conceptual,
-needs_tools, and needs_knowledge for every message. The only pre-checks are
-sanity bounds (blank, absurdly long). No keyword or command heuristics.
+A deterministic request-state gate handles clear routes first; ambiguous
+messages retain the semantic judge as a safe backstop.
 """
 
 from __future__ import annotations
@@ -18,6 +17,37 @@ from app.services.llm import call_llm, stream_llm_text
 logger = logging.getLogger(__name__)
 
 MAX_FAST_PATH_CHARS = 2000
+
+_CONCEPTUAL_PREFIX = re.compile(
+    r"^(?:what(?:'s| is| are)|why (?:do|does|did)|how (?:does|do|did)|"
+    r"explain|define|tell me about|what is the difference between)\b"
+)
+_CONTEXT_REFERENCE = re.compile(
+    r"\b(?:my|our|your|this|that|these|those|it|selected|current|actual|"
+    r"specific|workspace|project|notebook|file|csv|tsv|qmd|report|result|"
+    r"results|job|run|analysis|error|failure|failed|column|group|sample|"
+    r"plot|figure|package|cell|variable|output|data)\b"
+)
+_DEICTIC_REFERENCE = re.compile(
+    r"\b(?:this|that|these|those|it|here|above|below|selected|current)\b"
+)
+_NOTE_OPERATION = re.compile(
+    r"^(?:calculate|compute|run|execute|load|import|inspect|read|plot|compare|"
+    r"summari[sz]e|analy[sz]e|continue|retry|rerun|resume|use|show|render|repair|fix|build|edit|change|update|set|check|describe|list|search|find|validate|review)\b"
+)
+_REQUEST_WRAPPER = re.compile(
+    r"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)"
+)
+_ACTIVE_FAILURE = {"failed", "failure", "error", "cancelled", "canceled"}
+_PROCEDURE_REQUEST = re.compile(
+    r"^(?:how (?:do|can) i|can you|could you|please)\b.*\b(?:calculate|compute|"
+    r"run|execute|load|import|inspect|read|plot|compare|summari[sz]e|"
+    r"analy[sz]e|install|render|continue|retry|rerun)\b"
+)
+_KNOWLEDGE_REQUEST = re.compile(
+    r"\b(?:best practices?|guidelines?|which\s+\w+(?:\s+\w+){0,4}\s+method|what method|choose between|how do i choose|"
+    r"literature|evidence|recommended)\b"
+)
 
 FAST_PATH_SYSTEM = """You are OmicsBase, answering a scientific question directly without inspecting or modifying the user's workspace. Match the depth and structure of the response to the question. Answer narrow factual questions briefly. For broad explanatory questions such as "tell me about X", "explain X", or "how does X work", provide a clear, well-structured explanation using headings, lists, equations, or examples only where they improve understanding. Cover the most relevant aspects of the topic rather than following a fixed template. These may include the definition, mechanism, key concepts, common methods or metrics, interpretation, applications, and important limitations.
 
@@ -36,6 +66,69 @@ Choose "needs_tools" whenever a correct answer depends on the user's actual work
 Reply with ONLY a JSON object in this exact form: {"intent": "conceptual"}."""
 
 VALID_INTENTS = {"conceptual", "needs_tools", "needs_knowledge"}
+
+
+def deterministic_intent(
+    message: str,
+    *,
+    lens: str,
+    explicit_mutation: bool = False,
+    selected_resource: str | None = None,
+    selected_content_dirty: bool = False,
+    active_job_status: str | None = None,
+    prior_tool_activity: bool = False,
+    pending_question: bool = False,
+    notebook_state: bool = False,
+) -> str | None:
+    """Resolve only routing decisions that are safe from request state.
+
+    ``None`` deliberately means ambiguous: callers should retain the existing
+    semantic judge for that case. The deterministic gate handles explicit
+    actions, deictic follow-ups tied to live state, and plainly conceptual
+    questions without pretending to understand the user's full intent.
+    """
+    text = " ".join(str(message or "").strip().lower().split())
+    if not text:
+        return None
+
+    if explicit_mutation or pending_question:
+        return "needs_tools"
+
+    if selected_resource and (
+        _DEICTIC_REFERENCE.search(text)
+        or selected_content_dirty and _CONTEXT_REFERENCE.search(text)
+        or len(text.split()) <= 3
+    ):
+        return "needs_tools"
+
+    if prior_tool_activity and _DEICTIC_REFERENCE.search(text):
+        return "needs_tools"
+
+    status = str(active_job_status or "").strip().lower()
+    if status in _ACTIVE_FAILURE and (
+        _DEICTIC_REFERENCE.search(text)
+        or _CONTEXT_REFERENCE.search(text)
+        or len(text.split()) <= 4
+    ):
+        return "needs_tools"
+
+    if _PROCEDURE_REQUEST.match(text):
+        return "needs_tools"
+
+    if _KNOWLEDGE_REQUEST.search(text) and not _DEICTIC_REFERENCE.search(text):
+        return "needs_knowledge"
+
+    operation_text = _REQUEST_WRAPPER.sub("", text)
+    if _NOTE_OPERATION.match(operation_text):
+        return "needs_tools"
+
+    if lens == "note" and notebook_state and _DEICTIC_REFERENCE.search(text):
+        return "needs_tools"
+
+    if _CONCEPTUAL_PREFIX.match(text) and not _CONTEXT_REFERENCE.search(text):
+        return "conceptual"
+
+    return None
 
 
 def record_routing(
@@ -63,13 +156,13 @@ async def classify_intent(message: str) -> str:
     """Ask the fast model whether a message is conceptual, needs tools, or
     needs knowledge grounding.
 
-    Called for every message that passes the minimal gate. Because the gate
-    is permissive, any judge failure (provider error, timeouts) defaults to
+    Called only for ambiguous messages that pass the minimal gate. Any judge
+    failure (provider error, timeouts) defaults to
     ``needs_tools`` — routing to the tool loop, which has its own graceful
     fallback, instead of answering directly without a semantic check.
     """
     if not settings.fast_path_judge_enabled:
-        return "conceptual"
+        return "needs_tools"
     from app.services.llm import resolve_target
 
     provider_override, model_override = resolve_target("fast")
@@ -109,9 +202,9 @@ async def classify_intent(message: str) -> str:
 def is_simple_question(message: str) -> bool:
     """Fast-path candidate sanity check.
 
-    There is no command or keyword filtering: routing is decided entirely
-    by the LLM judge. This only rejects blank messages and absurdly long
-    ones that would blow up the fast-path prompt.
+    This is the candidate sanity check; deterministic request-state routing and
+    the semantic judge decide what happens after a message passes it. It rejects
+    blank messages and absurdly long ones that would blow up the fast-path prompt.
     """
     if not settings.fast_path_enabled:
         return False

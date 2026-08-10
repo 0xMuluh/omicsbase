@@ -54,6 +54,18 @@ def _publish(execution: CellExecution, project_id: str | None, thread_id: str) -
     )
 
 
+def _mark_continuation(db, execution: CellExecution, result: dict | None = None) -> None:
+    from app.services.agent_plans import mark_dependency_complete
+
+    mark_dependency_complete(
+        db,
+        dependency_kind="execution",
+        dependency_id=str(execution.id),
+        dependency_status=str(execution.status),
+        result=result or {"error": execution.error},
+    )
+
+
 def _cancel_requested(execution_id: str) -> bool:
     db = SessionLocal()
     try:
@@ -168,6 +180,7 @@ def _mark_cancelled(db, execution: CellExecution, project_id: str, thread_id: st
     execution.finished_at = _now()
     execution.error = None
     append_execution_event(db, execution, "note_execution_cancelled")
+    _mark_continuation(db, execution, {"status": execution.status})
     db.commit()
     _publish(execution, project_id, thread_id)
 
@@ -184,6 +197,8 @@ def run_note_cell_execution(*args):
         execution, revision, _cell, thread, project = _load_context(db, scope_id, execution_id, scope_type)
         lock_execution(db, execution)
         if execution.status in TERMINAL_STATUSES:
+            _mark_continuation(db, execution, {"status": execution.status})
+            db.commit()
             return {"status": execution.status, "execution_id": execution_id}
 
         if execution.cancel_requested or execution.status == "cancel_requested":
@@ -241,6 +256,7 @@ def run_note_cell_execution(*args):
             f"note_execution_{execution.status}",
             terminal_payload,
         )
+        _mark_continuation(db, execution, terminal_payload)
         db.commit()
         _publish(execution, project_id, str(thread.id))
         return {"status": execution.status, "execution_id": execution_id}
@@ -261,6 +277,7 @@ def run_note_cell_execution(*args):
                     "note_execution_failed",
                     {"error": execution.error[:2_000]},
                 )
+                _mark_continuation(db, execution, {"error": execution.error[:2_000]})
                 db.commit()
             except Exception:
                 db.rollback()

@@ -16,11 +16,72 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Protocol
 
 from app.config import settings
+from app.services.context_budget import bounded_json
+from app.services.agent_failures import classify_tool_failure, is_retryable_failure
 from app.services.llm import stream_llm_with_tools
 
 logger = logging.getLogger(__name__)
 
 MAX_PERSISTED_TOOL_ARGUMENT_CHARS = 4000
+
+
+@dataclass
+class TurnBudget:
+    """Bounded per-turn resources shared by both agent lenses."""
+
+    max_units: int
+    max_tool_calls: int
+    max_mutations: int
+    units_used: int = 0
+    tool_calls: int = 0
+    mutation_count: int = 0
+    llm_calls: int = 0
+    generated_tokens: int = 0
+    retrieved_chars: int = 0
+
+    @classmethod
+    def from_settings(cls) -> "TurnBudget":
+        return cls(
+            max_units=max(1, int(getattr(settings, "agent_max_budget_units", 12) or 12)),
+            max_tool_calls=max(1, int(getattr(settings, "agent_max_tool_calls", 24) or 24)),
+            max_mutations=max(1, int(getattr(settings, "agent_max_mutations", 4) or 4)),
+        )
+
+    def try_consume_tool(self, *, cost: int, mutating: bool) -> tuple[bool, str | None]:
+        cost = max(1, int(cost))
+        if self.tool_calls >= self.max_tool_calls:
+            return False, f"the turn allows at most {self.max_tool_calls} tool calls"
+        if mutating and self.mutation_count >= self.max_mutations:
+            return False, f"the turn allows at most {self.max_mutations} mutations"
+        if self.units_used + cost > self.max_units:
+            return False, f"the turn has {self.max_units - self.units_used} budget units left, but this tool costs {cost}"
+        self.tool_calls += 1
+        self.units_used += cost
+        if mutating:
+            self.mutation_count += 1
+        return True, None
+
+    def record_llm_call(self) -> None:
+        self.llm_calls += 1
+
+    def record_generated(self, value: str) -> None:
+        self.generated_tokens += max(0, (len(value or "") + 3) // 4)
+
+    def record_retrieved(self, value: str) -> None:
+        self.retrieved_chars += len(value or "")
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "units_used": self.units_used,
+            "max_units": self.max_units,
+            "tool_calls": self.tool_calls,
+            "max_tool_calls": self.max_tool_calls,
+            "mutation_count": self.mutation_count,
+            "max_mutations": self.max_mutations,
+            "llm_calls": self.llm_calls,
+            "generated_tokens": self.generated_tokens,
+            "retrieved_chars": self.retrieved_chars,
+        }
 
 # Steps after the first of a turn receive a compact placeholder instead of the
 # full workspace snapshot; the snapshot is only re-sent when a tool refreshed
@@ -99,6 +160,19 @@ def tool_signature(tool_name: str, arguments: dict[str, Any]) -> str:
         return json.dumps({"tool": tool_name, "arguments": arguments}, sort_keys=True, default=str)
     except (TypeError, ValueError):
         return f"{tool_name}:{arguments!r}"
+
+
+def _observation_failed(observation: dict[str, Any]) -> bool:
+    if not isinstance(observation, dict):
+        return False
+    if str(observation.get("status") or "").lower() == "error":
+        return True
+    execution = observation.get("execution")
+    if isinstance(execution, dict) and str(execution.get("status") or "").lower() in {"failed", "timed_out", "cancelled", "completed_with_errors"}:
+        return True
+    summary = observation.get("summary")
+    return isinstance(summary, dict) and bool(summary.get("had_errors"))
+
 
 
 @dataclass
@@ -210,6 +284,14 @@ class AgentExecutor(Protocol):
         """
         ...
 
+    def deterministic_intent(self, message: str) -> str | None:
+        """Return a safe route from request state, or ``None`` if ambiguous."""
+        return None
+
+    def tool_spec(self, tool_name: str) -> Any:
+        """Return the lens-specific ToolSpec when the executor has one."""
+        return None
+
     async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
         """Stream the direct answer events when use_fast_path returned True."""
         if False:
@@ -253,12 +335,34 @@ async def run_agent_loop(
             return
 
         if executor.use_fast_path(message):
-            intent = "conceptual"
-            judge = getattr(executor, "judge_intent", None)
-            if settings.fast_path_judge_enabled and judge is not None:
-                intent = await judge(message)
+            intent: str | None = None
+            route_reason = "judge"
+            deterministic = getattr(executor, "deterministic_intent", None)
+            if deterministic is not None:
+                intent = deterministic(message)
+                if intent in {"conceptual", "needs_tools", "needs_knowledge"}:
+                    route_reason = "request_state"
+                    from app.services.intent_fastpath import record_routing
+
+                    record_routing(
+                        lens=type(executor).__name__,
+                        message=message,
+                        decision="deterministic",
+                        reason="request_state",
+                        intent=intent,
+                        duration_ms=(time.monotonic() - started) * 1000,
+                    )
+                else:
+                    intent = None
+
+            if intent is None:
+                judge = getattr(executor, "judge_intent", None)
+                if settings.fast_path_judge_enabled and judge is not None:
+                    intent = await judge(message)
+                else:
+                    intent = "needs_tools"
             if intent == "needs_tools":
-                decision = "full_judged_tools"
+                decision = f"full_{route_reason}_tools"
             else:
                 decision = f"fast_{intent}"
                 from app.services.intent_fastpath import record_routing
@@ -267,7 +371,7 @@ async def run_agent_loop(
                     lens=type(executor).__name__,
                     message=message,
                     decision="fast",
-                    reason="judge",
+                    reason=route_reason,
                     intent=intent,
                     duration_ms=(time.monotonic() - started) * 1000,
                 )
@@ -278,10 +382,12 @@ async def run_agent_loop(
         messages = executor.build_messages(message)
         live_context = executor.build_live_context()
         collected_text = ""
-        failed_tool_calls: dict[str, str] = {}
+        failed_tool_calls: dict[str, dict[str, str]] = {}
+        retry_attempted: set[str] = set()
         # Non-idempotent calls are guarded for this turn so reconnects cannot enqueue duplicates.
         seen_non_idempotent_calls: set[str] = set()
         context_refreshed = False
+        turn_budget = TurnBudget.from_settings()
 
         for step in range(1, executor.max_steps + 1):
             steps_run = step
@@ -296,6 +402,7 @@ async def run_agent_loop(
             context_refreshed = False
 
             try:
+                turn_budget.record_llm_call()
                 legacy = await executor.legacy_llm_step(messages, step=step)
                 if legacy is not None:
                     for event in legacy.events:
@@ -320,6 +427,7 @@ async def run_agent_loop(
                             token = event["content"]
                             step_text += token
                             collected_text += token
+                            turn_budget.record_generated(token)
                             yield {"type": "token", "token": token}
                         elif event["type"] == "tool_call":
                             tool_calls_this_step.append(event)
@@ -358,7 +466,9 @@ async def run_agent_loop(
                     step=step,
                     step_text=step_text,
                     failed_tool_calls=failed_tool_calls,
+                    retry_attempted=retry_attempted,
                     seen_non_idempotent_calls=seen_non_idempotent_calls,
+                    budget=turn_budget,
                 )
                 if outcomes is None:
                     for event in stop_events:
@@ -373,13 +483,19 @@ async def run_agent_loop(
                             yield result.final_event
                         return
 
-                    if result.observation.get("status") == "error" and result.record_failure:
-                        failed_tool_calls[tool_signature(tc["name"], tc["arguments"])] = str(
-                            result.observation.get("error") or "unknown error"
-                        )[:2000]
-                    observed_status = str(result.observation.get("status") or "")
-                    status = observed_status if observed_status in {"error", "duplicate", "unsupported"} else "ok"
-                    summary = result.summary or executor.summary_for(tc["name"], result.observation)
+                    observation = result.observation if isinstance(result.observation, dict) else {"status": "ok", "result": result.observation}
+                    failed = _observation_failed(observation)
+                    if failed:
+                        failure_class = classify_tool_failure(observation)
+                        observation.setdefault("failure_class", failure_class)
+                        if result.record_failure:
+                            failed_tool_calls[tool_signature(tc["name"], tc["arguments"])] = {
+                                "message": str(observation.get("error") or observation.get("execution") or "unknown error")[:2000],
+                                "class": failure_class,
+                            }
+                    observed_status = str(observation.get("status") or "")
+                    status = "error" if failed else (observed_status if observed_status in {"duplicate", "unsupported", "budget_exhausted"} else "ok")
+                    summary = result.summary or executor.summary_for(tc["name"], observation)
                     if result.emit_completed:
                         yield executor.tool_completed_event(
                             tc["name"],
@@ -390,11 +506,17 @@ async def run_agent_loop(
                             step,
                         )
 
-                    # Feed tool result back to the model
+                    # Feed a structurally bounded result back to the model.
+                    tool_content = bounded_json(
+                        observation,
+                        executor.max_tool_chars,
+                        priority_keys=("status", "summary", "error", "path", "revision", "sha256", "data", "truncated"),
+                    )
+                    turn_budget.record_retrieved(tool_content)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result.observation, default=str)[:executor.max_tool_chars],
+                        "content": tool_content,
                     })
 
                     if result.refresh_context:
@@ -409,11 +531,12 @@ async def run_agent_loop(
             yield event
     finally:
         logger.info(
-            "agent_loop lens=%s decision=%s steps=%d tools=%d duration_ms=%.0f msg=%r",
+            "agent_loop lens=%s decision=%s steps=%d tools=%d budget=%s duration_ms=%.0f msg=%r",
             type(executor).__name__,
             decision,
             steps_run,
             tools_run,
+            turn_budget.snapshot() if "turn_budget" in locals() else {},
             (time.monotonic() - started) * 1000,
             (message or "")[:120],
         )
@@ -473,8 +596,10 @@ async def _execute_tool_group(
     *,
     step: int,
     step_text: str,
-    failed_tool_calls: dict[str, str],
+    failed_tool_calls: dict[str, dict[str, str]],
+    retry_attempted: set[str],
     seen_non_idempotent_calls: set[str],
+    budget: TurnBudget,
 ) -> tuple[list[dict], list[tuple[dict[str, Any], ToolCallResult]] | None]:
     """Execute one group of tool calls.
 
@@ -488,16 +613,20 @@ async def _execute_tool_group(
     for tc in group:
         arguments = tc["arguments"] if isinstance(tc["arguments"], dict) else {}
         signature = tool_signature(tc["name"], arguments)
-        if executor.use_retry_guard and signature in failed_tool_calls:
-            blocker = failed_tool_calls[signature]
-            message = (
-                f"I already tried {tc['name']} with those arguments and it failed, so I stopped retrying. "
-                f"The exact blocker was: {blocker}"
-            )
-            return (
-                [{"type": "token", "token": message}, executor.final_event(message)],
-                None,
-            )
+        failure = failed_tool_calls.get(signature)
+        if executor.use_retry_guard and failure:
+            failure_class = str(failure.get("class") or "unknown")
+            if not is_retryable_failure(failure_class) or signature in retry_attempted:
+                blocker = str(failure.get("message") or "unknown failure")
+                message = (
+                    f"I already tried {tc['name']} with those arguments and it failed, so I stopped retrying. "
+                    f"Failure class: {failure_class}. The exact blocker was: {blocker}"
+                )
+                return (
+                    [{"type": "token", "token": message}, executor.final_event(message)],
+                    None,
+                )
+            retry_attempted.add(signature)
         idempotency = getattr(executor, "tool_idempotency", lambda name: "read_only")(tc["name"])
         if idempotency == "non_idempotent" and signature in seen_non_idempotent_calls:
             blocked[tc["id"]] = ToolCallResult(
@@ -515,6 +644,37 @@ async def _execute_tool_group(
                     "step": step,
                 }],
                 summary="Duplicate call suppressed; the original call is already in this turn.",
+                record_failure=False,
+            )
+            continue
+        policy = getattr(executor, "tool_spec", lambda name: None)(tc["name"])
+        cost = int(
+            getattr(policy, "effective_budget", None)
+            or getattr(policy, "budget", None)
+            or 1
+        )
+        mutating = getattr(policy, "risk", None) in {"write", "execute"}
+        allowed, budget_error = budget.try_consume_tool(cost=cost, mutating=mutating)
+        if not allowed:
+            message = f"Turn budget exhausted before {tc['name']}: {budget_error}."
+            final_event = executor.final_event(message)
+            if isinstance(final_event, dict):
+                final_event["budget"] = budget.snapshot()
+            blocked[tc["id"]] = ToolCallResult(
+                observation={
+                    "status": "budget_exhausted",
+                    "error": message,
+                    "budget": budget.snapshot(),
+                },
+                events=[{
+                    "type": "tool_started",
+                    "tool": tc["name"],
+                    "reason": message,
+                    "step": step,
+                }],
+                summary=message,
+                end_turn=True,
+                final_event=final_event,
                 record_failure=False,
             )
             continue

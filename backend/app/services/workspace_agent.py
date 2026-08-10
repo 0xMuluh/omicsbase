@@ -20,7 +20,7 @@ from app.services.agent_core import (
     run_agent_loop,
     tool_signature,
 )
-from app.services.assistant import build_project_context, is_edit_prompt, GREETINGS
+from app.services.assistant import is_edit_prompt, GREETINGS
 from app.services.context_budget import bounded_json
 from app.services.llm import call_llm as _legacy_call_llm, stream_llm_with_tools
 from app.services.tool_specs import ACTION_TOOL_SPECS, TOOL_REGISTRY, WORKSPACE_TOOL_SPECS
@@ -36,27 +36,20 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_CHARS = 16000
 
 
-INLINE_ACTIONS = {
-    "import_package_data",
-    "fetch_url",
-}
-ASYNC_ACTIONS = {
-    "plan_analysis",
-    "set_recipe_enabled",
-    "update_recipe_parameters",
-    "set_analysis_variables",
-    "run_recipe",
-    "run_analysis",
-    "undo_project_edit",
-    "render_report",
-    "repair_report",
-    "rollback_analysis_configuration",
-    "edit_project",
-    "queue_guidance",
-}
-MUTATION_ACTIONS = INLINE_ACTIONS | ASYNC_ACTIONS
-PIPELINE_ACTIONS = {"plan_analysis", "run_analysis"}
-RECIPE_ACTIONS = {"set_recipe_enabled", "update_recipe_parameters", "run_recipe"}
+_WORKSPACE_SPECS = TOOL_REGISTRY.all(lens="workspace")
+INLINE_ACTIONS = frozenset(spec.name for spec in _WORKSPACE_SPECS if spec.kind == "inline")
+ASYNC_ACTIONS = frozenset(spec.name for spec in _WORKSPACE_SPECS if spec.kind == "async")
+MUTATION_ACTIONS = frozenset(
+    spec.name
+    for spec in _WORKSPACE_SPECS
+    if spec.kind in {"inline", "async"} and spec.risk in {"write", "execute"}
+)
+PIPELINE_ACTIONS = frozenset(spec.name for spec in _WORKSPACE_SPECS if spec.intent == "pipeline")
+RECIPE_ACTIONS = frozenset(
+    spec.name
+    for spec in _WORKSPACE_SPECS
+    if spec.kind == "async" and spec.capability == "legacy_recipe"
+)
 
 _EXPLICIT_MUTATION_VERBS = (
     "add",
@@ -272,11 +265,67 @@ def _selected_content_excerpt(content: str) -> dict[str, Any] | None:
     }
 
 
+def _header_fields(value: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in keys if key in value}
+
+
+def _workspace_header(
+    project: Any,
+    *,
+    capabilities: set[str],
+    live_workspace: dict[str, Any],
+    chat_mode: str,
+) -> dict[str, Any]:
+    """Build the small state header; retrieval belongs to explicit tools."""
+    memory = getattr(project, "agent_memory", None) or {}
+    manifest = getattr(project, "study_manifest", None) or {}
+    plan = getattr(project, "analysis_plan", None) or {}
+    workflow = plan.get("workflow") if isinstance(plan, dict) else []
+    if isinstance(workflow, list):
+        workflow = [
+            _header_fields(step, ("id", "step_id", "name", "role", "enabled"))
+            for step in workflow[:12]
+            if isinstance(step, dict)
+        ]
+    actions = []
+    for action in (getattr(project, "agent_actions", None) or [])[-3:]:
+        if isinstance(action, dict):
+            actions.append(_header_fields(action, ("type", "action", "status", "summary", "created_at")))
+    return {
+        "project": {
+            "id": str(getattr(project, "id", "")),
+            "name": getattr(project, "name", None),
+            "question": getattr(project, "question", None),
+            "status": getattr(project, "status", None),
+            "agent_state": getattr(project, "agent_state", None),
+        },
+        "study_manifest": _header_fields(
+            manifest,
+            ("status", "domain", "data_roles", "sample_count", "feature_count", "grouping_variable", "group_levels"),
+        ),
+        "analysis_plan": {
+            **_header_fields(plan, ("project_name", "study_type", "question", "grouping_variable", "group_levels", "covariates")),
+            "workflow": workflow,
+        },
+        "active_job": {
+            "status": getattr(project, "status", None),
+            "agent_state": getattr(project, "agent_state", None),
+        },
+        "recent_actions": actions,
+        "pending_guidance": (memory.get("pending_guidance") or [])[-3:],
+        "available_capabilities": sorted(capabilities),
+        "live_workspace": live_workspace,
+        "chat_mode": chat_mode,
+        "retrieval_policy": "Use inspect_project, list_files, search_workspace, read_file, and read_results for details; do not infer omitted files.",
+    }
+
 def _workspace_live_context(project_context: dict[str, Any]) -> str:
     return f"""
 ## Current workspace snapshot
 ```json
-{bounded_json(project_context, 12000, priority_keys=("live_workspace", "study_manifest", "analysis_plan", "capability_contract", "retrieval_hints", "durable_memory", "generated_files", "source_excerpts", "rendered_report_excerpt"))}
+{bounded_json(project_context, 12000, priority_keys=("project", "live_workspace", "study_manifest", "analysis_plan", "active_job", "available_capabilities", "recent_actions"))}
 ```""".strip()
 
 
@@ -452,37 +501,21 @@ class WorkspaceAgentExecutor:
 
         self.inspect_tool_names = {t["function"]["name"] for t in available_workspace_tools}
 
-        # Build project context for system prompt
-        project_context = json.loads(build_project_context(project))
-        project_context["study_manifest"] = project.study_manifest
         selected_content = request.selected_content or ""
         self.live_workspace = {
             "selected_file": request.selected_file,
             "selected_content_dirty": request.selected_content_dirty,
-            # Excerpt + fingerprint instead of the full buffer: the raw content
-            # can reach 12k chars and crowds out the rest of the snapshot.
+            # Excerpt + fingerprint instead of the full buffer.
             "selected_content": _selected_content_excerpt(selected_content),
             "preview_path": request.preview_path,
             "chat_mode": chat_mode,
         }
-        project_context["live_workspace"] = self.live_workspace
-        from app.services.agent_runtime import durable_project_memory
-        from app.services.artifact_retrieval import search_workspace
-
-        project_context["durable_memory"] = durable_project_memory(project)
-        project_context["pending_guidance"] = (project.agent_memory or {}).get("pending_guidance") or []
-        project_context["acquisition_enabled"] = bool(settings.agent_allow_acquisition)
-        capability_contract_path = Path(project.project_dir) / ".omicsbase" / "capabilities.json" if project.project_dir else None
-        if capability_contract_path and capability_contract_path.is_file():
-            try:
-                project_context["capability_contract"] = json.loads(capability_contract_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                project_context["capability_contract"] = {"status": "invalid"}
-        if project.project_dir:
-            project_context["retrieval_hints"] = search_workspace(
-                project.project_dir, request.message, limit=5,
-            )
-        self.project_context = project_context
+        self.project_context = _workspace_header(
+            project,
+            capabilities=self.capabilities,
+            live_workspace=self.live_workspace,
+            chat_mode=chat_mode,
+        )
 
     def initial_events(self, message: str) -> tuple[list[dict], bool]:
         # Fast-Path: greetings
@@ -524,13 +557,12 @@ class WorkspaceAgentExecutor:
     def refresh_live_context(self) -> None:
         """Rebuild the project context after an inline acquisition action."""
         project = self.project
-        project_context = json.loads(build_project_context(project))
-        project_context["study_manifest"] = project.study_manifest
-        project_context["live_workspace"] = self.live_workspace
-        from app.services.agent_runtime import durable_project_memory
-
-        project_context["durable_memory"] = durable_project_memory(project)
-        self.project_context = project_context
+        self.project_context = _workspace_header(
+            project,
+            capabilities=self.capabilities,
+            live_workspace=self.live_workspace,
+            chat_mode=self.chat_mode,
+        )
 
     def fallback_events(self, exc: Exception) -> list[dict]:
         from app.services.provider_errors import LLMProviderError
@@ -608,24 +640,33 @@ class WorkspaceAgentExecutor:
         from app.services.intent_fastpath import is_simple_question
         return is_simple_question(message)
 
+    def deterministic_intent(self, message: str) -> str | None:
+        from app.services.intent_fastpath import deterministic_intent
+
+        memory = getattr(self.project, "agent_memory", None) or {}
+        return deterministic_intent(
+            message,
+            lens="workspace",
+            explicit_mutation=has_explicit_workspace_mutation_intent(message),
+            selected_resource=getattr(self.request, "selected_file", None)
+            or getattr(self.request, "preview_path", None),
+            selected_content_dirty=bool(getattr(self.request, "selected_content_dirty", False)),
+            active_job_status=getattr(self.project, "status", None)
+            or getattr(self.project, "agent_state", None),
+            prior_tool_activity=bool(getattr(self.project, "agent_actions", None)),
+            pending_question=bool(memory.get("pending_question") or memory.get("pending_clarifications")),
+        )
+
     async def judge_intent(self, message: str) -> str:
         from app.services.intent_fastpath import classify_intent
         return await classify_intent(message)
 
+    def tool_spec(self, tool_name: str):
+        return TOOL_REGISTRY.get(tool_name, lens="workspace")
+
     def parallel_eligible(self, tool_name: str) -> bool:
-        # Read-only tools that touch only the filesystem and recipe registry
-        # are safe to run concurrently in worker threads. Anything that uses
-        # the request-scoped SQLAlchemy session is kept sequential.
-        return tool_name in {
-            "list_files",
-            "read_file",
-            "read_results",
-            "compare_results",
-            "search_workspace",
-            "list_recipes",
-            "list_importable_datasets",
-            "validate_report",
-        }
+        spec = self.tool_spec(tool_name)
+        return bool(spec and spec.parallel)
 
     async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
         from app.services.intent_fastpath import stream_simple_answer
@@ -696,7 +737,7 @@ class WorkspaceAgentExecutor:
         )
 
     def tool_idempotency(self, tool_name: str) -> str:
-        spec = TOOL_REGISTRY.get(tool_name)
+        spec = TOOL_REGISTRY.get(tool_name, lens="workspace")
         return spec.idempotency if spec is not None else "read_only"
 
     async def execute_tool(
@@ -782,6 +823,11 @@ class WorkspaceAgentExecutor:
                     emit_completed=False,
                 )
             options = [str(option).strip() for option in (arguments.get("options") or []) if str(option).strip()][:6]
+            if len(options) < 2:
+                return ToolCallResult(
+                    observation={"status": "error", "error": "ask_user requires between 2 and 6 concrete options"},
+                    emit_completed=False,
+                )
             multiple = bool(arguments.get("multiple"))
             pending_question = {
                 "id": f"question-{uuid.uuid4()}",
@@ -816,7 +862,7 @@ class WorkspaceAgentExecutor:
         if tool_name in INLINE_ACTIONS:
             return self._inline_action(tool_name, arguments, step=step, tool_call_id=tool_call_id)
 
-        if tool_name == "edit_project" and any(key in arguments for key in ("search", "replace", "content", "patch", "edits")):
+        if tool_name == "edit_project":
             return self._inline_edit(arguments, step=step, tool_call_id=tool_call_id)
 
         if tool_name in ASYNC_ACTIONS:
@@ -987,7 +1033,7 @@ def _build_agent_prompt(
     )
     return f"""## Workspace snapshot
 ```json
-{bounded_json(project_context, 30000, priority_keys=("live_workspace", "study_manifest", "analysis_plan", "capability_contract", "retrieval_hints", "durable_memory", "generated_files", "source_excerpts", "rendered_report_excerpt"))}
+{bounded_json(project_context, 30000, priority_keys=("project", "live_workspace", "study_manifest", "analysis_plan", "active_job", "available_capabilities", "recent_actions"))}
 ```
 
 ## Persistent conversation
@@ -1125,9 +1171,16 @@ def _execute_tool(project, tool: str, arguments: dict[str, Any]) -> dict[str, An
 
         return {"status": "ok", "memory": durable_project_memory(project)}
     if tool == "read_file":
-        return _read_workspace_file(project, str(arguments.get("path") or ""))
+        return _read_workspace_file(
+            project,
+            str(arguments.get("path") or ""),
+            start_line=arguments.get("start_line"),
+            end_line=arguments.get("end_line"),
+            around=arguments.get("around"),
+            max_chars=arguments.get("max_chars"),
+        )
     if tool == "read_results":
-        return _read_results(project, str(arguments.get("path") or ""))
+        return _read_results(project, str(arguments.get("path") or ""), arguments)
     if tool == "compare_results":
         return _compare_results(project, arguments.get("paths"))
     if tool == "inspect_failures":
@@ -1136,6 +1189,12 @@ def _execute_tool(project, tool: str, arguments: dict[str, Any]) -> dict[str, An
         return _validate_report(project)
     if tool == "run_r":
         return _run_r(project, arguments)
+    if tool == "inspect_table":
+        return _inspect_table(project, arguments)
+    if tool == "inspect_factor_levels":
+        return _inspect_factor_levels(project, arguments)
+    if tool == "summarize_missingness":
+        return _summarize_missingness(project, arguments)
     return {"status": "error", "error": f"Unknown workspace tool: {tool}"}
 
 
@@ -1164,6 +1223,87 @@ def _run_r(project, arguments: dict[str, Any]) -> dict[str, Any]:
     if purpose:
         observation = {**observation, "purpose": purpose[:500]}
     return observation
+
+
+def _table_file(project: Any, arguments: dict[str, Any]) -> tuple[Path | None, Path | None, str | None, dict[str, Any] | None]:
+    base = _project_base(project)
+    relative_path = str(arguments.get("path") or "").strip()
+    path = _safe_path(base, relative_path)
+    if not base or not path:
+        return base, None, "", {"status": "error", "error": "A safe table path is required"}
+    if not path.is_file() or path.suffix.lower() not in {".csv", ".tsv"}:
+        return base, None, "", {"status": "error", "error": "Typed table tools require an existing CSV or TSV file"}
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    return base, path, delimiter, None
+
+
+def _inspect_table(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, path, _delimiter, error = _table_file(project, arguments)
+    if error:
+        return error
+    summary = _summarize_data_file(base, path)
+    return {**summary, "tool": "inspect_table", **_file_revision(path)}
+
+
+def _inspect_factor_levels(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, path, delimiter, error = _table_file(project, arguments)
+    if error:
+        return error
+    column = str(arguments.get("column") or "").strip()
+    if not column:
+        return {"status": "error", "error": "inspect_factor_levels requires a column"}
+    counts: dict[str, int] = {}
+    row_count = 0
+    with path.open(errors="replace", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter=delimiter):
+            row_count += 1
+            value = str(row.get(column) or "").strip() or "<missing>"
+            counts[value] = counts.get(value, 0) + 1
+    levels = sorted(
+        ({"level": level, "count": count} for level, count in counts.items()),
+        key=lambda item: (-item["count"], item["level"]),
+    )
+    return {
+        "status": "ok",
+        "path": path.relative_to(base).as_posix(),
+        "column": column,
+        "levels": levels[:100],
+        "level_count": len(levels),
+        "row_count": row_count,
+        "truncated": len(levels) > 100,
+        **_file_revision(path),
+    }
+
+
+def _summarize_missingness(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, path, delimiter, error = _table_file(project, arguments)
+    if error:
+        return error
+    counts: dict[str, int] = {}
+    row_count = 0
+    with path.open(errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        columns = list(reader.fieldnames or [])
+        counts = {column: 0 for column in columns}
+        for row in reader:
+            row_count += 1
+            for column in columns:
+                value = str(row.get(column) or "").strip().lower()
+                if not value or value in {"na", "nan", "null", "missing"}:
+                    counts[column] += 1
+    return {
+        "status": "ok",
+        "path": path.relative_to(base).as_posix(),
+        "row_count": row_count,
+        "missing": {
+            column: {
+                "count": count,
+                "fraction": round(count / row_count, 6) if row_count else 0,
+            }
+            for column, count in counts.items()
+        },
+        **_file_revision(path),
+    }
 
 
 def _inspect_project(project) -> dict[str, Any]:
@@ -1251,7 +1391,29 @@ def _search_workspace(project, arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _read_workspace_file(project, relative_path: str) -> dict[str, Any]:
+def _file_revision(path: Path) -> dict[str, Any]:
+    import hashlib
+
+    data = path.read_bytes()
+    stat = path.stat()
+    digest = hashlib.sha256(data).hexdigest()
+    return {
+        "sha256": digest,
+        "revision": digest,
+        "byte_size": stat.st_size,
+        "modified_ns": stat.st_mtime_ns,
+    }
+
+
+def _read_workspace_file(
+    project,
+    relative_path: str,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    around: int | None = None,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
     base = _project_base(project)
     path = _safe_path(base, relative_path)
     if not path:
@@ -1261,20 +1423,51 @@ def _read_workspace_file(project, relative_path: str) -> dict[str, Any]:
     if path.suffix.lower() not in READABLE_EXTENSIONS:
         return {"status": "error", "error": f"File type is not readable by the agent: {path.suffix}"}
 
-    # SECURITY: For data files (.csv/.tsv), return schema summary only — no raw cell values to LLM.
+    revision = _file_revision(path)
     if path.suffix.lower() in {".csv", ".tsv"}:
-        return _summarize_data_file(base, path)
+        return {**_summarize_data_file(base, path), **revision}
 
     content = path.read_text(errors="replace")
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+    selected_start = 1
+    selected_end = total_lines
+    try:
+        if around is not None:
+            center = max(1, int(around))
+            selected_start = max(1, center - 30)
+            selected_end = min(total_lines, center + 30)
+        else:
+            if start_line is not None:
+                selected_start = max(1, int(start_line))
+            if end_line is not None:
+                selected_end = max(selected_start, int(end_line))
+    except (TypeError, ValueError):
+        return {"status": "error", "error": "start_line, end_line, and around must be integers"}
+
+    selected = "".join(lines[selected_start - 1:selected_end])
+    limit = max(256, min(int(max_chars or MAX_TOOL_CHARS), MAX_TOOL_CHARS))
+    truncated = len(selected) > limit
+    if truncated:
+        selected = selected[:limit] + "\n...[content truncated]"
+
     return {
         "status": "ok",
         "path": path.relative_to(base).as_posix(),
-        "content": content[:MAX_TOOL_CHARS],
-        "truncated": len(content) > MAX_TOOL_CHARS,
+        "content": selected,
+        "line_start": selected_start,
+        "line_end": min(selected_end, total_lines),
+        "line_count": total_lines,
+        "truncated": truncated,
+        **revision,
     }
 
 
-def _read_results(project, relative_path: str) -> dict[str, Any]:
+def _read_results(
+    project,
+    relative_path: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     base = _project_base(project)
     if not base:
         return {"status": "error", "error": "The project has no generated workspace yet."}
@@ -1288,20 +1481,51 @@ def _read_results(project, relative_path: str) -> dict[str, Any]:
     if not path or not path.is_file():
         return {"status": "error", "error": f"Result artifact does not exist: {relative_path}"}
 
+    args = arguments if isinstance(arguments, dict) else {}
     if path.suffix.lower() in {".csv", ".tsv"}:
         delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
         with path.open(errors="replace", newline="") as handle:
             rows = list(csv.DictReader(handle, delimiter=delimiter))
+        where = args.get("where")
+        if isinstance(where, dict) and where:
+            rows = [
+                row for row in rows
+                if all(str(row.get(str(key), "")) == str(value) for key, value in where.items())
+            ]
+        columns = args.get("columns")
+        if isinstance(columns, list) and columns:
+            wanted = [str(column) for column in columns]
+            rows = [{column: row.get(column, "") for column in wanted} for row in rows]
+        sort_column = str(args.get("sort") or "").strip()
+        if sort_column:
+            reverse = str(args.get("sort_direction") or "asc").lower() == "desc"
+            rows.sort(key=lambda row: str(row.get(sort_column, "")), reverse=reverse)
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+            limit = max(1, min(200, int(args.get("limit") or 50)))
+        except (TypeError, ValueError):
+            return {"status": "error", "error": "offset and limit must be integers"}
+        selected_rows = rows[offset:offset + limit]
         return {
             "status": "ok",
             "path": path.relative_to(base).as_posix(),
-            "columns": list(rows[0].keys()) if rows else [],
-            "rows": rows[:50],
+            "columns": list(selected_rows[0].keys()) if selected_rows else (
+                [str(column) for column in columns] if isinstance(columns, list) else []
+            ),
+            "rows": selected_rows,
             "row_count": len(rows),
-            "truncated": len(rows) > 50,
+            "offset": offset,
+            "limit": limit,
+            "returned_rows": len(selected_rows),
+            "truncated": offset + len(selected_rows) < len(rows),
             "available_artifacts": _result_paths(project),
+            **_file_revision(path),
         }
-    return _read_workspace_file(project, path.relative_to(base).as_posix())
+    return _read_workspace_file(
+        project,
+        path.relative_to(base).as_posix(),
+        max_chars=args.get("max_chars"),
+    )
 
 
 def _compare_results(project, paths: Any) -> dict[str, Any]:
@@ -1474,6 +1698,17 @@ def _execute_inline_edit_project(project: Any, arguments: dict[str, Any]) -> dic
     if not project_dir:
         return {"status": "error", "error": "No project directory available for inline edit"}
     base = Path(project_dir).resolve()
+    mode = str(arguments.get("mode") or "").strip().lower()
+    if mode == "search_replace" and not all(key in arguments for key in ("path", "search", "replace")):
+        return {"status": "error", "error": "mode=search_replace requires path, search, and replace"}
+    if mode == "content" and not all(key in arguments for key in ("path", "content")):
+        return {"status": "error", "error": "mode=content requires path and content"}
+    if mode == "patch" and not isinstance(arguments.get("patch"), str):
+        return {"status": "error", "error": "mode=patch requires a patch envelope"}
+    if mode == "batch" and not isinstance(arguments.get("edits"), list):
+        return {"status": "error", "error": "mode=batch requires edits"}
+    if mode == "instruction":
+        return {"status": "error", "error": "mode=instruction must be converted into explicit edit operations after inspection"}
     edits = arguments.get("edits")
     if not isinstance(edits, list):
         path = str(arguments.get("path") or "").strip()
@@ -1527,6 +1762,9 @@ def _execute_inline_edit_project(project: Any, arguments: dict[str, Any]) -> dic
             return {"status": "error", "error": f"File {canonical_path} does not exist or is not a file"}
         existing = target_path.read_bytes()
         base_sha256 = sha256_bytes(existing)
+        expected_sha256 = str(arguments.get("expected_sha256") or "").strip().lower()
+        if expected_sha256 and expected_sha256 != base_sha256:
+            return {"status": "error", "error": f"File {canonical_path} changed since it was inspected; expected_sha256 does not match", "path": canonical_path, "sha256": base_sha256}
         if isinstance(search, str) and isinstance(replace, str):
             operations.append(
                 EditOperation(
@@ -1628,7 +1866,7 @@ def _summarize_data_file(base: Path, path: Path) -> dict[str, Any]:
                 col_info[col] = {
                     "type": "numeric" if numeric else "categorical/text",
                     "n_unique": len(unique),
-                    "levels": unique[:8] if not numeric and len(unique) <= 20 else None,
+                    "levels": None,
                 }
         return {
             "status": "ok",

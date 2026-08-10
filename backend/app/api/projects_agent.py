@@ -147,6 +147,14 @@ async def workspace_agent_stream(
 
     from app.services.agent_runtime import build_run_event_metadata, record_project_message as persist_project_message
     from app.services.workspace_agent import stream_workspace_agent
+    from app.services.agent_plans import (
+        attach_continuation_plan,
+        build_continuation_plan,
+        continuation_is_ready,
+        continuation_prompt,
+        get_continuation_plan,
+        mark_continuation_running,
+    )
 
     from app.services.agent_runs import (
         IdempotencyConflict,
@@ -183,11 +191,17 @@ async def workspace_agent_stream(
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    continuation_plan = get_continuation_plan(run)
+    continuation_resume = (
+        not run_created
+        and continuation_is_ready(run)
+        and not is_run_task_active(str(run.id))
+    )
     resume_existing_run = (
         not run_created
-        and run.status == "paused"
-        and bool(run.resumable)
         and not is_run_task_active(str(run.id))
+        and bool(run.resumable)
+        and (run.status == "paused" or continuation_resume)
     )
     if not run_created and not resume_existing_run:
         async def replay_existing_run():
@@ -229,6 +243,8 @@ async def workspace_agent_stream(
         )
 
     if resume_existing_run:
+        if continuation_resume and continuation_plan:
+            mark_continuation_running(run)
         transition_agent_run(db, run, "running", event_type="run_resumed")
         run.result_payload = None
         db.commit()
@@ -278,6 +294,14 @@ async def workspace_agent_stream(
                 ],
             },
         )
+
+    agent_request = data
+    if continuation_resume and continuation_plan:
+        resume_message = continuation_prompt(continuation_plan)
+        if hasattr(data, "model_copy"):
+            agent_request = data.model_copy(update={"message": resume_message})
+        else:
+            agent_request = data.copy(update={"message": resume_message})
 
     request_db = db
     worker_session_factory = session_factory_for(request_db)
@@ -407,7 +431,7 @@ async def workspace_agent_stream(
 
         async for event in stream_workspace_agent(
             project,
-            data,
+            agent_request,
             persisted_history,
             inline_action_handler=inline_action_handler,
             knowledge_search_handler=knowledge_search_handler,
@@ -796,6 +820,17 @@ async def workspace_agent_stream(
                 agent_memory["pending_question"] = event["awaiting_answer"]
                 project.agent_memory = agent_memory
                 db.commit()
+
+            if event.get("type") == "action_queued" and event.get("job_id"):
+                plan = build_continuation_plan(
+                    run,
+                    action=str(event.get("action") or "workspace action"),
+                    dependency_kind="job",
+                    dependency_id=str(event["job_id"]),
+                    instruction=str(event.get("message") or user_message.content or data.message),
+                    arguments=event.get("arguments") if isinstance(event.get("arguments"), dict) else {},
+                )
+                attach_continuation_plan(run, plan)
 
             event_type = str(event.get("type") or event_type)
             if event_type in {"final", "action_queued", "cancelled"} and token_buffer:

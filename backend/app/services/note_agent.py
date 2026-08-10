@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 MAX_NOTE_TOOL_CHARS = 12_000
 MAX_NOTE_HISTORY = 12
+MAX_NOTE_HISTORY_CHARS = 24_000
 # Absolute safety ceiling for one note turn; the configured budget defaults
 # to this and can be lowered via NOTE_AGENT_MAX_STEPS.
 MAX_NOTE_STEPS = 24
@@ -99,13 +100,30 @@ def conversation_from_cells(cells: list[Any]) -> list[dict[str, str]]:
             content = f"Provenance note:\n{content}"
         role = "user" if cell_type == "agent" else "assistant"
         messages.append({"role": role, "content": content[:MAX_NOTE_TOOL_CHARS]})
-    return messages[-MAX_NOTE_HISTORY:]
+    selected = messages[-MAX_NOTE_HISTORY:]
+    compacted: list[dict[str, str]] = []
+    remaining = MAX_NOTE_HISTORY_CHARS
+    for message in reversed(selected):
+        content = str(message.get("content") or "")
+        if remaining <= 0:
+            break
+        if len(content) > remaining:
+            if remaining < 160:
+                break
+            content = content[: max(1, remaining - 36)] + "\n…[older notebook history omitted]"
+        compacted.append({"role": str(message.get("role") or "assistant"), "content": content})
+        remaining -= len(content)
+    return list(reversed(compacted))
 
 
 def _live_context(context: dict[str, Any]) -> str:
+    # Cell contents are already carried as replayable messages. Keep the live
+    # snapshot cheap; inspect_note explicitly refreshes the durable cell view.
+    snapshot = dict(context or {})
+    snapshot.pop("cells", None)
     return (
         "## Current linear notebook context\n```json\n"
-        + bounded_json(context, MAX_NOTE_TOOL_CHARS, priority_keys=("question", "workspace_objects", "cells", "uploads", "findings"))
+        + bounded_json(snapshot, MAX_NOTE_TOOL_CHARS, priority_keys=("thread", "workspace_objects", "data_files", "workspace"))
         + "\n```"
     )
 
@@ -246,7 +264,7 @@ class NoteAgentExecutor:
         self.max_tool_chars = MAX_NOTE_TOOL_CHARS
         self.system_prompt = NOTE_AGENT_SYSTEM_PROMPT
         self.tools = NOTE_TOOLS
-        self.use_retry_guard = False
+        self.use_retry_guard = True
         self.cancelled_message = "This NoteThread run was cancelled."
         self.default_final_message = "I could not produce a grounded notebook response."
         from app.services.llm import resolve_target
@@ -307,9 +325,32 @@ class NoteAgentExecutor:
     def summary_for(self, tool_name: str, observation: dict) -> str:
         return _tool_summary(tool_name, observation)
 
+    def tool_spec(self, tool_name: str):
+        return TOOL_REGISTRY.get(tool_name, lens="note")
+
+    def parallel_eligible(self, tool_name: str) -> bool:
+        spec = self.tool_spec(tool_name)
+        return bool(spec and spec.parallel)
+
     def use_fast_path(self, message: str) -> bool:
         from app.services.intent_fastpath import is_simple_question
         return is_simple_question(message)
+
+    def deterministic_intent(self, message: str) -> str | None:
+        from app.services.intent_fastpath import deterministic_intent
+
+        context = self.context if isinstance(self.context, dict) else {}
+        return deterministic_intent(
+            message,
+            lens="note",
+            notebook_state=bool(
+                self.cells
+                or context.get("cells")
+                or context.get("workspace_objects")
+                or context.get("data_files")
+            ),
+            pending_question=bool(context.get("pending_question")),
+        )
 
     async def judge_intent(self, message: str) -> str:
         from app.services.intent_fastpath import classify_intent
@@ -337,9 +378,8 @@ class NoteAgentExecutor:
         return None
 
     def tool_idempotency(self, tool_name: str) -> str:
-        # R-cell execution and promotion are side effects; identical calls in
-        # one streamed turn must not enqueue or write twice.
-        return "non_idempotent" if tool_name in {"run_r_cell", "promote_to_workspace"} else "read_only"
+        spec = TOOL_REGISTRY.get(tool_name, lens="note")
+        return spec.idempotency if spec is not None else "read_only"
 
     async def execute_tool(
         self,

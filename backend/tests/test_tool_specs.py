@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 
 from app.services import agent_core
-from app.services.agent_core import ToolCallResult
+from app.services.agent_core import ToolCallResult, TurnBudget
+from app.services.note_agent import NoteAgentExecutor
+from app.services.context_budget import bounded_json
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
-from app.services.workspace_agent import _read_results
+from app.services.workspace_agent import WorkspaceAgentExecutor, _read_results
 
 
 def test_registry_has_strict_edit_schema_and_hidden_render_alias():
@@ -36,6 +38,24 @@ def test_registry_tracks_note_lens_and_capability_metadata():
     assert "base_sha256" in promote.parameters["properties"]
 
 
+def test_registry_is_runtime_policy_source_for_lenses():
+    plan = TOOL_REGISTRY.require("plan_analysis", lens="workspace")
+    run = TOOL_REGISTRY.require("run_analysis", lens="workspace")
+    assert plan.intent == "pipeline"
+    assert run.intent == "pipeline"
+    assert run.effective_budget == 4
+    assert TOOL_REGISTRY.require("inspect_project", lens="workspace").parallel is False
+    assert TOOL_REGISTRY.require("search_workspace", lens="workspace").parallel is True
+
+    workspace = object.__new__(WorkspaceAgentExecutor)
+    assert workspace.parallel_eligible("read_file") is True
+    assert workspace.parallel_eligible("inspect_project") is False
+    assert workspace.tool_idempotency("edit_project") == "non_idempotent"
+
+    note = NoteAgentExecutor(message="inspect", cells=[], context={})
+    assert note.parallel_eligible("inspect_note") is False
+    assert note.tool_idempotency("add_note") == "non_idempotent"
+    assert note.tool_idempotency("run_r_cell") == "non_idempotent"
 def test_read_results_requires_named_artifact_and_reports_available_paths(tmp_path):
     project = type("Project", (), {"project_dir": str(tmp_path)})()
     result = tmp_path / "output" / "results" / "answer.csv"
@@ -101,3 +121,36 @@ def test_duplicate_non_idempotent_call_is_suppressed(monkeypatch):
 
 async def _collect(executor):
     return [event async for event in agent_core.run_agent_loop(executor, "run a cell")]
+
+
+def test_turn_budget_enforces_units_calls_and_mutations():
+    budget = TurnBudget(max_units=5, max_tool_calls=2, max_mutations=1)
+
+    assert budget.try_consume_tool(cost=1, mutating=False) == (True, None)
+    assert budget.try_consume_tool(cost=3, mutating=True) == (True, None)
+    allowed, reason = budget.try_consume_tool(cost=1, mutating=False)
+    assert allowed is False
+    assert "tool calls" in reason
+    assert budget.snapshot() == {
+        "units_used": 4,
+        "max_units": 5,
+        "tool_calls": 2,
+        "max_tool_calls": 2,
+        "mutation_count": 1,
+        "max_mutations": 1,
+        "llm_calls": 0,
+        "generated_tokens": 0,
+        "retrieved_chars": 0,
+    }
+
+
+def test_bounded_tool_observation_is_always_valid_json():
+    rendered = bounded_json(
+        {"status": "ok", "data": "x" * 5000, "path": "output/results/result.csv"},
+        180,
+        priority_keys=("status", "path", "data"),
+    )
+
+    parsed = __import__("json").loads(rendered)
+    assert parsed["status"] == "ok"
+    assert len(rendered) <= 180

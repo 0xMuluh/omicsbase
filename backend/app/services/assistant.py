@@ -43,14 +43,6 @@ GREETINGS = {
     "ping",
 }
 
-SOURCE_EXCERPT_FILES = (
-    "README.md",
-    "code/data.R",
-    "code/funct.R",
-    "code/main.R",
-    "code/index.qmd",
-    "code/_quarto.yml",
-)
 MAX_SOURCE_CHARS = 3500
 MAX_REPORT_CHARS = 5000
 MAX_HISTORY_MESSAGES = 12
@@ -87,6 +79,51 @@ def _read_excerpt(path: Path, max_chars: int = MAX_SOURCE_CHARS) -> str | None:
     if len(content) <= max_chars:
         return content
     return content[:max_chars] + f"\n\n... [truncated, {len(content)} chars total]"
+
+
+def _context_source_paths(project: Any, base: Path) -> list[str]:
+    """Select excerpts from the active ReportPack inventory, not fixed filenames."""
+    plan = getattr(project, "analysis_plan", None) or {}
+    domain = str(plan.get("domain") or "microbiome").strip().lower()
+    pack = None
+    try:
+        from app.services.spawner import resolve_report_pack
+
+        pack = resolve_report_pack(
+            str(plan.get("report_pack_id") or "").strip() or None,
+            domain=domain,
+        )
+    except Exception:
+        # The legacy endpoint must remain useful for projects created before
+        # ReportPack metadata existed; dynamic file discovery is the fallback.
+        pack = None
+
+    candidates: list[tuple[int, str]] = []
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(base).as_posix()
+        parts = Path(relative).parts
+        if any(part.startswith(".") for part in parts) or relative.startswith(("data/", "output/")):
+            continue
+        if path.suffix.lower() not in {".r", ".qmd", ".rmd", ".md", ".yaml", ".yml", ".txt"}:
+            continue
+        role = ""
+        if pack is not None:
+            try:
+                role = pack.classify(relative).role
+            except Exception:
+                role = ""
+        role_rank = {
+            "orchestrator": 0,
+            "data_loader": 1,
+            "helper": 2,
+            "assembly": 3,
+            "page": 4,
+        }.get(role, 5)
+        suffix_rank = 0 if path.suffix.lower() in {".r", ".qmd", ".rmd"} else 1
+        candidates.append((role_rank * 2 + suffix_rank, relative))
+    return [relative for _, relative in sorted(candidates)[:12]]
 
 
 def _latest_review(project) -> dict[str, Any] | None:
@@ -179,15 +216,8 @@ def build_project_context(project) -> str:
         context["generated_files"] = generated_files
 
         excerpts: dict[str, str] = {}
-        for relative_path in SOURCE_EXCERPT_FILES:
+        for relative_path in _context_source_paths(project, base):
             excerpt = _read_excerpt(base / relative_path)
-            if excerpt:
-                excerpts[relative_path] = excerpt
-        qmd_pages = sorted(path.relative_to(base).as_posix() for path in (base / "code").rglob("*.qmd"))[:8] if (base / "code").exists() else []
-        for relative_path in qmd_pages:
-            if relative_path in excerpts:
-                continue
-            excerpt = _read_excerpt(base / relative_path, max_chars=2000)
             if excerpt:
                 excerpts[relative_path] = excerpt
         if excerpts:

@@ -12,6 +12,7 @@ from app.config import settings
 from app.services.providers import api_key_for, base_url_for, default_model_for
 from app.services.provider_errors import raise_classified_provider_exception
 from app.services.sanitizer import sanitize_text
+from app.services.prompt_rules import inspect_prompt, prompt_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -992,6 +993,10 @@ def load_system_prompt(
         )
 
     assembled = "\n".join(parts)
+    prompt_issues = inspect_prompt(assembled)
+    if prompt_issues["missing"] or prompt_issues["forbidden"]:
+        logger.warning("System prompt executable-rule check reported: %s", prompt_issues)
+    logger.debug("Loaded system prompt fingerprint=%s", prompt_fingerprint(assembled))
     _cached_system_prompt = assembled
     _cached_prompt_mtimes = current_mtimes
     return assembled

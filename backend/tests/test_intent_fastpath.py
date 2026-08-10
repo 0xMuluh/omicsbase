@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.services import agent_core, intent_fastpath
-from app.services.intent_fastpath import is_simple_question
+from app.services.intent_fastpath import deterministic_intent, is_simple_question
 
 
 def test_simple_questions_qualify():
@@ -47,6 +47,20 @@ def test_commands_and_file_references_also_qualify():
 def test_blank_and_absurdly_long_messages_do_not_qualify():
     assert not is_simple_question("")
     assert not is_simple_question("What is a p-value? " + "x" * 2000)
+
+
+def test_deterministic_gate_handles_clear_cases_and_defers_ambiguity():
+    assert deterministic_intent("What is a p-value?", lens="workspace") == "conceptual"
+    assert deterministic_intent(
+        "Why?",
+        lens="workspace",
+        selected_resource="output/results/permanova.csv",
+    ) == "needs_tools"
+    assert deterministic_intent("Run the calculation", lens="note") == "needs_tools"
+    assert deterministic_intent("How do I compute alpha diversity?", lens="note") == "needs_tools"
+    assert deterministic_intent("Why?", lens="workspace", active_job_status="failed") == "needs_tools"
+    assert deterministic_intent("Which group is higher?", lens="workspace") is None
+    assert deterministic_intent("Which ordination method works best for compositional data?", lens="workspace") == "needs_knowledge"
 
 
 def test_fast_path_model_resolution(monkeypatch):
@@ -106,8 +120,11 @@ def test_fast_path_short_circuits_the_loop():
         def use_fast_path(self, message):
             return True
 
-        async def judge_intent(self, message):
+        def deterministic_intent(self, message):
             return "conceptual"
+
+        async def judge_intent(self, message):
+            raise AssertionError("deterministic route should skip the judge")
 
         async def fast_path_events(self, message, *, intent="conceptual"):
             assert intent == "conceptual"

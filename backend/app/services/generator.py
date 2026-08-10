@@ -103,6 +103,65 @@ GENERATION_STEPS = [
     {"id": "readme", "filename": "README.md", "prompt_name": "generator_readme", "label": "Generating README.md"},
 ]
 
+
+GENERATION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "scaffold": (),
+    "spawn": ("scaffold",),
+    "index_qmd": ("scaffold", "spawn"),
+    "data_r": ("spawn",),
+    "funct_r": ("data_r",),
+    "qmd_pages": ("index_qmd", "data_r", "funct_r"),
+    "report_fill": ("spawn", "qmd_pages"),
+    "qa_gate": ("qmd_pages", "report_fill"),
+    "quarto_yml": ("qmd_pages", "report_fill"),
+    "main_r": ("data_r", "funct_r", "qmd_pages"),
+    "readme": ("scaffold", "qmd_pages", "report_fill"),
+}
+
+
+def _dependency_paths_for_step(step_id: str, generated_files: dict[str, str]) -> set[str]:
+    prefixes = set(GENERATION_DEPENDENCIES.get(step_id, ()))
+    if not prefixes:
+        return set()
+    selected: set[str] = set()
+    for path in generated_files:
+        if "data_r" in prefixes and path == "code/data.R":
+            selected.add(path)
+        if "funct_r" in prefixes and path == "code/funct.R":
+            selected.add(path)
+        if "index_qmd" in prefixes and path == "code/index.qmd":
+            selected.add(path)
+        if "spawn" in prefixes and path not in {"code/data.R", "code/funct.R", "code/index.qmd"}:
+            if path.endswith((".qmd", ".R", ".r", ".yml", ".yaml")):
+                selected.add(path)
+        if "report_fill" in prefixes and path.endswith((".qmd", ".rmd")):
+            selected.add(path)
+        if "scaffold" in prefixes and path in {"README.md", "code/design/study_overview.qmd", "code/design/analysis_plan.qmd"}:
+            selected.add(path)
+    return selected
+
+
+def _dependency_inputs(generated_files: dict[str, str], paths: set[str]) -> dict[str, str]:
+    return {
+        path: _content_hash(generated_files[path])
+        for path in sorted(paths)
+        if path in generated_files
+    }
+
+
+def _adaptation_context_paths(kind: str, relative_path: str, generated_files: dict[str, str]) -> set[str]:
+    """Return only the files needed to adapt one source unit."""
+    if kind == "page":
+        wanted = {"code/data.R", "code/funct.R", "code/index.qmd", "code/_quarto.yml", "code/design/analysis_plan.qmd"}
+    elif kind == "config":
+        wanted = {path for path in generated_files if path.endswith((".qmd", ".rmd"))}
+    else:
+        wanted = {"code/data.R", "code/funct.R", "code/index.qmd"}
+    wanted.discard(relative_path)
+    selected = {path for path in wanted if path in generated_files}
+    return selected or {path for path in generated_files if path != relative_path and path in {"code/data.R", "code/funct.R"}}
+
+
 _ADAPT_EDIT_COMMON = """The file `{relative_path}` in the project is a complete, working template copied from templates/. The rest of the project depends on it: its structure, objects, helper functions, artifact names, and construction approach.
 
 Adapt it to the current study by returning ONLY targeted SEARCH/REPLACE edits:
@@ -152,6 +211,7 @@ async def _request_file_edits_chunk(
     target_file: str,
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
+    context_paths: set[str] | None = None,
 ) -> AdaptationEdits | str | NoChangeDecision:
     """Ask the model for edits to one fully visible source chunk.
 
@@ -197,7 +257,7 @@ Before editing, classify this file as exactly one of `preserve`, `parameterize`,
 
 ## Previously Generated Files
 
-{_build_context_text(generated_context, exclude=target_file)}
+{_build_context_text(generated_context, exclude=target_file, include=context_paths)}
 
 ## Output
 
@@ -336,6 +396,7 @@ async def _request_file_edits(
     target_file: str,
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
+    context_paths: set[str] | None = None,
 ) -> AdaptationEdits | DeleteDecision | NoChangeDecision:
     """Inspect the complete file, requiring a valid decision for every chunk."""
     chunks = _split_source_chunks(file_content)
@@ -360,6 +421,7 @@ async def _request_file_edits(
             target_file=target_file,
             generated_context=generated_context,
             study_manifest_json=study_manifest_json,
+            context_paths=context_paths,
         )
         if isinstance(decision, AdaptationEdits):
             for edit in decision.edits:
@@ -431,11 +493,12 @@ def _build_context_text(
     exclude: str | None = None,
     *,
     max_chars: int = MAX_CONTEXT_CHARS,
+    include: set[str] | None = None,
 ) -> str:
     available = {
         path: content
         for path, content in generated_context.items()
-        if not exclude or path != exclude
+        if (not exclude or path != exclude) and (include is None or path in include)
     }
     if not available:
         return "(No other files yet)"
@@ -1046,10 +1109,17 @@ async def generate_project(
             path: Path,
             target_file: str,
             instruction: str,
+            context_paths: set[str] | None = None,
         ) -> tuple[str, str]:
             relative_path = _relative_project_path(base, path)
+            dependency_paths = context_paths or _dependency_paths_for_step("qmd_pages", generated_files)
+            dependency_hashes = _dependency_inputs(generated_files, dependency_paths)
             unit_id = f"qmd:{relative_path}"
-            unit_inputs = {"instruction_sha256": _content_hash(instruction)}
+            unit_inputs = {
+                "instruction_sha256": _content_hash(instruction),
+                "dependency_paths": sorted(dependency_paths),
+                "dependency_hashes": dependency_hashes,
+            }
             decision = checkpoint.decide(
                 unit_id,
                 [relative_path],
@@ -1064,8 +1134,9 @@ async def generate_project(
                         uploaded_file_paths=uploaded_file_paths,
                         target_file=target_file,
                         instruction=instruction,
-                        generated_context=generated_files,
+                        generated_context={key: generated_files[key] for key in dependency_paths if key in generated_files},
                         study_manifest_json=study_manifest_json,
+                        context_paths=dependency_paths,
                     )
                     _write_file(path, content)
                     checkpoint.complete(
@@ -1110,6 +1181,7 @@ async def generate_project(
                     method_filename,
                     method_instruction,
                 )
+                generated_files[method_relative_path] = method_qmd
                 step_results.append((step_id, method_relative_path, str(method_path), method_qmd))
 
             comparison_filename = f"{step.id}_consensus.qmd"
@@ -1123,6 +1195,10 @@ async def generate_project(
                 comparison_path,
                 comparison_filename,
                 comparison_instruction,
+                context_paths=(
+                    _dependency_paths_for_step("qmd_pages", generated_files)
+                    | {item[1] for item in step_results}
+                ),
             )
             step_results.append((step_id, comparison_relative_path, str(comparison_path), comparison_qmd))
             return step_results
@@ -1289,6 +1365,7 @@ async def generate_project(
                     target_file=relative_path,
                     generated_context=generated_files,
                     study_manifest_json=study_manifest_json,
+                    context_paths=_adaptation_context_paths(kind, relative_path, generated_files),
                 )
             except LLMProviderError as exc:
                 checkpoint.fail(
@@ -1984,12 +2061,14 @@ async def _generate_file(
     instruction: str,
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
+    context_paths: set[str] | None = None,
 ) -> str:
     """Generate a single file using the LLM."""
 
     context_text = _build_context_text(
         generated_context,
         exclude=f"code/{target_file}",
+        include=context_paths,
     )
 
     path_mapping = _format_data_path_mapping(uploaded_file_paths)

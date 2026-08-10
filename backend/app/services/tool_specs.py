@@ -78,6 +78,17 @@ class ToolSpec:
     def parameters(self) -> dict[str, Any]:
         return _strict_schema(self.schema)
 
+    @property
+    def effective_budget(self) -> int:
+        """Return the minimum turn-budget cost for this tool."""
+        if self.budget is not None:
+            return max(1, int(self.budget))
+        if self.risk == "execute":
+            return 4
+        if self.risk == "write":
+            return 3
+        return 1
+
     def as_openai(self) -> dict[str, Any]:
         return {
             "type": "function",
@@ -168,20 +179,23 @@ def _schema(properties: dict[str, Any], *, required: list[str] | None = None) ->
 
 
 WORKSPACE_TOOL_SPECS: tuple[ToolSpec, ...] = (
-    ToolSpec("inspect_project", "Get project status, study manifest, analysis plan, and recent actions", parallel=True),
+    ToolSpec("inspect_project", "Get project status, study manifest, analysis plan, and recent actions"),
     ToolSpec("list_recipes", "List available analysis recipes for this project domain with parameters and enabled state", capability="legacy_recipe", parallel=True),
     ToolSpec("list_importable_datasets", "List R package datasets that can be imported into the study", capability="acquisition", parallel=True),
     ToolSpec("list_files", "List all files in the project workspace", parallel=True),
     ToolSpec("search_workspace", "Search workspace artifacts by text query", _schema({"query": {"type": "string", "description": "Search query"}, "limit": {"type": "integer", "default": 8}}, required=["query"]), parallel=True),
-    ToolSpec("search_bioc_books", "Search the pinned stable Bioconductor books for methodological guidance and reusable QMD examples", _schema({"query": {"type": "string", "description": "Scientific or coding question"}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug"}}, required=["query"]), parallel=True),
-    ToolSpec("recall_memory", "Recall durable project memories (preferences, decisions, constraints, findings)", parallel=True),
-    ToolSpec("read_file", "Read a workspace file by relative path", _schema({"path": {"type": "string", "description": "Relative file path"}}, required=["path"]), parallel=True),
-    ToolSpec("read_results", "Read one explicitly named result artifact (CSV/TSV/JSON) with row data", _schema({"path": {"type": "string", "description": "Project-relative path to the exact result artifact"}}, required=["path"]), parallel=True),
+    ToolSpec("search_bioc_books", "Search the pinned stable Bioconductor books for methodological guidance and reusable QMD examples", _schema({"query": {"type": "string", "description": "Scientific or coding question"}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug"}}, required=["query"])),
+    ToolSpec("recall_memory", "Recall durable project memories (preferences, decisions, constraints, findings)"),
+    ToolSpec("read_file", "Read a bounded line range from a workspace file and return its content hash", _schema({"path": {"type": "string", "description": "Relative file path"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "around": {"type": "integer", "minimum": 1, "description": "Read a small window around this line"}, "max_chars": {"type": "integer", "minimum": 256, "maximum": 16000, "default": 16000}}, required=["path"]), parallel=True),
+    ToolSpec("read_results", "Read one explicitly named result artifact with bounded rows, columns, filters, and ordering", _schema({"path": {"type": "string", "description": "Project-relative path to the exact result artifact"}, "columns": {"type": "array", "items": {"type": "string"}}, "where": {"type": "object", "additionalProperties": True, "description": "Exact equality filters by column"}, "sort": {"type": "string"}, "sort_direction": {"type": "string", "enum": ["asc", "desc"], "default": "asc"}, "offset": {"type": "integer", "minimum": 0, "default": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "max_chars": {"type": "integer", "minimum": 256, "maximum": 16000}}, required=["path"]), parallel=True),
+    ToolSpec("inspect_table", "Inspect a CSV or TSV schema without returning participant rows", _schema({"path": {"type": "string"}}, required=["path"]), parallel=True),
+    ToolSpec("inspect_factor_levels", "Count levels for one CSV or TSV column", _schema({"path": {"type": "string"}, "column": {"type": "string"}}, required=["path", "column"]), parallel=True),
+    ToolSpec("summarize_missingness", "Summarize missing values by CSV or TSV column", _schema({"path": {"type": "string"}}, required=["path"]), parallel=True),
     ToolSpec("compare_results", "Load multiple result artifacts for comparison", _schema({"paths": {"type": "array", "items": {"type": "string"}, "description": "List of result file paths"}}, required=["paths"]), parallel=True),
-    ToolSpec("inspect_failures", "Inspect recent failed jobs with error details and logs", parallel=True),
+    ToolSpec("inspect_failures", "Inspect recent failed jobs with error details and logs"),
     ToolSpec("validate_report", "Validate the current rendered report for issues", parallel=True),
-    ToolSpec("run_r", "Run a short R snippet for inspection (no network/install/writes)", _schema({"code": {"type": "string", "description": "R code to execute"}, "purpose": {"type": "string", "description": "Brief description of what this inspection checks"}}, required=["code"]), idempotency="non_idempotent", parallel=False, risk="execute"),
-    ToolSpec("ask_user", "Ask the user one blocking question with concrete options when a decision cannot be inferred", _schema({"question": {"type": "string", "description": "The question, phrased so the options answer it directly"}, "options": {"type": "array", "items": {"type": "string"}, "description": "2-6 concrete options"}, "multiple": {"type": "boolean", "description": "Allow multiple selections", "default": False}}, required=["question"]), risk="question", idempotency="non_idempotent", parallel=False),
+    ToolSpec("run_r", "Run a short R inspection only when a typed workspace inspection cannot answer the question", _schema({"code": {"type": "string", "maxLength": 4000, "description": "R code to execute; no network, package installation, writes, or shell commands"}, "purpose": {"type": "string", "description": "Brief description of what this inspection checks"}}, required=["code"]), idempotency="non_idempotent", parallel=False, risk="execute"),
+    ToolSpec("ask_user", "Ask the user one blocking question with concrete options when a decision cannot be inferred", _schema({"question": {"type": "string", "description": "The question, phrased so the options answer it directly"}, "options": {"type": "array", "minItems": 2, "maxItems": 6, "items": {"type": "string", "minLength": 1}, "description": "2-6 concrete options"}, "multiple": {"type": "boolean", "description": "Allow multiple selections", "default": False}}, required=["question", "options"]), risk="question", idempotency="non_idempotent", parallel=False),
 )
 
 
@@ -196,6 +210,8 @@ _EDIT_SCHEMA = _schema(
         "allow_multiple": {"type": "boolean", "default": False},
         "reason": {"type": "string"},
         "instruction": {"type": "string", "description": "High-level edit instruction for complex changes; inspect first and make the concrete edit explicit"},
+        "mode": {"type": "string", "enum": ["search_replace", "content", "patch", "batch", "instruction"], "description": "Discriminator for the edit payload"},
+        "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Optional expected hash for the targeted file"},
         "approval": {"type": "string", "enum": ["auto", "preview", "require"], "default": "auto", "description": "Use preview/require to prepare a diff for explicit approval before committing."},
     }
 )
@@ -203,12 +219,12 @@ _EDIT_SCHEMA = _schema(
 ACTION_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("import_package_data", "Import an R package dataset into the study", _schema({"package": {"type": "string"}, "dataset": {"type": "string"}, "role": {"type": "string", "default": "auto"}}, required=["package", "dataset"]), kind="inline", risk="write", capability="acquisition", idempotency="non_idempotent"),
     ToolSpec("fetch_url", "Fetch a file from a URL into the study", _schema({"url": {"type": "string"}, "filename": {"type": "string"}, "role": {"type": "string", "default": "auto"}}, required=["url"]), kind="inline", risk="write", capability="acquisition", idempotency="non_idempotent"),
-    ToolSpec("plan_analysis", "Build or refresh the analysis plan from the study contract", kind="async", risk="write", intent="plan", idempotency="non_idempotent"),
+    ToolSpec("plan_analysis", "Build or refresh the analysis plan from the study contract", kind="async", risk="write", intent="pipeline", idempotency="non_idempotent"),
     ToolSpec("set_recipe_enabled", "Enable or disable a recipe", _schema({"recipe_id": {"type": "string"}, "enabled": {"type": "boolean"}}, required=["recipe_id", "enabled"]), kind="async", risk="write", capability="legacy_recipe", idempotency="idempotent"),
     ToolSpec("update_recipe_parameters", "Update parameters for a recipe", _schema({"recipe_id": {"type": "string"}, "parameters": {"type": "object", "additionalProperties": True}}, required=["recipe_id", "parameters"]), kind="async", risk="write", capability="legacy_recipe", idempotency="idempotent"),
     ToolSpec("set_analysis_variables", "Set grouping variable, levels, and covariates", _schema({"grouping_variable": {"type": "string"}, "group_levels": {"type": "array", "items": {"type": "string"}}, "covariates": {"type": "array", "items": {"type": "string"}}}), kind="async", risk="write", idempotency="idempotent"),
     ToolSpec("run_recipe", "Run a specific recipe", _schema({"recipe_id": {"type": "string"}}, required=["recipe_id"]), kind="async", risk="execute", capability="legacy_recipe", idempotency="non_idempotent"),
-    ToolSpec("run_analysis", "Run the ReportPack analysis pipeline, optionally resuming completed generation units from its checkpoint", _schema({"resume_from_checkpoint": {"type": "boolean", "default": True, "description": "Reuse completed generator units and preserve divergent user edits when true."}}), kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
+    ToolSpec("run_analysis", "Run the ReportPack analysis pipeline, optionally resuming completed generation units from its checkpoint", _schema({"resume_from_checkpoint": {"type": "boolean", "default": True, "description": "Reuse completed generator units and preserve divergent user edits when true."}}), kind="async", risk="execute", capability="report_execution", intent="pipeline", idempotency="non_idempotent"),
     ToolSpec("undo_project_edit", "Undo one named committed project edit if its current bytes still match the journal", _schema({"transaction_id": {"type": "string", "pattern": "^[a-f0-9]{16,64}$", "description": "Edit transaction id from the workspace history"}}, required=["transaction_id"]), kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("render_report", "Render the report; if the last render failed, repair the smallest failing scope before retrying", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
     ToolSpec("repair_report", "Compatibility alias for render_report with repair-on-failure behavior", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent", advertised=False, alias_of="render_report"),
@@ -219,12 +235,12 @@ ACTION_TOOL_SPECS: tuple[ToolSpec, ...] = (
 
 
 NOTE_TOOL_SPECS: tuple[ToolSpec, ...] = (
-    ToolSpec("inspect_note", "Inspect the current linear notebook, including prior cells and completed execution previews.", lens="note", parallel=True),
-    ToolSpec("search_bioc_books", "Search the pinned QMD-derived Bioconductor books for relevant explanations, assumptions, and reusable R examples.", _schema({"query": {"type": "string", "description": "The scientific or coding question to search for."}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug."}}, required=["query"]), lens="note", parallel=True),
+    ToolSpec("inspect_note", "Inspect the current linear notebook, including prior cells and completed execution previews.", lens="note"),
+    ToolSpec("search_bioc_books", "Search the pinned QMD-derived Bioconductor books for relevant explanations, assumptions, and reusable R examples.", _schema({"query": {"type": "string", "description": "The scientific or coding question to search for."}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug."}}, required=["query"]), lens="note"),
     ToolSpec("run_r_cell", "Persist and queue a minimal R computation when the user question requires it.", _schema({"code": {"type": "string", "description": "The complete R cell to persist and execute."}, "purpose": {"type": "string", "description": "What scientific question this cell checks."}, "parameters": {"type": "object", "additionalProperties": True, "description": "Explicit parameters used by the cell."}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800}}, required=["code"]), lens="note", kind="async", risk="execute", idempotency="non_idempotent"),
     ToolSpec("add_note", "Insert a concise markdown explanation into the notebook at this point, between code steps.", _schema({"text": {"type": "string", "description": "The markdown text for the note (2-4 sentences)."}}, required=["text"]), lens="note", kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("promote_to_workspace", "Copy a tested R cell into the project's code directory after immutable provenance checks.", _schema({"cell_id": {"type": "string"}, "revision_id": {"type": "string"}, "execution_id": {"type": "string"}, "path": {"type": "string"}, "strategy": {"type": "string", "enum": ["replace", "append", "create_only"], "default": "create_only"}, "base_sha256": {"type": "string", "description": "SHA-256 of the current target, required when appending to or replacing an existing file"}, "purpose": {"type": "string"}}, required=["cell_id", "revision_id", "execution_id", "path"]), lens="note", kind="async", risk="write", idempotency="non_idempotent"),
-    ToolSpec("inspect_data_files", "List data files attached to this notebook with format, columns, and the R path to read each.", lens="note", parallel=True),
+    ToolSpec("inspect_data_files", "List data files attached to this notebook with format, columns, and the R path to read each.", lens="note"),
 )
 
 TOOL_REGISTRY = ToolSpecRegistry(WORKSPACE_TOOL_SPECS + ACTION_TOOL_SPECS + NOTE_TOOL_SPECS)

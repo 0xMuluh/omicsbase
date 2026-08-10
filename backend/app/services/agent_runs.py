@@ -35,7 +35,7 @@ RUN_TRANSITIONS: dict[str, set[str]] = {
     "waiting_tool": {"running", "paused", "cancel_requested", "completed", "failed", "cancelled"},
     "paused": {"running", "cancel_requested", "cancelled", "failed"},
     "cancel_requested": {"cancelled", "failed", "completed"},
-    "completed": set(),
+    "completed": {"running"},
     "failed": set(),
     "cancelled": set(),
 }
@@ -288,8 +288,10 @@ def transition_agent_run(
     now = _now()
     run.heartbeat_at = now
     run.updated_at = now
-    if target_status == "running" and run.started_at is None:
-        run.started_at = now
+    if target_status == "running":
+        if run.started_at is None:
+            run.started_at = now
+        run.finished_at = None
     if target_status in TERMINAL_RUN_STATUSES:
         run.finished_at = now
     return append_run_event(
@@ -317,7 +319,7 @@ def record_stream_event(
             message_id = event["cell"].get("id")
         if message_id:
             idempotency_key = f"input:{message_id}"
-    if event_type in {"tool_started", "execution_queued", "action_queued", "action_event"}:
+    if event_type == "tool_started":
         run.resumable = False
     if event_type == "note_cell" and event.get("role") != "user":
         run.resumable = False

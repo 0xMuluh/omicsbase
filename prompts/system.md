@@ -97,7 +97,7 @@ When a step is classified as "contested" in the decision-point registry:
 
 This is the core value proposition: showing the user which results are robust and which depend on methodology.
 
-- never assume zero-row data frames have rows; guard `[[1]]`, `pull()[[1]]`, and `unique(x)[[1]]` with length checks.
+## Deterministic guardrails
 
 - do not use `dplyr::n()` inside arguments such as `slice_head(n = min(...))`; use a fixed `n` because `slice_head()` already truncates safely.
 
