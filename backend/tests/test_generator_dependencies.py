@@ -46,3 +46,23 @@ def test_report_pack_dependency_hashes_only_declared_inputs():
     assert original == question_changed
     assert original != grouping_changed
     assert generator._adaptation_dependency_inputs((), **common) == {}
+
+
+def test_declared_dependencies_drive_generated_context_paths():
+    files = {
+        "code/data.R": "data",
+        "code/other.qmd": "page",
+        "code/third.qmd": "page",
+        "output/results.csv": "results",
+        "code/target.R": "target",
+    }
+
+    assert generator._adaptation_context_paths(
+        "page", "code/target.R", files, ("report_pages",)
+    ) == {"code/other.qmd", "code/third.qmd"}
+    assert generator._adaptation_context_paths(
+        "script", "code/target.R", files, ("result_artifacts",)
+    ) == {"output/results.csv"}
+    assert generator._adaptation_context_paths(
+        "script", "code/target.R", files, ()
+    ) == set()

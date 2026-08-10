@@ -133,6 +133,7 @@ def test_builtin_packs_have_executable_capability_contracts():
         pack = load_report_pack(manifest_path.parent)
         assert pack.execution is not None
         assert pack.capabilities
+        assert all(rule.depends_on is not None for rule in pack.rules)
 
         step_ids = {step.step_id for step in pack.execution.steps}
         for capability in pack.capabilities:

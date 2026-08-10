@@ -246,8 +246,115 @@ def _adaptation_dependency_inputs(
     return result
 
 
-def _adaptation_context_paths(kind: str, relative_path: str, generated_files: dict[str, str]) -> set[str]:
-    """Return only the files needed to adapt one source unit."""
+def _adaptation_prompt_sections(
+    dependencies: tuple[str, ...] | None,
+    *,
+    plan_json: str,
+    file_descriptions: str,
+    uploaded_file_paths: dict[str, list[str]],
+    study_manifest_json: str,
+    generated_context: dict[str, str],
+) -> dict[str, str] | None:
+    """Build prompt sections from the declared inputs for one target file."""
+    if dependencies is None:
+        return None
+
+    plan = _decode_dependency_json(plan_json)
+    manifest = _decode_dependency_json(study_manifest_json)
+    selected_plan: dict[str, Any] = {}
+    selected_manifest: dict[str, Any] = {}
+    generated_dependencies: dict[str, list[str]] = {}
+    include_data = False
+    include_manifest = False
+
+    for token in dependencies:
+        if token in {"data_bindings", "uploaded_files", "file_summaries"}:
+            include_data = True
+            continue
+        if token == "study_manifest":
+            include_manifest = True
+            continue
+        if token == "report_pages":
+            generated_dependencies[token] = sorted(
+                path
+                for path in generated_context
+                if Path(path).suffix.lower() in {".qmd", ".rmd"}
+            )
+            continue
+        if token == "result_artifacts":
+            generated_dependencies[token] = sorted(
+                path
+                for path in generated_context
+                if path.startswith(("output/", "results/"))
+            )
+            continue
+        if token == "generated_files":
+            generated_dependencies[token] = sorted(generated_context)
+            continue
+
+        value = _lookup_dependency_value(plan, token)
+        if value is not None:
+            selected_plan[token] = value
+            continue
+        value = _lookup_dependency_value(manifest, token)
+        if value is not None:
+            selected_manifest[token] = value
+            continue
+        return None
+
+    scoped_plan = {
+        "depends_on": list(dependencies),
+        "plan_values": selected_plan,
+        "manifest_values": selected_manifest,
+        "generated_dependencies": generated_dependencies,
+    }
+    return {
+        "plan": json.dumps(scoped_plan, sort_keys=True, indent=2, default=str),
+        "file_descriptions": (
+            file_descriptions
+            if include_data
+            else "(No uploaded-file context is declared for this target.)"
+        ),
+        "manifest": (
+            json.dumps(manifest, sort_keys=True, indent=2, default=str)
+            if include_manifest
+            else "(No full study-manifest context is declared for this target.)"
+        ),
+        "paths": (
+            _format_data_path_mapping(uploaded_file_paths)
+            if include_data
+            else "(No uploaded data-path context is declared for this target.)"
+        ),
+    }
+
+
+def _adaptation_context_paths(
+    kind: str,
+    relative_path: str,
+    generated_files: dict[str, str],
+    dependencies: tuple[str, ...] | None = None,
+) -> set[str]:
+    """Return context files from declared dependencies with a legacy fallback."""
+    if dependencies is not None:
+        wanted: set[str] = set()
+        if "report_pages" in dependencies:
+            wanted.update(
+                path
+                for path in generated_files
+                if Path(path).suffix.lower() in {".qmd", ".rmd"}
+            )
+        if "result_artifacts" in dependencies:
+            wanted.update(
+                path
+                for path in generated_files
+                if path.startswith(("output/", "results/"))
+            )
+        if "generated_files" in dependencies:
+            wanted.update(generated_files)
+        wanted.discard(relative_path)
+        if wanted or dependencies == ():
+            return {path for path in wanted if path in generated_files}
+
     if kind == "page":
         wanted = {"code/data.R", "code/funct.R", "code/index.qmd", "code/_quarto.yml", "code/design/analysis_plan.qmd"}
     elif kind == "config":
@@ -309,6 +416,7 @@ async def _request_file_edits_chunk(
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
     context_paths: set[str] | None = None,
+    dependency_scope: tuple[str, ...] | None = None,
 ) -> AdaptationEdits | str | NoChangeDecision:
     """Ask the model for edits to one fully visible source chunk.
 
@@ -316,6 +424,21 @@ async def _request_file_edits_chunk(
     decision. An empty edit array is rejected because it cannot distinguish
     inspection from provider/parser failure.
     """
+    scoped_sections = _adaptation_prompt_sections(
+        dependency_scope,
+        plan_json=plan_json,
+        file_descriptions=file_descriptions,
+        uploaded_file_paths=uploaded_file_paths,
+        study_manifest_json=study_manifest_json,
+        generated_context=generated_context,
+    )
+    scoped_data_paths = _format_data_path_mapping(uploaded_file_paths)
+    if scoped_sections is not None:
+        plan_json = scoped_sections["plan"]
+        file_descriptions = scoped_sections["file_descriptions"]
+        study_manifest_json = scoped_sections["manifest"]
+        scoped_data_paths = scoped_sections["paths"]
+
     user_prompt = f"""## Analysis Plan
 
 ```json
@@ -334,7 +457,7 @@ async def _request_file_edits_chunk(
 
 ## Project Data Paths (relative to code/)
 
-{_format_data_path_mapping(uploaded_file_paths)}
+{scoped_data_paths}
 
 ## Previously Generated Files
 
@@ -578,6 +701,7 @@ async def _request_file_edits(
     generated_context: dict[str, str],
     study_manifest_json: str = "{}",
     context_paths: set[str] | None = None,
+    dependency_scope: tuple[str, ...] | None = None,
 ) -> AdaptationEdits | DeleteDecision | NoChangeDecision:
     """Inspect every complete-file/structural unit with one bounded request."""
     chunks = _split_source_units(file_content, target_file)
@@ -603,6 +727,7 @@ async def _request_file_edits(
             generated_context=generated_context,
             study_manifest_json=study_manifest_json,
             context_paths=context_paths,
+            dependency_scope=dependency_scope,
         )
         if isinstance(decision, AdaptationEdits):
             for edit in decision.edits:
@@ -1594,7 +1719,10 @@ async def generate_project(
                     target_file=relative_path,
                     generated_context=generated_files,
                     study_manifest_json=study_manifest_json,
-                    context_paths=_adaptation_context_paths(kind, relative_path, generated_files),
+                    context_paths=_adaptation_context_paths(
+                        kind, relative_path, generated_files, classification.depends_on
+                    ),
+                    dependency_scope=classification.depends_on,
                 )
             except LLMProviderError as exc:
                 checkpoint.fail(

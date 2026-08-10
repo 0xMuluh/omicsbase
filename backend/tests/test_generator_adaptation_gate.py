@@ -415,14 +415,60 @@ async def test_adaptation_prompt_contains_manifest_and_safe_project_bindings(mon
     )
 
     prompt = captured["user_prompt"]
-    assert prompt.index("## Analysis Plan") < prompt.index("## Current file:")
-    assert prompt.index("## Current file:") < prompt.index("## Task")
+    ordered_sections = [
+        "## Analysis Plan",
+        "## Uploaded Data Files",
+        "## Validated Study Manifest",
+        "## Project Data Paths (relative to code/)",
+        "## Previously Generated Files",
+        "## Target",
+        "## Current file:",
+        "## Task",
+    ]
+    positions = [prompt.index(section) for section in ordered_sections]
+    assert positions == sorted(positions)
     assert "Validated Study Manifest" in prompt
     assert '"columns": ["sample_id", "condition"]' in prompt
     assert "feature_table[1]: ../data/counts.csv" in prompt
     assert "/private/uploads" not in prompt
     for action in ("preserve", "parameterize", "extend", "replace"):
         assert action in prompt
+
+
+@pytest.mark.asyncio
+async def test_adaptation_prompt_scopes_declared_dependencies(monkeypatch):
+    captured: dict[str, str] = {}
+
+    async def capture_prompt(**kwargs):
+        captured["user_prompt"] = kwargs["user_prompt"]
+        return json.dumps({
+            "decision": "no_change",
+            "reason": "The source does not contain the declared study variable.",
+            "evidence": [
+                "The inspected file contains only generic helper code and no grouping variable."
+            ],
+        })
+
+    monkeypatch.setattr(generator, "call_llm", capture_prompt)
+    await generator._request_file_edits(
+        "Return edits.",
+        "helper <- function(x) x\n",
+        system_prompt="system",
+        plan_json=json.dumps({"grouping_variable": "condition", "question": "private question"}),
+        file_descriptions="private file summary",
+        uploaded_file_paths={"feature_table": ["/private/upload.csv"]},
+        target_file="code/funct.R",
+        generated_context={"code/data.R": "data"},
+        study_manifest_json=json.dumps({"grouping_variable": "condition", "private_manifest_value": "secret"}),
+        dependency_scope=("grouping_variable",),
+    )
+
+    prompt = captured["user_prompt"]
+    assert "grouping_variable" in prompt
+    assert "private question" not in prompt
+    assert "private file summary" not in prompt
+    assert "private_manifest_value" not in prompt
+    assert "No uploaded-file context is declared" in prompt
 
 
 @pytest.mark.asyncio
