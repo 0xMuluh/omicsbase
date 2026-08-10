@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.agent_plans import (
+    DEAD_LETTER,
     READY,
     WAITING,
     attach_continuation_plan,
@@ -50,6 +51,7 @@ def test_ready_plan_produces_a_non_repeating_resume_prompt():
         dependency_kind="job",
         dependency_id="job-1",
         instruction="Run the analysis",
+        arguments={"resume_from_checkpoint": True},
         dependency_status="completed",
     )
     plan["dependency_result"] = {"status": "completed", "error": None}
@@ -60,6 +62,8 @@ def test_ready_plan_produces_a_non_repeating_resume_prompt():
     prompt = continuation_prompt(get_continuation_plan(run))
     assert "Do not enqueue the same action again" in prompt
     assert "job-1" in prompt
+    assert "Original unresolved goal: Run the analysis" in prompt
+    assert "resume_from_checkpoint" in prompt
 
 
 def test_mark_continuation_running_increments_attempts():
@@ -77,3 +81,28 @@ def test_mark_continuation_running_increments_attempts():
     running = mark_continuation_running(run)
     assert running["status"] == "running"
     assert running["attempts"] == 1
+
+
+def test_continuation_attempt_ceiling_dead_letters_plan():
+    run = _run()
+    plan = build_continuation_plan(
+        run,
+        action="run_analysis",
+        dependency_kind="job",
+        dependency_id="job-1",
+        instruction="Finish the report after the analysis",
+        dependency_status="completed",
+    )
+    plan["max_attempts"] = 1
+    attach_continuation_plan(run, plan)
+
+    first = mark_continuation_running(run)
+    assert first["attempts"] == 1
+    first["status"] = READY
+    attach_continuation_plan(run, first)
+
+    assert mark_continuation_running(run) is None
+    stored = get_continuation_plan(run)
+    assert stored["status"] == DEAD_LETTER
+    assert stored["requires_user"] is True
+    assert run.resumable is False

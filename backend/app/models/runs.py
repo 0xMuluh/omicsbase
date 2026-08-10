@@ -62,6 +62,10 @@ class AgentRun(Base):
     input_payload = Column(JSON)
     result_payload = Column(JSON)
     run_metadata = Column("metadata", JSON)
+    continuation_status = Column(String(32), nullable=True, index=True)
+    continuation_dependency_kind = Column(String(40), nullable=True)
+    continuation_dependency_id = Column(String(128), nullable=True)
+    continuation_attempts = Column(Integer, nullable=False, default=0)
     current_step = Column(Integer, nullable=False, default=0)
     event_sequence = Column(Integer, nullable=False, default=0)
     cancel_requested = Column(Boolean, nullable=False, default=False)
@@ -94,6 +98,12 @@ class AgentRun(Base):
         ),
         Index("ix_agent_runs_surface_status_created", "surface", "status", "created_at"),
         Index("ix_agent_runs_tenant_created", "tenant_id", "created_at"),
+        Index(
+            "ix_agent_runs_continuation_dependency",
+            "continuation_status",
+            "continuation_dependency_kind",
+            "continuation_dependency_id",
+        ),
         CheckConstraint(
             "surface IN ('workspace', 'notes')",
             name="ck_agent_run_surface",

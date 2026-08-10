@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services.editor import _apply_edits
-from app.services.repair import _apply_repairs
+from app.services.repair import _apply_line_repairs
 
 
 def test_editor_mixed_payload_aborts_without_partial_write(tmp_path):
@@ -56,19 +56,22 @@ def test_editor_refuses_full_rewrite_of_truncated_source(tmp_path):
     assert any("truncated" in " ".join(item.diagnostics).lower() for item in result)
 
 
-def test_repair_mixed_payload_aborts_without_partial_write(tmp_path):
+def test_repair_line_target_requires_current_hash(tmp_path):
     code = tmp_path / "code"
     code.mkdir()
     target = code / "analysis.R"
     target.write_text("alpha <- 1\n")
 
-    result = _apply_repairs(
+    result = _apply_line_repairs(
         tmp_path,
-        [
-            {"path": "code/analysis.R", "search": "alpha <- 1", "replace": "alpha <- 2"},
-            {"path": "code/analysis.R", "search": "missing", "replace": "never"},
-        ],
+        [{
+            "path": "code/analysis.R",
+            "line": 1,
+            "replacement": "alpha <- 2",
+            "base_sha256": "0" * 64,
+        }],
     )
 
     assert not any(item.ok for item in result)
     assert target.read_text() == "alpha <- 1\n"
+    assert any(item.strategy == "conflict" for item in result)

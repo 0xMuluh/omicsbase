@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from app.config import settings
+
 PLAN_KEY = "continuation_plan"
 PLAN_VERSION = 1
 WAITING = "waiting"
@@ -13,10 +15,20 @@ READY = "ready"
 RUNNING = "running"
 FAILED = "failed"
 DONE = "done"
+DEAD_LETTER = "dead_letter"
+DEFAULT_MAX_CONTINUATION_ATTEMPTS = 2
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _max_continuation_attempts() -> int:
+    try:
+        configured = int(getattr(settings, "agent_continuation_max_attempts", DEFAULT_MAX_CONTINUATION_ATTEMPTS) or DEFAULT_MAX_CONTINUATION_ATTEMPTS)
+    except (TypeError, ValueError):
+        configured = DEFAULT_MAX_CONTINUATION_ATTEMPTS
+    return max(1, min(configured, 8))
 
 
 def _safe_json(value: Any, *, max_chars: int = 8_000) -> Any:
@@ -54,10 +66,12 @@ def build_continuation_plan(
         "dependency_kind": str(dependency_kind)[:40],
         "dependency_id": str(dependency_id)[:128],
         "instruction": str(instruction or "").strip()[:2_000],
+        "goal": str(instruction or "").strip()[:2_000],
         "arguments": _safe_json(arguments or {}, max_chars=4_000),
         "dependency_status": str(dependency_status)[:40],
         "dependency_result": None,
         "attempts": 0,
+        "max_attempts": _max_continuation_attempts(),
         "created_at": _now(),
         "updated_at": _now(),
     }
@@ -73,7 +87,12 @@ def attach_continuation_plan(run: Any, plan: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(getattr(run, "run_metadata", None) or {})
     metadata[PLAN_KEY] = _safe_json(plan, max_chars=12_000)
     run.run_metadata = metadata
-    run.resumable = True
+    if hasattr(run, "continuation_status"):
+        run.continuation_status = str(plan.get("status") or "")[:32] or None
+        run.continuation_dependency_kind = str(plan.get("dependency_kind") or "")[:40] or None
+        run.continuation_dependency_id = str(plan.get("dependency_id") or "")[:128] or None
+        run.continuation_attempts = int(plan.get("attempts") or 0)
+    run.resumable = plan.get("status") not in {DONE, DEAD_LETTER}
     return metadata[PLAN_KEY]
 
 
@@ -81,12 +100,22 @@ def mark_continuation_running(run: Any) -> dict[str, Any] | None:
     plan = get_continuation_plan(run)
     if not plan or plan.get("status") not in {READY, FAILED}:
         return None
+    attempts = int(plan.get("attempts") or 0)
+    max_attempts = int(plan.get("max_attempts") or _max_continuation_attempts())
+    if attempts >= max_attempts:
+        plan["status"] = DEAD_LETTER
+        plan["max_attempts"] = max_attempts
+        plan["requires_user"] = True
+        plan["failure_reason"] = "Continuation attempt ceiling reached."
+        plan["updated_at"] = _now()
+        attach_continuation_plan(run, plan)
+        return None
     plan["status"] = RUNNING
-    plan["attempts"] = int(plan.get("attempts") or 0) + 1
+    plan["attempts"] = attempts + 1
+    plan["max_attempts"] = max_attempts
     plan["updated_at"] = _now()
     attach_continuation_plan(run, plan)
     return plan
-
 
 def continuation_is_ready(run: Any) -> bool:
     plan = get_continuation_plan(run)
@@ -96,7 +125,11 @@ def continuation_is_ready(run: Any) -> bool:
 def continuation_can_resume(run: Any) -> bool:
     """Return whether a completed dependency has not been consumed yet."""
     plan = get_continuation_plan(run)
-    return bool(plan and plan.get("status") in {READY, FAILED, RUNNING})
+    if not plan or plan.get("status") not in {READY, FAILED, RUNNING}:
+        return False
+    attempts = int(plan.get("attempts") or 0)
+    max_attempts = int(plan.get("max_attempts") or _max_continuation_attempts())
+    return attempts < max_attempts or plan.get("status") == RUNNING
 
 
 def mark_continuation_consumed(run: Any) -> dict[str, Any] | None:
@@ -112,16 +145,22 @@ def mark_continuation_consumed(run: Any) -> dict[str, Any] | None:
 
 
 def continuation_prompt(plan: dict[str, Any]) -> str:
-    """Return a deterministic resume instruction; the model need not re-queue."""
+    """Return a deterministic resume instruction with the unresolved goal."""
     status = str(plan.get("dependency_status") or "completed")
     result = plan.get("dependency_result")
     result_text = json.dumps(result, default=str, sort_keys=True)[:2_000] if result else "{}"
+    goal = str(plan.get("goal") or plan.get("instruction") or "").strip()[:2_000]
+    arguments = plan.get("arguments") if isinstance(plan.get("arguments"), dict) else {}
+    arguments_text = json.dumps(arguments, default=str, sort_keys=True)[:4_000]
     return (
-        f"Continue the saved async request for {plan.get('action', 'the requested action')}. "
+        f"Resume the saved async request for {plan.get('action', 'the requested action')}. "
+        f"Original unresolved goal: {goal or 'Complete the user request safely.'} "
+        f"Saved action arguments: {arguments_text}. "
         f"Its {plan.get('dependency_kind', 'dependency')} {plan.get('dependency_id', '')} "
-        f"finished with status {status}. Inspect the current state and report what changed, "
-        "any failure details, and the next safe step. Do not enqueue the same action again "
-        f"unless the current evidence requires it. Dependency result: {result_text}"
+        f"finished with status {status}. Inspect the current state and continue toward the goal; "
+        "report what changed, any failure details, and the next safe step. Do not enqueue the "
+        "same action again unless the current evidence requires it. "
+        f"Dependency result: {result_text}"
     )
 
 
@@ -143,7 +182,12 @@ def mark_dependency_complete(
     changed = 0
     runs = (
         db.query(AgentRun)
-        .filter(AgentRun.run_metadata.isnot(None))
+        .filter(
+            AgentRun.continuation_status == WAITING,
+            AgentRun.continuation_dependency_kind == str(dependency_kind),
+            AgentRun.continuation_dependency_id == str(dependency_id),
+        )
+        .with_for_update()
         .all()
     )
     for run in runs:
@@ -178,6 +222,7 @@ def mark_dependency_complete(
 __all__ = [
     "FAILED",
     "DONE",
+    "DEAD_LETTER",
     "PLAN_KEY",
     "READY",
     "RUNNING",

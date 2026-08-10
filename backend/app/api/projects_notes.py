@@ -1402,6 +1402,7 @@ async def note_thread_turn(
         token_buffer: list[str] = []
         telemetry_written = False
         pending_async_execution = False
+        waiting_for_dependency = False
         record_stream_event(db, run, {"type": "note_cell", "role": "user", "turn_id": turn_id, "cell": _cell_payload(user_cell)})
         db.commit()
         yield json.dumps({"type": "run", "run": serialize_agent_run(run)}, default=str) + "\n"
@@ -1451,6 +1452,16 @@ async def note_thread_turn(
                         transition_agent_run(db, run, "waiting_tool", event_type="tool_waiting", payload={"tool": output_event.get("tool")})
                 elif event_type in {"tool_completed", "execution_queued"} and run.status == "waiting_tool":
                     transition_agent_run(db, run, "running", event_type="tool_resumed")
+                elif event_type == "wait":
+                    waiting_for_dependency = True
+                    if run.status in {"running", "waiting_tool"}:
+                        transition_agent_run(
+                            db,
+                            run,
+                            "paused",
+                            event_type="run_waiting",
+                            payload={"dependency": output_event.get("dependency"), "step": output_event.get("step")},
+                        )
                 if event_type == "final":
                     final_text = str(output_event.get("message") or "").strip()
                     if final_text:
@@ -1534,9 +1545,12 @@ async def note_thread_turn(
                     cancelled = event_type == "cancelled" or run_cancel_requested(db, str(run.id))
                     continuation = get_continuation_plan(run)
                     waiting_for_continuation = (
-                        event_type == "final"
-                        and bool(continuation)
-                        and continuation.get("status") == "waiting"
+                        waiting_for_dependency
+                        or (
+                            event_type == "final"
+                            and bool(continuation)
+                            and continuation.get("status") == "waiting"
+                        )
                     )
                     if (
                         event_type == "final"
@@ -1560,14 +1574,18 @@ async def note_thread_turn(
                                 run,
                                 {"type": "continuation_consumed", "action": consumed.get("action")},
                             )
-                    target_status = "cancelled" if cancelled else "completed"
+                    target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                     if run.status not in {"completed", "failed", "cancelled"}:
                         transition_agent_run(
                             db,
                             run,
                             target_status,
                             event_type=(
-                                "run_cancelled" if cancelled else "run_completed"
+                                "run_cancelled"
+                                if cancelled
+                                else "run_waiting_continuation"
+                                if waiting_for_continuation
+                                else "run_completed"
                             ),
                             payload={"cell_id": str((output_event.get("cell") or {}).get("id")) if isinstance(output_event.get("cell"), dict) else None},
                         )
@@ -1578,7 +1596,13 @@ async def note_thread_turn(
                             run,
                             kind="agent",
                             operation="note_turn",
-                            status=("cancelled" if cancelled else "completed"),
+                            status=(
+                                "cancelled"
+                                if cancelled
+                                else "paused"
+                                if waiting_for_continuation
+                                else "completed"
+                            ),
                             duration_ms=(asyncio.get_running_loop().time() - turn_started) * 1000,
                             provider=settings.llm_provider,
                             model=settings.llm_model,

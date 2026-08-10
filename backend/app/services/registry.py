@@ -57,6 +57,46 @@ def get_ensemble_methods(step_id: str) -> list[dict] | None:
     return step.get("default_ensemble")
 
 
+def contested_ensemble_contract(step_id: str) -> dict[str, Any] | None:
+    """Return the executable minimum ensemble contract for one decision point."""
+    decision = get_decision_points().get(str(step_id), {})
+    if decision.get("classification") != "contested":
+        return None
+    methods = [
+        method for method in (decision.get("default_ensemble") or [])
+        if isinstance(method, dict) and str(method.get("id") or "").strip()
+    ]
+    return {
+        "required": True,
+        "minimum_methods": 2,
+        "method_ids": tuple(str(method["id"]) for method in methods),
+    }
+
+
+def validate_contested_ensemble(step_id: str, methods: list[dict] | None) -> list[str]:
+    """Validate a contested workflow step before any source generation occurs."""
+    contract = contested_ensemble_contract(step_id)
+    if contract is None:
+        return []
+    supplied = methods or []
+    ids = [str(item.get("id") or "").strip() for item in supplied if isinstance(item, dict)]
+    errors: list[str] = []
+    minimum = int(contract["minimum_methods"])
+    if len(contract["method_ids"]) < minimum:
+        errors.append(f"{step_id} registry contract defines fewer than {minimum} accepted methods")
+    if len(ids) < minimum:
+        errors.append(
+            f"{step_id} requires an ensemble of at least {minimum} methods; received {len(ids)}"
+        )
+    if len(ids) != len(set(ids)):
+        errors.append(f"{step_id} ensemble contains duplicate methods")
+    allowed = set(contract["method_ids"])
+    unknown = sorted(set(ids) - allowed)
+    if unknown:
+        errors.append(f"{step_id} ensemble contains unregistered methods: {', '.join(unknown)}")
+    return errors
+
+
 def format_registry_for_llm() -> str:
     """Format the registry as readable text for inclusion in LLM prompts."""
     reg = load_registry()

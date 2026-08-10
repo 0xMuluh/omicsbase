@@ -357,7 +357,7 @@ def test_workspace_fast_path_seeds_knowledge_for_conceptual_intent():
     assert "RELEASE_3_23" in seed
 
 
-def test_note_fast_path_seeds_knowledge_for_conceptual_intent(monkeypatch):
+def test_note_fast_path_scopes_knowledge_to_knowledge_intent(monkeypatch):
     from app.services.note_agent import NoteAgentExecutor
 
     captured = {}
@@ -376,14 +376,15 @@ def test_note_fast_path_seeds_knowledge_for_conceptual_intent(monkeypatch):
         knowledge_search_handler=_fake_knowledge_handler,
     )
 
-    async def collect():
-        return [event async for event in executor.fast_path_events("What is alpha diversity?", intent="conceptual")]
+    async def collect(intent):
+        return [event async for event in executor.fast_path_events("What is alpha diversity?", intent=intent)]
 
-    events = asyncio.run(collect())
+    events = asyncio.run(collect("conceptual"))
+    assert captured["knowledge_context"] is None
+    events = asyncio.run(collect("needs_knowledge"))
     assert captured["knowledge_context"] is not None
     assert "OSCA" in captured["knowledge_context"]
     assert events[-1]["fast"] is True
-
 
 def test_fast_path_no_knowledge_handler_answers_plain(monkeypatch):
     from app.services.note_agent import NoteAgentExecutor

@@ -675,16 +675,12 @@ class WorkspaceAgentExecutor:
 
         async for event in stream_simple_answer(
             message,
-            knowledge_context=self._knowledge_seed(message),
+            knowledge_context=(self._knowledge_seed(message) if intent == "needs_knowledge" else None),
         ):
             yield event
 
     def _knowledge_seed(self, message: str) -> str | None:
-        """Ground fast-path answers with cited Bioconductor book excerpts.
-
-        Consulted for every fast-path message: if the books have relevant
-        material it is cited in the answer; if not, the answer is unaffected.
-        """
+        """Ground knowledge-seeking fast-path answers with book excerpts."""
         if self.knowledge_search_handler is None:
             return None
         try:
@@ -1209,6 +1205,12 @@ def _execute_tool(project, tool: str, arguments: dict[str, Any]) -> dict[str, An
         return _inspect_factor_levels(project, arguments)
     if tool == "summarize_missingness":
         return _summarize_missingness(project, arguments)
+    if tool == "check_sample_alignment":
+        return _check_sample_alignment(project, arguments)
+    if tool == "check_design_matrix":
+        return _check_design_matrix(project, arguments)
+    if tool == "check_confounding":
+        return _check_confounding(project, arguments)
     return {"status": "error", "error": f"Unknown workspace tool: {tool}"}
 
 
@@ -1316,6 +1318,156 @@ def _summarize_missingness(project: Any, arguments: dict[str, Any]) -> dict[str,
             }
             for column, count in counts.items()
         },
+        **_file_revision(path),
+    }
+
+
+def _read_metadata_rows(project: Any, raw_path: Any):
+    base, path, delimiter, error = _table_file(project, {"path": raw_path})
+    if error:
+        return base, path, delimiter, [], [], error
+    with path.open(errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        columns = list(reader.fieldnames or [])
+        rows = list(reader)
+    return base, path, delimiter, columns, rows, None
+
+
+def _check_sample_alignment(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, feature_path, feature_delimiter, error = _table_file(project, {"path": arguments.get("feature_table")})
+    if error:
+        return error
+    metadata_base, metadata_path, _metadata_delimiter, columns, rows, metadata_error = _read_metadata_rows(project, arguments.get("metadata"))
+    if metadata_error:
+        return metadata_error
+    sample_column = str(arguments.get("sample_id_column") or "").strip()
+    if sample_column not in columns:
+        return {"status": "error", "error": f"Metadata column not found: {sample_column}"}
+    with feature_path.open(errors="replace", newline="") as handle:
+        header = next(csv.reader(handle, delimiter=feature_delimiter), [])
+    feature_samples = [str(value).strip() for value in header[1:] if str(value).strip()]
+    metadata_samples = [str(row.get(sample_column) or "").strip() for row in rows]
+    feature_set = set(feature_samples)
+    metadata_set = set(metadata_samples)
+    duplicate_features = sorted({value for value in feature_samples if feature_samples.count(value) > 1})
+    duplicate_metadata = sorted({value for value in metadata_samples if value and metadata_samples.count(value) > 1})
+    missing_metadata = sorted(feature_set - metadata_set)
+    missing_features = sorted(metadata_set - feature_set)
+    return {
+        "status": "ok",
+        "feature_table": feature_path.relative_to(base).as_posix(),
+        "metadata": metadata_path.relative_to(metadata_base).as_posix(),
+        "sample_id_column": sample_column,
+        "feature_sample_count": len(feature_samples),
+        "metadata_sample_count": len(metadata_samples),
+        "aligned_sample_count": len(feature_set & metadata_set),
+        "missing_metadata_rows": missing_metadata[:100],
+        "missing_feature_columns": missing_features[:100],
+        "duplicate_feature_columns": duplicate_features[:100],
+        "duplicate_metadata_ids": duplicate_metadata[:100],
+        "aligned": not missing_metadata and not missing_features and not duplicate_features and not duplicate_metadata,
+        **_file_revision(feature_path),
+    }
+
+
+def _matrix_rank(matrix: list[list[float]]) -> int:
+    if not matrix:
+        return 0
+    values = [row[:] for row in matrix]
+    rows = len(values)
+    columns = len(values[0]) if values[0] else 0
+    rank = 0
+    for column in range(columns):
+        pivot = next((row for row in range(rank, rows) if abs(values[row][column]) > 1e-10), None)
+        if pivot is None:
+            continue
+        values[rank], values[pivot] = values[pivot], values[rank]
+        scale = values[rank][column]
+        values[rank] = [item / scale for item in values[rank]]
+        for row in range(rows):
+            if row == rank:
+                continue
+            factor = values[row][column]
+            if abs(factor) > 1e-10:
+                values[row] = [left - factor * right for left, right in zip(values[row], values[rank])]
+        rank += 1
+        if rank == rows:
+            break
+    return rank
+
+
+def _check_design_matrix(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, path, _delimiter, columns, rows, error = _read_metadata_rows(project, arguments.get("metadata"))
+    if error:
+        return error
+    terms = [str(term).strip() for term in (arguments.get("terms") or []) if str(term).strip()]
+    missing_terms = sorted(set(terms) - set(columns))
+    if missing_terms:
+        return {"status": "error", "error": f"Metadata columns not found: {', '.join(missing_terms)}"}
+    levels: dict[str, list[str]] = {}
+    for term in terms:
+        levels[term] = sorted({str(row.get(term) or "").strip() or "<missing>" for row in rows})
+    matrix: list[list[float]] = []
+    for row in rows:
+        values = [1.0] if bool(arguments.get("include_intercept", True)) else []
+        for term in terms:
+            for level in levels[term][1:]:
+                values.append(1.0 if (str(row.get(term) or "").strip() or "<missing>") == level else 0.0)
+        matrix.append(values)
+    rank = _matrix_rank(matrix)
+    column_count = len(matrix[0]) if matrix else (1 if arguments.get("include_intercept", True) else 0)
+    return {
+        "status": "ok",
+        "path": path.relative_to(base).as_posix(),
+        "terms": terms,
+        "levels": {term: values[:100] for term, values in levels.items()},
+        "rows": len(rows),
+        "columns": column_count,
+        "rank": rank,
+        "full_rank": rank == column_count,
+        "aliased_terms": terms if rank < column_count else [],
+        **_file_revision(path),
+    }
+
+
+def _check_confounding(project: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    base, path, _delimiter, columns, rows, error = _read_metadata_rows(project, arguments.get("metadata"))
+    if error:
+        return error
+    terms = [str(term).strip() for term in (arguments.get("terms") or []) if str(term).strip()]
+    missing_terms = sorted(set(terms) - set(columns))
+    if missing_terms:
+        return {"status": "error", "error": f"Metadata columns not found: {', '.join(missing_terms)}"}
+    pairs = []
+    for index, left in enumerate(terms):
+        for right in terms[index + 1:]:
+            left_to_right: dict[str, set[str]] = {}
+            right_to_left: dict[str, set[str]] = {}
+            for row in rows:
+                left_value = str(row.get(left) or "").strip() or "<missing>"
+                right_value = str(row.get(right) or "").strip() or "<missing>"
+                left_to_right.setdefault(left_value, set()).add(right_value)
+                right_to_left.setdefault(right_value, set()).add(left_value)
+            strongly_confounding = (
+                len(left_to_right) > 1
+                and len(right_to_left) > 1
+                and all(len(values) <= 1 for values in left_to_right.values())
+                and all(len(values) <= 1 for values in right_to_left.values())
+            )
+            pairs.append({
+                "left": left,
+                "right": right,
+                "left_levels": len(left_to_right),
+                "right_levels": len(right_to_left),
+                "strongly_confounding": strongly_confounding,
+            })
+    return {
+        "status": "ok",
+        "path": path.relative_to(base).as_posix(),
+        "terms": terms,
+        "row_count": len(rows),
+        "pairs": pairs,
+        "confounded_pairs": [pair for pair in pairs if pair["strongly_confounding"]],
         **_file_revision(path),
     }
 

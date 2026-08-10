@@ -118,7 +118,11 @@ class Settings(BaseSettings):
     agent_max_budget_units: int = 12
     agent_max_tool_calls: int = 24
     agent_max_mutations: int = 4
+    agent_max_llm_calls: int = 8
+    agent_max_generated_tokens: int = 20000
+    agent_max_retrieved_chars: int = 80000
     agent_run_stale_after_seconds: int = 300
+    agent_continuation_max_attempts: int = 2
     agent_allow_acquisition: bool = True
 
     # Note agent: generous per-turn step budget (each step is one LLM

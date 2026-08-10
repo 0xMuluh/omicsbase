@@ -342,6 +342,7 @@ async def workspace_agent_stream(
         tool_started_at = {}
         token_buffer: list[str] = []
         telemetry_written = False
+        waiting_for_dependency = False
         agent_memory = dict(project.agent_memory or {})
         if agent_memory.pop("pending_question", None) is not None:
             project.agent_memory = agent_memory
@@ -470,6 +471,16 @@ async def workspace_agent_stream(
                     transition_agent_run(db, run, "waiting_tool", event_type="tool_waiting", payload={"tool": event.get("tool")})
             elif event_type in {"tool_completed", "execution_queued", "action_event"} and run.status == "waiting_tool":
                 transition_agent_run(db, run, "running", event_type="tool_resumed")
+            elif event_type == "wait":
+                waiting_for_dependency = True
+                if run.status in {"running", "waiting_tool"}:
+                    transition_agent_run(
+                        db,
+                        run,
+                        "paused",
+                        event_type="run_waiting",
+                        payload={"dependency": event.get("dependency"), "step": event.get("step")},
+                    )
             memory_updates = event.pop("memory_updates", [])
             if memory_updates:
                 from app.services.agent_runtime import update_durable_project_memory
@@ -830,7 +841,7 @@ async def workspace_agent_stream(
                     action=str(event.get("action") or "workspace action"),
                     dependency_kind="job",
                     dependency_id=str(event["job_id"]),
-                    instruction=str(event.get("message") or user_message.content or data.message),
+                    instruction=str(user_message.content or data.message).strip(),
                     arguments=arguments,
                 )
                 attach_continuation_plan(run, plan)
@@ -866,9 +877,12 @@ async def workspace_agent_stream(
                 cancelled = event_type == "cancelled" or run_cancel_requested(db, str(run.id))
                 continuation = get_continuation_plan(run)
                 waiting_for_continuation = (
-                    event_type == "action_queued"
-                    and bool(continuation)
-                    and continuation.get("status") in {"waiting", "ready", "failed", "running"}
+                    waiting_for_dependency
+                    or (
+                        event_type == "action_queued"
+                        and bool(continuation)
+                        and continuation.get("status") in {"waiting", "ready", "failed", "running"}
+                    )
                 )
                 target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                 if run.status not in {"completed", "failed", "cancelled"}:

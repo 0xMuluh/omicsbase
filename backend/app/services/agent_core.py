@@ -32,6 +32,9 @@ class TurnBudget:
     max_units: int
     max_tool_calls: int
     max_mutations: int
+    max_llm_calls: int = 8
+    max_generated_tokens: int = 20000
+    max_retrieved_chars: int = 80000
     units_used: int = 0
     tool_calls: int = 0
     mutation_count: int = 0
@@ -45,6 +48,9 @@ class TurnBudget:
             max_units=max(1, int(getattr(settings, "agent_max_budget_units", 12) or 12)),
             max_tool_calls=max(1, int(getattr(settings, "agent_max_tool_calls", 24) or 24)),
             max_mutations=max(1, int(getattr(settings, "agent_max_mutations", 4) or 4)),
+            max_llm_calls=max(1, int(getattr(settings, "agent_max_llm_calls", 8) or 8)),
+            max_generated_tokens=max(1, int(getattr(settings, "agent_max_generated_tokens", 20000) or 20000)),
+            max_retrieved_chars=max(64, int(getattr(settings, "agent_max_retrieved_chars", 80000) or 80000)),
         )
 
     def try_consume_tool(self, *, cost: int, mutating: bool) -> tuple[bool, str | None]:
@@ -61,14 +67,29 @@ class TurnBudget:
             self.mutation_count += 1
         return True, None
 
+    def try_record_llm_call(self) -> tuple[bool, str | None]:
+        if self.llm_calls >= self.max_llm_calls:
+            return False, f"the turn allows at most {self.max_llm_calls} LLM calls"
+        self.llm_calls += 1
+        return True, None
+
     def record_llm_call(self) -> None:
+        """Compatibility helper for callers that do not need enforcement."""
         self.llm_calls += 1
 
-    def record_generated(self, value: str) -> None:
-        self.generated_tokens += max(0, (len(value or "") + 3) // 4)
+    def record_generated(self, value: str) -> bool:
+        amount = max(0, (len(value or "") + 3) // 4)
+        if self.generated_tokens + amount > self.max_generated_tokens:
+            return False
+        self.generated_tokens += amount
+        return True
 
-    def record_retrieved(self, value: str) -> None:
-        self.retrieved_chars += len(value or "")
+    def record_retrieved(self, value: str) -> bool:
+        amount = len(value or "")
+        if self.retrieved_chars + amount > self.max_retrieved_chars:
+            return False
+        self.retrieved_chars += amount
+        return True
 
     def snapshot(self) -> dict[str, int]:
         return {
@@ -78,6 +99,9 @@ class TurnBudget:
             "max_tool_calls": self.max_tool_calls,
             "mutation_count": self.mutation_count,
             "max_mutations": self.max_mutations,
+            "max_llm_calls": self.max_llm_calls,
+            "max_generated_tokens": self.max_generated_tokens,
+            "max_retrieved_chars": self.max_retrieved_chars,
             "llm_calls": self.llm_calls,
             "generated_tokens": self.generated_tokens,
             "retrieved_chars": self.retrieved_chars,
@@ -204,6 +228,7 @@ class ToolCallResult:
     refresh_context: bool = False
     record_failure: bool = True
     emit_completed: bool = True
+    wait_for: dict[str, Any] | None = None
 
 
 class AgentExecutor(Protocol):
@@ -403,8 +428,16 @@ async def run_agent_loop(
             )
             context_refreshed = False
 
+            generated_budget_error: str | None = None
             try:
-                turn_budget.record_llm_call()
+                llm_allowed, llm_budget_error = turn_budget.try_record_llm_call()
+                if not llm_allowed:
+                    message = f"Turn budget exhausted before the next model call: {llm_budget_error}."
+                    final = executor.final_event(message)
+                    if isinstance(final, dict):
+                        final["budget"] = turn_budget.snapshot()
+                    yield final
+                    return
                 legacy = await executor.legacy_llm_step(messages, step=step)
                 if legacy is not None:
                     for event in legacy.events:
@@ -429,7 +462,11 @@ async def run_agent_loop(
                             token = event["content"]
                             step_text += token
                             collected_text += token
-                            turn_budget.record_generated(token)
+                            if not turn_budget.record_generated(token):
+                                generated_budget_error = (
+                                    f"the turn allows at most {turn_budget.max_generated_tokens} generated tokens"
+                                )
+                                break
                             yield {"type": "token", "token": token}
                         elif event["type"] == "tool_call":
                             tool_calls_this_step.append(event)
@@ -437,6 +474,14 @@ async def run_agent_loop(
                 logger.exception("Streaming agent LLM call failed: %s", exc)
                 for event in executor.fallback_events(exc):
                     yield event
+                return
+
+            if generated_budget_error:
+                message = f"Turn budget exhausted after the response was capped: {generated_budget_error}."
+                final = executor.final_event(message)
+                if isinstance(final, dict):
+                    final["budget"] = turn_budget.snapshot()
+                yield final
                 return
 
             # If model produced only text (no tool calls), it's the final answer
@@ -480,7 +525,7 @@ async def run_agent_loop(
                     tools_run += 1
                     for event in result.events:
                         yield event
-                    if result.end_turn:
+                    if result.end_turn and not result.wait_for:
                         if result.final_event is not None:
                             yield result.final_event
                         return
@@ -509,12 +554,26 @@ async def run_agent_loop(
                         )
 
                     # Feed a structurally bounded result back to the model.
+                    remaining_retrieval = turn_budget.max_retrieved_chars - turn_budget.retrieved_chars
+                    if remaining_retrieval < 64:
+                        message = "Turn budget exhausted before another tool observation could be retained."
+                        final = executor.final_event(message)
+                        if isinstance(final, dict):
+                            final["budget"] = turn_budget.snapshot()
+                        yield final
+                        return
                     tool_content = bounded_json(
                         observation,
-                        executor.max_tool_chars,
+                        min(executor.max_tool_chars, remaining_retrieval),
                         priority_keys=("status", "summary", "error", "path", "revision", "sha256", "data", "truncated"),
                     )
-                    turn_budget.record_retrieved(tool_content)
+                    if not turn_budget.record_retrieved(tool_content):
+                        message = "Turn budget exhausted before another tool observation could be retained."
+                        final = executor.final_event(message)
+                        if isinstance(final, dict):
+                            final["budget"] = turn_budget.snapshot()
+                        yield final
+                        return
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
@@ -524,6 +583,12 @@ async def run_agent_loop(
                     if result.refresh_context:
                         live_context = executor.build_live_context()
                         context_refreshed = True
+
+                    if result.wait_for:
+                        yield {"type": "wait", "dependency": result.wait_for, "step": step}
+                        if result.final_event is not None:
+                            yield result.final_event
+                        return
 
             # Continue to next step (model will see tool results)
             collected_text = ""  # Reset for next streaming round

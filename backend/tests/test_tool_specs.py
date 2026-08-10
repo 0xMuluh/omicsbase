@@ -142,6 +142,9 @@ def test_turn_budget_enforces_units_calls_and_mutations():
         "max_tool_calls": 2,
         "mutation_count": 1,
         "max_mutations": 1,
+        "max_llm_calls": 8,
+        "max_generated_tokens": 20000,
+        "max_retrieved_chars": 80000,
         "llm_calls": 0,
         "generated_tokens": 0,
         "retrieved_chars": 0,
@@ -158,3 +161,23 @@ def test_bounded_tool_observation_is_always_valid_json():
     parsed = __import__("json").loads(rendered)
     assert parsed["status"] == "ok"
     assert len(rendered) <= 180
+
+
+def test_turn_budget_enforces_expensive_resource_caps():
+    budget = TurnBudget(
+        max_units=5,
+        max_tool_calls=5,
+        max_mutations=2,
+        max_llm_calls=1,
+        max_generated_tokens=2,
+        max_retrieved_chars=10,
+    )
+
+    assert budget.try_record_llm_call() == (True, None)
+    allowed, reason = budget.try_record_llm_call()
+    assert allowed is False
+    assert "LLM calls" in reason
+    assert budget.record_generated("12345678") is True
+    assert budget.record_generated("x") is False
+    assert budget.record_retrieved("1234567890") is True
+    assert budget.record_retrieved("x") is False

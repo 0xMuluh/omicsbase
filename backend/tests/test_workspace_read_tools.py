@@ -2,6 +2,9 @@ from types import SimpleNamespace
 
 from app.services.tool_specs import TOOL_REGISTRY
 from app.services.workspace_agent import (
+    _check_confounding,
+    _check_design_matrix,
+    _check_sample_alignment,
     _inspect_factor_levels,
     _read_results,
     _read_workspace_file,
@@ -65,8 +68,35 @@ def test_read_tool_contracts_are_explicit():
     read_results = TOOL_REGISTRY.require("read_results", lens="workspace").parameters
     assert read_results["properties"]["limit"]["maximum"] == 200
     assert TOOL_REGISTRY.require("ask_user", lens="workspace").parameters["required"] == ["question", "options"]
-    assert {name for name in ("inspect_table", "inspect_factor_levels", "summarize_missingness") if TOOL_REGISTRY.get(name, lens="workspace")} == {
+    assert {name for name in ("inspect_table", "inspect_factor_levels", "summarize_missingness", "check_sample_alignment", "check_design_matrix", "check_confounding") if TOOL_REGISTRY.get(name, lens="workspace")} == {
         "inspect_table",
         "inspect_factor_levels",
         "summarize_missingness",
+        "check_sample_alignment",
+        "check_design_matrix",
+        "check_confounding",
     }
+
+
+def test_design_diagnostics_report_alignment_rank_and_confounding(tmp_path):
+    feature_table = tmp_path / "features.csv"
+    feature_table.write_text("feature,S1,S2,S3\nTaxonA,1,2,3\n")
+    metadata = tmp_path / "metadata.csv"
+    metadata.write_text("sample,group,site\nS1,A,North\nS2,B,South\nS3,A,North\n")
+
+    alignment = _check_sample_alignment(
+        _project(tmp_path),
+        {"feature_table": "features.csv", "metadata": "metadata.csv", "sample_id_column": "sample"},
+    )
+    design = _check_design_matrix(
+        _project(tmp_path),
+        {"metadata": "metadata.csv", "terms": ["group", "site"], "include_intercept": True},
+    )
+    confounding = _check_confounding(
+        _project(tmp_path),
+        {"metadata": "metadata.csv", "terms": ["group", "site"]},
+    )
+
+    assert alignment["aligned"] is True
+    assert design["full_rank"] is False
+    assert confounding["confounded_pairs"][0]["strongly_confounding"] is True

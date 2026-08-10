@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,6 @@ from app.services.edit_engine import (
     EditOperation,
     EditPolicy,
     commit_transaction,
-    parse_apply_patch,
     prepare_transaction,
     sha256_bytes,
 )
@@ -405,152 +403,6 @@ def _apply_line_repairs(
             )
     return results
 
-
-def _apply_repairs(
-    base: Path,
-    repairs: list[Any],
-    *,
-    protected_paths: set[str] | None = None,
-) -> list[ApplyResult]:
-    """Prepare all automatic repairs before committing any source bytes."""
-    protected = protected_paths or set()
-    operations: list[EditOperation] = []
-    metadata: list[tuple[str, str | None, str]] = []
-    results: list[ApplyResult] = []
-    preflight_failed = False
-
-    def fail(path: str, message: str, *, reason: str, attempted_search: str | None = None, strategy: str = "none") -> None:
-        nonlocal preflight_failed
-        preflight_failed = True
-        results.append(
-            ApplyResult(
-                path=path,
-                ok=False,
-                strategy=strategy,
-                attempted_search=attempted_search,
-                diagnostics=[message],
-                reason=reason,
-            )
-        )
-
-    for repair in repairs:
-        if not isinstance(repair, dict):
-            fail("", "Repair operation must be an object.", reason="invalid_operation")
-            continue
-        relative_path = str(repair.get("path") or "").strip()
-        reason = str(repair.get("reason") or "Targeted render repair")[:1000]
-        patch = repair.get("patch")
-        if isinstance(patch, str):
-            try:
-                patch_operations = parse_apply_patch(patch)
-            except EditEngineError as exc:
-                fail(relative_path or "(patch)", str(exc), reason=reason)
-                continue
-            for patch_operation in patch_operations:
-                rel = str(patch_operation.path or "").strip()
-                target = _safe_source_path(base, rel)
-                if target is None or not target.is_file():
-                    fail(rel, "Unsafe or missing repair target.", reason=reason)
-                    continue
-                if rel in protected:
-                    fail(rel, f"{rel} is scientific assurance evidence and cannot be changed by automatic repair.", reason=reason, strategy="protected")
-                    continue
-                base_sha256 = sha256_bytes(target.read_bytes())
-                operations.append(dataclass_replace(patch_operation, base_sha256=base_sha256, reason=reason))
-                metadata.append((rel, None, reason))
-            continue
-
-        if not relative_path:
-            fail("", "Repair path is required unless a patch envelope supplies paths.", reason=reason)
-            continue
-        target = _safe_source_path(base, relative_path)
-        if target is None or not target.is_file():
-            fail(relative_path, "Unsafe or missing repair target.", reason=reason)
-            continue
-        rel = target.relative_to(base).as_posix()
-        if rel in protected:
-            fail(rel, f"{rel} is scientific assurance evidence and cannot be changed by automatic repair.", reason=reason, strategy="protected")
-            continue
-        existing = target.read_bytes()
-        base_sha256 = sha256_bytes(existing)
-        search = repair.get("search")
-        replace = repair.get("replace")
-        content = repair.get("content")
-        if isinstance(search, str) and isinstance(replace, str):
-            operations.append(
-                EditOperation(path=rel, kind="replace", search=search, replace=replace, base_sha256=base_sha256, reason=reason)
-            )
-            metadata.append((rel, search, reason))
-        elif isinstance(content, str):
-            if len(existing) > DEFAULT_FILE_CHARS:
-                fail(
-                    rel,
-                    "Full-file repairs are disabled when the model saw a truncated source; use an exact SEARCH/REPLACE or patch hunk.",
-                    reason=reason,
-                )
-                continue
-            operations.append(
-                EditOperation(path=rel, kind="rewrite", content=content, base_sha256=base_sha256, reason=reason)
-            )
-            metadata.append((rel, None, reason))
-        else:
-            fail(rel, "Repair missing search/replace, patch, and content.", reason=reason)
-
-    if preflight_failed:
-        for rel, attempted_search, reason in metadata:
-            results.append(
-                ApplyResult(
-                    path=rel,
-                    ok=False,
-                    attempted_search=attempted_search,
-                    diagnostics=["Repair transaction aborted during preflight; no files were changed."],
-                    reason="preflight_failed",
-                )
-            )
-        return results
-    if not operations:
-        return results
-    try:
-        prepared = prepare_transaction(
-            base,
-            operations,
-            origin="automatic_repair",
-            summary="Targeted render repair",
-            policy=EditPolicy(protected_paths=frozenset(protected), require_base_for_rewrite=True),
-            validate=True,
-        )
-        committed = commit_transaction(prepared)
-    except EditEngineError as exc:
-        for rel, attempted_search, reason in metadata:
-            results.append(
-                ApplyResult(
-                    path=rel,
-                    ok=False,
-                    strategy="conflict" if exc.code == "edit_conflict" else "none",
-                    attempted_search=attempted_search,
-                    diagnostics=[str(exc)],
-                    reason=reason,
-                )
-            )
-        return results
-
-    files = {item.path: item for item in committed.files}
-    for rel, attempted_search, reason in metadata:
-        item = files.get(rel)
-        if item is None:
-            continue
-        results.append(
-            ApplyResult(
-                path=rel,
-                ok=True,
-                strategy=item.strategies[-1] if item.strategies else "none",
-                before=_decode_text(item.before),
-                after=_decode_text(item.after),
-                attempted_search=attempted_search,
-                reason=reason,
-            )
-        )
-    return results
 
 def _decode_text(value: bytes | None) -> str | None:
     return value.decode("utf-8", errors="replace") if value is not None else None

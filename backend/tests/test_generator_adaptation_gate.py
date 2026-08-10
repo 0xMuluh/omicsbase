@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.schemas import AnalysisPlan
+from app.schemas.schemas import AnalysisPlan, WorkflowStep
 from app.services import generator, qa_gate, spawner
 from app.services.report_pack import ReportPack, ReportPackFile, ReportPackRule
 
@@ -715,3 +716,25 @@ def test_oversized_source_uses_structural_units_without_gaps():
     assert "".join(unit[2] for unit in units) == content
     assert all(len(unit[2]) <= generator.MAX_ADAPT_CHUNK_CHARS for unit in units)
     assert all(unit[2].startswith("# Section") for unit in units)
+
+
+
+def test_generation_rejects_a_single_contested_method_before_writing(tmp_path):
+    plan = AnalysisPlan(
+        project_name="Contested contract",
+        domain="microbiome",
+        study_type="two_group_comparison",
+        question="Compare the groups",
+        workflow=[
+            WorkflowStep(
+                id="differential_abundance",
+                name="Differential abundance",
+                classification="contested",
+                ensemble_methods=[{"id": "ancombc", "name": "ANCOM-BC2"}],
+            )
+        ],
+    )
+
+    with pytest.raises(generator.GenerationQualityError, match="at least 2 methods"):
+        asyncio.run(generator.generate_project(str(tmp_path), plan, [], {}))
+    assert not (tmp_path / "code").exists()

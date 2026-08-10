@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import posixpath
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -328,13 +329,59 @@ def _adaptation_prompt_sections(
     }
 
 
+def _inferred_context_paths(relative_path: str, generated_files: dict[str, str]) -> set[str]:
+    """Infer legacy context from references present in the target source."""
+    content = generated_files.get(relative_path, "")
+    if not content:
+        return set()
+
+    referenced: set[str] = set()
+    quote_chars = chr(34) + chr(39)
+    reference_pattern = re.compile(
+        rf"(?:source|include|input)[ ]*[(][ ]*[{quote_chars}]([^{quote_chars}]+)[{quote_chars}]",
+        re.IGNORECASE,
+    )
+    for raw_reference in reference_pattern.findall(content):
+        candidate = posixpath.normpath(
+            posixpath.join(posixpath.dirname(relative_path), raw_reference)
+        )
+        if candidate in generated_files:
+            referenced.add(candidate)
+        elif raw_reference in generated_files:
+            referenced.add(raw_reference)
+    if referenced:
+        return referenced
+
+    target_directory = posixpath.dirname(relative_path)
+    source_suffixes = {".r", ".qmd", ".rmd", ".yml", ".yaml"}
+    siblings = sorted(
+        path
+        for path in generated_files
+        if path != relative_path
+        and posixpath.dirname(path) == target_directory
+        and Path(path).suffix.lower() in source_suffixes
+    )
+    if siblings:
+        return set(siblings[:8])
+
+    # Old manifests remain supported, but their fallback is now bounded and
+    # derived from the generated inventory instead of known filenames.
+    candidates = [
+        path
+        for path in sorted(generated_files)
+        if path != relative_path
+        and Path(path).suffix.lower() in source_suffixes
+    ]
+    return set(candidates[:8])
+
+
 def _adaptation_context_paths(
     kind: str,
     relative_path: str,
     generated_files: dict[str, str],
     dependencies: tuple[str, ...] | None = None,
 ) -> set[str]:
-    """Return context files from declared dependencies with a legacy fallback."""
+    """Return context files from declared dependencies or bounded inference."""
     if dependencies is not None:
         wanted: set[str] = set()
         if "report_pages" in dependencies:
@@ -355,15 +402,7 @@ def _adaptation_context_paths(
         if wanted or dependencies == ():
             return {path for path in wanted if path in generated_files}
 
-    if kind == "page":
-        wanted = {"code/data.R", "code/funct.R", "code/index.qmd", "code/_quarto.yml", "code/design/analysis_plan.qmd"}
-    elif kind == "config":
-        wanted = {path for path in generated_files if path.endswith((".qmd", ".rmd"))}
-    else:
-        wanted = {"code/data.R", "code/funct.R", "code/index.qmd"}
-    wanted.discard(relative_path)
-    selected = {path for path in wanted if path in generated_files}
-    return selected or {path for path in generated_files if path != relative_path and path in {"code/data.R", "code/funct.R"}}
+    return _inferred_context_paths(relative_path, generated_files)
 
 
 _ADAPT_EDIT_COMMON = """The file `{relative_path}` in the project is a complete, working template copied from templates/. The rest of the project depends on it: its structure, objects, helper functions, artifact names, and construction approach.
@@ -1136,6 +1175,19 @@ async def generate_project(
     Returns:
         List of generated file paths.
     """
+    from app.services.registry import validate_contested_ensemble
+
+    ensemble_errors = [
+        error
+        for step in plan.workflow
+        if step.enabled and step.classification == "contested"
+        for error in validate_contested_ensemble(step.id, step.ensemble_methods)
+    ]
+    if ensemble_errors:
+        raise GenerationQualityError(
+            "Contested-method contract failed: " + "; ".join(ensemble_errors)
+        )
+
     base = Path(project_dir)
     code_dir = base / "code"
     code_dir.mkdir(parents=True, exist_ok=True)

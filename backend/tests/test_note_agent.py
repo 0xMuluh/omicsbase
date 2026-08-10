@@ -15,7 +15,7 @@ from agent_test_helpers import text_turn, tool_turn
 from app.database import Base, get_db
 from app.main import app
 from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThread
-from app.models.runs import RunTelemetry
+from app.models.runs import AgentRun, RunTelemetry
 from app.services import note_agent
 
 
@@ -61,14 +61,12 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
     event_types = [event["type"] for event in events]
     assert "note_cell" in event_types
     assert "execution_queued" in event_types
+    assert "wait" in event_types
     assert event_types[-1] == "final"
+    assert len(provider_calls) == 1
     started = next(event for event in events if event["type"] == "tool_started")
     assert started["message"] == "Running R cell"
     assert "run_r_cell" not in str(started.get("message"))
-    assert provider_calls[1][-2]["role"] == "assistant"
-    assert provider_calls[1][-2]["tool_calls"][0]["function"]["name"] == "run_r_cell"
-    assert provider_calls[1][-1]["role"] == "tool"
-    assert provider_calls[1][-1]["tool_call_id"] == "call-1"
 
 
 def _setup_db():
@@ -234,8 +232,9 @@ def test_standalone_turn_persists_user_code_execution_and_answer(monkeypatch, tm
         events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
         assert [event["type"] for event in events].count("note_cell") >= 2
         assert any(event["type"] == "execution_queued" for event in events)
-        assert events[-1]["type"] == "final"
-        assert events[-1]["cell"]["revisions"][0]["cell_type"] == "markdown"
+        final_event = next(event for event in events if event["type"] == "final")
+        assert final_event["cell"]["revisions"][0]["cell_type"] == "markdown"
+        assert events[-1]["type"] in {"final", "paused"}
 
         detail = client.get(f"/api/notes/{thread_id}", headers=headers)
         assert detail.status_code == 200
@@ -243,13 +242,15 @@ def test_standalone_turn_persists_user_code_execution_and_answer(monkeypatch, tm
         assert persisted_code["latest_execution"]["status"] == "queued"
 
         verify_db = testing_session()
+        run_id = next(event["run"]["id"] for event in events if event["type"] == "run")
+        assert verify_db.query(AgentRun).filter(AgentRun.id == run_id).one().status == "paused"
         cells = verify_db.query(NoteCell).order_by(NoteCell.position.asc()).all()
         assert [cell.revisions[-1].cell_type for cell in cells] == ["agent", "code", "markdown"]
         assert cells[0].revisions[0].content == "Calculate the mean of 1, 2, and 3"
         assert cells[1].revisions[0].revision_metadata["generated_by"] == "note_agent"
         execution = verify_db.query(CellExecution).one()
         assert execution.status == "queued"
-        assert provider_calls[1][-1]["role"] == "tool"
+        assert len(provider_calls) == 1
         verify_db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -328,10 +329,10 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
             .filter(RunTelemetry.operation == "note_turn")
             .one()
         )
-        assert telemetry.input_tokens == 60
-        assert telemetry.output_tokens == 6
-        assert telemetry.total_tokens == 66
-        assert telemetry.telemetry_metadata["provider_usage"]["total_tokens"] == 66
+        assert telemetry.input_tokens == 30
+        assert telemetry.output_tokens == 3
+        assert telemetry.total_tokens == 33
+        assert telemetry.telemetry_metadata["provider_usage"]["total_tokens"] == 33
         verify_db.close()
     finally:
         app.dependency_overrides.pop(get_db, None)

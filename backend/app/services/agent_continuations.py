@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.runs import AgentRun
 from app.services.agent_plans import (
+    DEAD_LETTER,
     FAILED,
     READY,
     RUNNING,
@@ -40,9 +41,13 @@ def _candidate_runs(
     dependency_kind: str | None = None,
     dependency_id: str | None = None,
 ) -> list[AgentRun]:
-    query = db.query(AgentRun).filter(AgentRun.run_metadata.isnot(None))
+    query = db.query(AgentRun).filter(AgentRun.continuation_status.in_([READY, FAILED]))
     if run_id:
         query = query.filter(AgentRun.id == str(run_id))
+    if dependency_kind:
+        query = query.filter(AgentRun.continuation_dependency_kind == str(dependency_kind))
+    if dependency_id:
+        query = query.filter(AgentRun.continuation_dependency_id == str(dependency_id))
     runs = query.order_by(AgentRun.created_at.asc()).with_for_update().all()
     result: list[AgentRun] = []
     for run in runs:
@@ -60,7 +65,19 @@ def _candidate_runs(
 def recover_interrupted_continuations(db: Session) -> int:
     """Re-open claims left behind by a worker or process crash."""
     recovered = 0
-    runs = db.query(AgentRun).filter(AgentRun.run_metadata.isnot(None)).all()
+    legacy_backfilled = False
+    legacy_runs = (
+        db.query(AgentRun)
+        .filter(AgentRun.run_metadata.isnot(None), AgentRun.continuation_status.is_(None))
+        .all()
+    )
+    for legacy_run in legacy_runs:
+        legacy_plan = get_continuation_plan(legacy_run)
+        if legacy_plan:
+            attach_continuation_plan(legacy_run, legacy_plan)
+            legacy_backfilled = True
+
+    runs = db.query(AgentRun).filter(AgentRun.continuation_status == RUNNING).all()
     for run in runs:
         plan = get_continuation_plan(run)
         if not plan or plan.get("status") != RUNNING:
@@ -78,7 +95,7 @@ def recover_interrupted_continuations(db: Session) -> int:
             idempotency_key=f"continuation:recovered:{run.id}:{plan.get("attempts", 0)}",
         )
         recovered += 1
-    if recovered:
+    if recovered or legacy_backfilled:
         db.commit()
     return recovered
 
@@ -112,6 +129,16 @@ def dispatch_ready_continuations(
         previous_status = str(plan.get("status"))
         claimed = mark_continuation_running(run)
         if claimed is None:
+            exhausted = get_continuation_plan(run)
+            if exhausted and exhausted.get("status") == DEAD_LETTER:
+                append_run_event(
+                    db,
+                    run,
+                    "continuation_exhausted",
+                    {"action": exhausted.get("action"), "attempts": exhausted.get("attempts", 0)},
+                    idempotency_key=f"continuation:exhausted:{run.id}:{exhausted.get("attempts", 0)}",
+                )
+                db.commit()
             continue
         append_run_event(
             db,

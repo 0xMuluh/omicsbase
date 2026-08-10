@@ -360,11 +360,16 @@ class NoteAgentExecutor:
 
     async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
         from app.services.intent_fastpath import stream_simple_answer
-        async for event in stream_simple_answer(message, knowledge_context=self._knowledge_seed(message)):
+        knowledge_context = (
+            self._knowledge_seed(message)
+            if intent == "needs_knowledge"
+            else None
+        )
+        async for event in stream_simple_answer(message, knowledge_context=knowledge_context):
             yield event
 
     def _knowledge_seed(self, message: str) -> str | None:
-        """Ground fast-path answers with cited Bioconductor book excerpts."""
+        """Ground knowledge-seeking fast-path answers with book excerpts."""
         if self.knowledge_search_handler is None:
             return None
         try:
@@ -431,15 +436,31 @@ class NoteAgentExecutor:
                 "cell": observation["cell"],
                 "turn_id": observation.get("turn_id"),
             })
-        if observation.get("execution"):
+        wait_for = None
+        final_event = None
+        execution = observation.get("execution")
+        if execution:
             events.append({
                 "type": "execution_queued",
-                "execution": observation["execution"],
+                "execution": execution,
                 "cell": observation.get("cell"),
                 "turn_id": observation.get("turn_id"),
                 "tool_arguments": persistable_tool_arguments(arguments),
             })
-        return ToolCallResult(observation=observation, events=events)
+            execution_status = str(execution.get("status") or "").lower()
+            if execution_status in {"queued", "running", "cancel_requested"}:
+                wait_for = {"kind": "execution", "id": str(execution.get("id") or "")}
+                final_event = {
+                    "type": "final",
+                    "message": "The R cell is still running. I will continue this request when its result is available.",
+                    "continuation_pending": True,
+                }
+        return ToolCallResult(
+            observation=observation,
+            events=events,
+            wait_for=wait_for,
+            final_event=final_event,
+        )
 
 
 

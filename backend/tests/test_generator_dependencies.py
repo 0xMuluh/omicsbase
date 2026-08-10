@@ -66,3 +66,15 @@ def test_declared_dependencies_drive_generated_context_paths():
     assert generator._adaptation_context_paths(
         "script", "code/target.R", files, ()
     ) == set()
+
+
+def test_legacy_context_is_inferred_from_target_references():
+    files = {
+        "code/target.R": "source(\"helper.R\")\n",
+        "code/helper.R": "helper <- function(x) x\n",
+        "code/unrelated.R": "unrelated <- TRUE\n",
+    }
+
+    assert generator._adaptation_context_paths(
+        "script", "code/target.R", files, None
+    ) == {"code/helper.R"}
