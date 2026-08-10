@@ -89,6 +89,61 @@ def _setup_db():
     return engine, testing_session
 
 
+def test_demonstration_fast_path_persists_grounding_citations(monkeypatch, tmp_path):
+    engine, testing_session = _setup_db()
+    client = TestClient(app)
+    headers = {"X-Tenant-ID": "tenant_demo", "X-User-ID": "user_demo"}
+
+    async def fake_stream(**kwargs):
+        yield "A grounded demonstration is ready."
+
+    def fake_search(*args, **kwargs):
+        return {
+            "status": "ok",
+            "matches": [
+                {
+                    "citation": "OSCA, Demonstration methods (RELEASE_3_23, demo123)",
+                    "book_title": "OSCA",
+                    "heading_path": ["Demonstrations"],
+                    "prose": "Use a seeded example when illustrating a method.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("app.services.intent_fastpath.stream_llm_text", fake_stream)
+    monkeypatch.setattr("app.services.bioc_knowledge.search_bioc_knowledge", fake_search)
+    monkeypatch.setattr(note_agent.settings, "projects_dir", str(tmp_path))
+    monkeypatch.setattr(note_agent.settings, "fast_path_enabled", True)
+
+    try:
+        created = client.post("/api/notes", headers=headers, json={"title": "Untitled note"})
+        assert created.status_code == 201
+        thread_id = created.json()["id"]
+
+        response = client.post(
+            f"/api/notes/{thread_id}/turn",
+            headers=headers,
+            json={"message": "show me an example of a t-test"},
+        )
+        assert response.status_code == 200
+
+        verify_db = testing_session()
+        markdown_revisions = [
+            revision
+            for cell in verify_db.query(NoteCell).all()
+            for revision in cell.revisions
+            if revision.cell_type == "markdown"
+        ]
+        assert markdown_revisions
+        assert markdown_revisions[-1].revision_metadata["knowledge_sources"] == [
+            "OSCA, Demonstration methods (RELEASE_3_23, demo123)"
+        ]
+        verify_db.close()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(bind=engine)
+
+
 def test_wait_for_note_execution_returns_terminal_payload():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker

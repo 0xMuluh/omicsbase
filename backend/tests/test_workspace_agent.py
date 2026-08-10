@@ -467,13 +467,27 @@ async def test_discuss_mode_blocks_mutation_actions(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_fast_path_greetings(tmp_path):
+async def test_agent_greeting_is_model_handled(tmp_path, monkeypatch):
+    """Greetings are not a hardcoded vocabulary: the deterministic gate hands
+    them to the semantic judge and the model answers naturally."""
+    import app.services.intent_fastpath as intent_fastpath
+
+    async def fake_judge(self, message):
+        return "conceptual"
+
+    async def fake_stream_simple_answer(message, knowledge_context=None, **kwargs):
+        yield {"type": "status", "status": "thinking", "message": "Answering directly", "fast": True}
+        yield {"type": "token", "token": "Hi! "}
+        yield {"type": "final", "message": "Hi! What would you like to work on?", "fast": True}
+
+    monkeypatch.setattr(workspace_agent.WorkspaceAgentExecutor, "judge_intent", fake_judge)
+    monkeypatch.setattr(intent_fastpath, "stream_simple_answer", fake_stream_simple_answer)
     request = SimpleNamespace(
         message="hello",
         selected_file=None,
         selected_content=None,
         selected_content_dirty=False,
-        preview_path="index.html",
+        preview_path=None,
     )
     events = [
         event
@@ -484,7 +498,8 @@ async def test_agent_fast_path_greetings(tmp_path):
         )
     ]
     assert events[-1]["type"] == "final"
-    assert "ready to assist" in events[-1]["message"]
+    assert "ready to assist" not in events[-1]["message"]
+    assert "Hi!" in events[-1]["message"]
 
 
 @pytest.mark.asyncio

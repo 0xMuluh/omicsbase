@@ -20,7 +20,7 @@ from app.services.agent_core import (
     run_agent_loop,
     tool_signature,
 )
-from app.services.assistant import is_edit_prompt, GREETINGS
+from app.services.assistant import is_edit_prompt
 from app.services.context_budget import bounded_json
 from app.services.llm import call_llm as _legacy_call_llm, stream_llm_with_tools
 from app.services.tool_specs import ACTION_TOOL_SPECS, TOOL_REGISTRY, WORKSPACE_TOOL_SPECS
@@ -132,7 +132,7 @@ def has_explicit_workspace_mutation_intent(message: str) -> bool:
     diagnostic, and explanatory questions read-only.
     """
     text = " ".join(str(message or "").strip().lower().split())
-    if not text or text in GREETINGS:
+    if not text:
         return False
 
     # "Show me an example" is an explicit execution request in the workspace
@@ -234,6 +234,7 @@ Guidelines:
 - Use run_r for R object inspection only (network/install/writes blocked)
 - When the user asks to see an example or demo, treat it as an execution request: import an allowlisted package dataset when needed, inspect the observed data, and continue to the next useful step. Do not only list options or give a memory-only explanation.
 - For scientific method questions, search the pinned Bioconductor QMD books when relevant and cite the returned book/section in the answer.
+- When the user asks to demonstrate, show, or work through a method or example without referring to user data, search the pinned Bioconductor QMD books first, cite the returned source, and use a small seeded R example when computation is involved.
 - For specialized methodology or report questions, call `list_skills` first and then `load_skill` with only the relevant references; do not preload whole skill packs.
 - If a tool fails, show the exact blocker and try at most one safe alternative. Do not repeat an identical failed tool call in the same turn.
 - Build mode is not blanket permission to mutate. Only call an action tool when the current user message explicitly requests a change or execution. Diagnostic, status, failure-explanation, and inspection requests are read-only: inspect and answer without planning, running, editing, repairing, rendering, importing, or queuing guidance.
@@ -520,17 +521,6 @@ class WorkspaceAgentExecutor:
         )
 
     def initial_events(self, message: str) -> tuple[list[dict], bool]:
-        # Fast-Path: greetings
-        normalized_msg = " ".join(message.lower().strip().split())
-        if normalized_msg in GREETINGS:
-            greeting = (
-                f"Hi! I'm ready to assist with {self.project.name or 'your project'}. "
-                "Ask me questions about the analysis workflow, or instruct me to edit recipes and re-run reports."
-            )
-            events = [{"type": "token", "token": word + " "} for word in greeting.split(" ")]
-            events.append({"type": "final", "message": greeting, "memory_updates": []})
-            return events, True
-
         visible_plan = _visible_plan(message, discuss=self.discuss)
         return [
             {

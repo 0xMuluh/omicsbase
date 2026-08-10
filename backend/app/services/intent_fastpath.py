@@ -48,8 +48,33 @@ _KNOWLEDGE_REQUEST = re.compile(
     r"\b(?:best practices?|guidelines?|which\s+\w+(?:\s+\w+){0,4}\s+method|what method|choose between|how do i choose|"
     r"literature|evidence|recommended)\b"
 )
+_DEMONSTRATION_METHOD = (
+    r"(?:test(?:\s+statistic)?|method(?:ology)?|analysis|statistic(?:al)?|"
+    r"algorithm|p[-\s]?value|fdr|false\s+discovery\s+rate|diversity|model|"
+    r"correlation|permanova|t[-\s]?test|wilcoxon|anova|regression|ordination|"
+    r"normalization|differential\s+abundance)"
+)
+_DEMONSTRATION_REQUEST = re.compile(
+    r"(?:"
+    rf"\b(?:demonstrat(?:e|ion)|demo|show)\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    rf"|\bwalk\s+(?:me\s+)?through\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    rf"|\blet(?:s|\x27s)\s+do\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    r"|\b(?:do|run)\b.{0,100}\b(?:example|demonstration|demo)\b"
+    r")",
+    re.IGNORECASE,
+)
+_DEMONSTRATION_USER_CONTEXT = re.compile(
+    r"\b(?:my|our|your|selected|current|actual|workspace|project|notebook|"
+    r"file|dataset|data|result|results|output|column|sample|samples|group|"
+    r"groups|cell|variable|study)\b"
+)
+_SPECIALIZED_KNOWLEDGE_REQUEST = re.compile(
+    r"^(?:what(?:s|\x27s| is| are)|explain|define|tell me about)\b.*\b"
+    r"(?:fdr|false\s+discovery\s+rate)\b",
+    re.IGNORECASE,
+)
 
-FAST_PATH_SYSTEM = """You are OmicsBase, answering a scientific question directly without inspecting or modifying the user's workspace. Match the depth and structure of the response to the question. Answer narrow factual questions briefly. For broad explanatory questions such as "tell me about X", "explain X", or "how does X work", provide a clear, well-structured explanation using headings, lists, equations, or examples only where they improve understanding. Cover the most relevant aspects of the topic rather than following a fixed template. These may include the definition, mechanism, key concepts, common methods or metrics, interpretation, applications, and important limitations.
+FAST_PATH_SYSTEM = """You are OmicsBase, answering a scientific question directly without inspecting or modifying the user's workspace. Greetings and one-word exchanges are answered naturally and concisely, without added structure or formatting. Match the depth and structure of the response to the question. Answer narrow factual questions briefly. For broad explanatory questions such as "tell me about X", "explain X", or "how does X work", provide a clear, well-structured explanation using headings, lists, equations, or examples only where they improve understanding. Cover the most relevant aspects of the topic rather than following a fixed template. These may include the definition, mechanism, key concepts, common methods or metrics, interpretation, applications, and important limitations.
 
 When book excerpts have been supplied and are relevant, ground the answer in them and preserve their citations. If the supplied excerpts are not relevant to the question, ignore them rather than forcing them into the answer, and never invent citations. Do not imply that a file, dataset, variable, method, result, or numerical value exists unless it is present in the supplied context. Clearly distinguish general scientific knowledge from conclusions about the user's own data. If a data-specific conclusion requires the user's actual data, explain the general principle first and then ask the user to provide the specific data or values needed (for example sample counts, group labels, or a short table excerpt); if they prefer, state exactly what would need to be inspected in their workspace."""
 
@@ -114,6 +139,17 @@ def deterministic_intent(
 
     if _PROCEDURE_REQUEST.match(text):
         return "needs_tools"
+
+    demonstration_request = bool(_DEMONSTRATION_REQUEST.search(text))
+    user_context = bool(
+        _DEICTIC_REFERENCE.search(text)
+        or _DEMONSTRATION_USER_CONTEXT.search(text)
+    )
+    if demonstration_request:
+        return "needs_tools" if user_context else "needs_knowledge"
+
+    if _SPECIALIZED_KNOWLEDGE_REQUEST.search(text):
+        return "needs_tools" if user_context else "needs_knowledge"
 
     if _KNOWLEDGE_REQUEST.search(text) and not _DEICTIC_REFERENCE.search(text):
         return "needs_knowledge"
@@ -197,6 +233,12 @@ async def classify_intent(message: str) -> str:
     except Exception as exc:
         logger.warning("Intent judge failed, routing to tool loop: %s", exc)
         return "needs_tools"
+
+
+def is_demonstration_request(message: str) -> bool:
+    """Return whether a message explicitly asks for a method demonstration."""
+    text = " ".join(str(message or "").strip().lower().split())
+    return bool(_DEMONSTRATION_REQUEST.search(text))
 
 
 def is_simple_question(message: str) -> bool:

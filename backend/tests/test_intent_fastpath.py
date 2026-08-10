@@ -63,6 +63,15 @@ def test_deterministic_gate_handles_clear_cases_and_defers_ambiguity():
     assert deterministic_intent("Which ordination method works best for compositional data?", lens="workspace") == "needs_knowledge"
 
 
+def test_demonstration_gate_grounds_method_examples_without_hijacking_actions():
+    assert deterministic_intent("lets do a little example", lens="note") == "needs_knowledge"
+    assert deterministic_intent("show me an example of a t-test", lens="workspace") == "needs_knowledge"
+    assert deterministic_intent("what is FDR?", lens="workspace") == "needs_knowledge"
+    assert deterministic_intent("run the analysis", lens="workspace") == "needs_tools"
+    assert deterministic_intent("show me an example using my data", lens="note") == "needs_tools"
+    assert deterministic_intent("show me this method", lens="note") == "needs_tools"
+
+
 def test_fast_path_model_resolution(monkeypatch):
     from app.config import settings
 

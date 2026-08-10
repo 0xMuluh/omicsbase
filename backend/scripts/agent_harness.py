@@ -23,7 +23,7 @@ from app.services.context_budget import bounded_json
 from app.services.intent_fastpath import deterministic_intent
 from app.services.tool_specs import TOOL_REGISTRY
 
-HARNESS_VERSION = "omicsbase-agent-harness-v3"
+HARNESS_VERSION = "omicsbase-agent-harness-v4"
 
 CASES: tuple[dict[str, Any], ...] = (
     {"name": "conceptual_definition", "message": "What is a p-value?", "lens": "workspace", "expected": "conceptual"},
@@ -32,6 +32,14 @@ CASES: tuple[dict[str, Any], ...] = (
     {"name": "continuation", "message": "Continue", "lens": "workspace", "expected": "needs_tools"},
     {"name": "note_follow_up", "message": "What does this output contain?", "lens": "note", "notebook_state": True, "expected": "needs_tools"},
     {"name": "method_selection", "message": "Which ordination method works best for compositional data?", "lens": "workspace", "expected": "needs_knowledge"},
+    {"name": "demonstration_example", "message": "lets do a little example", "lens": "note", "expected": "needs_knowledge"},
+    {"name": "demonstration_t_test", "message": "show me an example of a t-test", "lens": "note", "expected": "needs_knowledge"},
+    {"name": "specialized_fdr_definition", "message": "what is FDR?", "lens": "workspace", "expected": "needs_knowledge"},
+    {"name": "analysis_regression", "message": "run the analysis", "lens": "workspace", "expected": "needs_tools"},
+    # Greetings are model territory: no hardcoded vocabulary, judge decides.
+    {"name": "greeting_first_message", "message": "hi", "lens": "workspace", "expected": None},
+    {"name": "greeting_mid_thread_note", "message": "are you there", "lens": "note", "notebook_state": True, "expected": None},
+    {"name": "greeting_mid_thread_workspace", "message": "are you there", "lens": "workspace", "prior_tool_activity": True, "expected": None},
 )
 
 REQUIRED_TOOLS = {
@@ -110,6 +118,20 @@ NATIVE_EVAL_CASES: tuple[dict[str, Any], ...] = (
         "expected_tools": [],
     },
     {
+        "name": "native_greeting_reply",
+        "message": "hi",
+        "lens": "workspace",
+        "scripts": [[{"type": "text_delta", "content": "Hi! What would you like to work on?"}]],
+        "expected_tools": [],
+    },
+    {
+        "name": "native_mid_thread_status_check",
+        "message": "are you there",
+        "lens": "note",
+        "scripts": [[{"type": "text_delta", "content": "I am here. We were working through the microbiome example — shall I continue?"}]],
+        "expected_tools": [],
+    },
+    {
         "name": "native_schema_inspection",
         "message": "Inspect the metadata schema",
         "scripts": [
@@ -146,6 +168,46 @@ NATIVE_EVAL_CASES: tuple[dict[str, Any], ...] = (
         "expected_tools": ["run_r_cell"],
         "wait_tool": "run_r_cell",
         "observations": {"run_r_cell": {"status": "ok", "execution": {"id": "execution-1", "status": "queued"}}},
+    },
+    {
+        "name": "native_note_demonstration_grounding",
+        "message": "show me an example of a t-test",
+        "lens": "note",
+        "scripts": [
+            [{"type": "tool_call", "id": "demo-book-1", "name": "search_bioc_books", "arguments": {"query": "t-test example"}}],
+            [{"type": "tool_call", "id": "demo-cell-1", "name": "run_r_cell", "arguments": {"code": "set.seed(7); t.test(rnorm(8), rnorm(8))"}}],
+            [{"type": "text_delta", "content": "The seeded example is grounded in the pinned guidance."}],
+        ],
+        "expected_tools": ["search_bioc_books", "run_r_cell"],
+        "require_knowledge_sources": True,
+        "min_run_r_cells": 1,
+        "observations": {
+            "search_bioc_books": {
+                "status": "ok",
+                "matches": [{"citation": "book:t-test", "prose": "Use a seeded demonstration."}],
+            },
+            "run_r_cell": {
+                "status": "ok",
+                "execution": {"id": "execution-demo-1", "status": "queued"},
+            },
+        },
+    },
+    {
+        "name": "native_note_example_grounding",
+        "message": "lets do a little example",
+        "lens": "note",
+        "scripts": [
+            [{"type": "tool_call", "id": "example-book-1", "name": "search_bioc_books", "arguments": {"query": "method example"}}],
+            [{"type": "text_delta", "content": "The example is grounded in the pinned guidance."}],
+        ],
+        "expected_tools": ["search_bioc_books"],
+        "require_knowledge_sources": True,
+        "observations": {
+            "search_bioc_books": {
+                "status": "ok",
+                "matches": [{"citation": "book:example", "prose": "Grounded example guidance."}],
+            },
+        },
     },
 )
 
@@ -322,6 +384,7 @@ class _NativeEvalExecutor:
         self.provider_rounds = 0
         self.provider_messages: list[list[dict[str, Any]]] = []
         self.observation_chars = 0
+        self.knowledge_sources: list[str] = []
 
     def initial_events(self, message):
         return [], False
@@ -363,6 +426,11 @@ class _NativeEvalExecutor:
         self.tool_calls.append(tool_name)
         observation = dict((self.case.get("observations") or {}).get(tool_name) or {"status": "ok"})
         self.observation_chars += len(json.dumps(observation, sort_keys=True, default=str))
+        if tool_name == "search_bioc_books":
+            for match in observation.get("matches") or []:
+                citation = str(match.get("citation") or "").strip() if isinstance(match, dict) else ""
+                if citation and citation not in self.knowledge_sources:
+                    self.knowledge_sources.append(citation)
         if tool_name == self.case.get("wait_tool"):
             execution = observation.get("execution") or {}
             return ToolCallResult(
@@ -402,7 +470,19 @@ def _run_native_eval_case(case: dict[str, Any]) -> dict[str, Any]:
         or expected_marker in json.dumps(executor.provider_messages[1:], default=str, sort_keys=True)
     )
     observation_retained = observation_forwarded or bool(case.get("wait_tool"))
-    success = bool(final_events) and executor.tool_calls == expected_tools and observation_retained
+    knowledge_sources_ok = (
+        not case.get("require_knowledge_sources")
+        or bool(executor.knowledge_sources)
+    )
+    run_r_cells = executor.tool_calls.count("run_r_cell")
+    execution_expectation_ok = run_r_cells >= int(case.get("min_run_r_cells") or 0)
+    success = (
+        bool(final_events)
+        and executor.tool_calls == expected_tools
+        and observation_retained
+        and knowledge_sources_ok
+        and execution_expectation_ok
+    )
     if case.get("wait_tool"):
         success = success and len(wait_events) == 1
     return {
@@ -417,6 +497,8 @@ def _run_native_eval_case(case: dict[str, Any]) -> dict[str, Any]:
         "final": bool(final_events),
         "observation_forwarded": observation_forwarded,
         "observation_retained": observation_retained,
+        "knowledge_sources": executor.knowledge_sources,
+        "run_r_cells": executor.tool_calls.count("run_r_cell"),
     }
 
 

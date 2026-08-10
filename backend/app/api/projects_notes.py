@@ -1009,6 +1009,8 @@ async def note_thread_turn(
     from fastapi.responses import StreamingResponse
 
     message = data.message.strip()
+    from app.services.intent_fastpath import is_demonstration_request
+    demonstration_request = is_demonstration_request(message)
     if not message:
         raise HTTPException(status_code=422, detail="The notebook message cannot be blank")
 
@@ -1584,6 +1586,25 @@ async def note_thread_turn(
                                     "continuation_status": consumed.get("status"),
                                 },
                             )
+                    if (
+                        event_type == "final"
+                        and not cancelled
+                        and not waiting_for_continuation
+                        and demonstration_request
+                        and not knowledge_sources
+                        and generated_code_cells == 0
+                        and generated_note_cells == 0
+                    ):
+                        logger.warning(
+                            "note_demonstration_completed_without_grounding",
+                            extra={
+                                "turn_id": turn_id,
+                                "thread_id": thread_id,
+                                "knowledge_sources": 0,
+                                "generated_code_cells": generated_code_cells,
+                                "generated_note_cells": generated_note_cells,
+                            },
+                        )
                     target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                     if run.status not in {"completed", "failed", "cancelled"}:
                         transition_agent_run(

@@ -31,38 +31,21 @@ EDIT_VERBS = (
     "exclude",
 )
 
-GREETINGS = {
-    "hi",
-    "hello",
-    "hey",
-    "are you there",
-    "are you there?",
-    "you there",
-    "you there?",
-    "test",
-    "ping",
-}
-
 MAX_SOURCE_CHARS = 3500
 MAX_REPORT_CHARS = 5000
 MAX_HISTORY_MESSAGES = 12
-
 
 def is_edit_prompt(instruction: str) -> bool:
     normalized = " ".join(instruction.lower().strip().split())
     if not normalized:
         return False
-    if normalized in GREETINGS:
-        return False
     return any(normalized.startswith(f"{verb} ") or normalized == verb for verb in EDIT_VERBS)
-
 
 def _load_assistant_prompt() -> str:
     path = Path(settings.prompts_dir) / "assistant.md"
     if path.exists():
         return path.read_text()
     return "You are an omics analysis assistant. Answer questions using only the provided project context."
-
 
 def _strip_html(html: str, max_chars: int = MAX_REPORT_CHARS) -> str:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.S | re.I)
@@ -71,7 +54,6 @@ def _strip_html(html: str, max_chars: int = MAX_REPORT_CHARS) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_chars]
 
-
 def _read_excerpt(path: Path, max_chars: int = MAX_SOURCE_CHARS) -> str | None:
     if not path.is_file():
         return None
@@ -79,7 +61,6 @@ def _read_excerpt(path: Path, max_chars: int = MAX_SOURCE_CHARS) -> str | None:
     if len(content) <= max_chars:
         return content
     return content[:max_chars] + f"\n\n... [truncated, {len(content)} chars total]"
-
 
 def _context_source_paths(project: Any, base: Path) -> list[str]:
     """Select excerpts from the active ReportPack inventory, not fixed filenames."""
@@ -125,7 +106,6 @@ def _context_source_paths(project: Any, base: Path) -> list[str]:
         candidates.append((role_rank * 2 + suffix_rank, relative))
     return [relative for _, relative in sorted(candidates)[:12]]
 
-
 def _latest_review(project) -> dict[str, Any] | None:
     for action in reversed(project.agent_actions or []):
         if action.get("type") == "review":
@@ -135,7 +115,6 @@ def _latest_review(project) -> dict[str, Any] | None:
                 "checks": (action.get("details") or {}).get("checks") or [],
             }
     return None
-
 
 def _summarize_uploaded_files(project) -> list[dict[str, Any]]:
     summaries = []
@@ -151,7 +130,6 @@ def _summarize_uploaded_files(project) -> list[dict[str, Any]]:
             }
         )
     return summaries
-
 
 def _summarize_plan(plan: dict[str, Any]) -> dict[str, Any]:
     workflow = plan.get("workflow") or []
@@ -180,7 +158,6 @@ def _summarize_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "workflow": steps,
         "notes": plan.get("notes"),
     }
-
 
 def build_project_context(project) -> str:
     """Assemble compact project context for the assistant LLM."""
@@ -229,7 +206,6 @@ def build_project_context(project) -> str:
 
     return json.dumps(context, indent=2, default=str)
 
-
 def _format_history(history: list[dict[str, str]] | None) -> str:
     if not history:
         return "(No prior conversation in this session.)"
@@ -241,8 +217,6 @@ def _format_history(history: list[dict[str, str]] | None) -> str:
         if content:
             lines.append(f"{role}: {content}")
     return "\n".join(lines) if lines else "(No prior conversation in this session.)"
-
-
 
 async def respond_to_prompt(
     project,
