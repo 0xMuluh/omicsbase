@@ -1018,10 +1018,11 @@ async def note_thread_turn(
     from app.services.agent_plans import (
         attach_continuation_plan,
         build_continuation_plan,
-        continuation_is_ready,
+        continuation_can_resume,
         continuation_prompt,
         get_continuation_plan,
         mark_continuation_running,
+        mark_continuation_consumed,
     )
     from app.services.agent_runs import (
         IdempotencyConflict,
@@ -1061,14 +1062,14 @@ async def note_thread_turn(
     continuation_plan = get_continuation_plan(run)
     continuation_resume = (
         not run_created
-        and continuation_is_ready(run)
+        and continuation_can_resume(run)
         and not is_run_task_active(str(run.id))
     )
     resume_existing_run = (
         not run_created
         and not is_run_task_active(str(run.id))
         and bool(run.resumable)
-        and (run.status == "paused" or continuation_resume)
+        and (continuation_resume or (run.status == "paused" and not continuation_plan))
     )
     if not run_created and not resume_existing_run:
         async def replay_existing_run():
@@ -1400,6 +1401,7 @@ async def note_thread_turn(
         tool_started_at = {}
         token_buffer: list[str] = []
         telemetry_written = False
+        pending_async_execution = False
         record_stream_event(db, run, {"type": "note_cell", "role": "user", "turn_id": turn_id, "cell": _cell_payload(user_cell)})
         db.commit()
         yield json.dumps({"type": "run", "run": serialize_agent_run(run)}, default=str) + "\n"
@@ -1470,6 +1472,7 @@ async def note_thread_turn(
                         output_event["cell"] = _cell_payload(assistant_cell)
                         final_written = True
                 if output_event.get("type") == "execution_queued" and isinstance(output_event.get("execution"), dict):
+                    pending_async_execution = True
                     execution = output_event["execution"]
                     execution_id = execution.get("id")
                     if execution_id:
@@ -1479,10 +1482,26 @@ async def note_thread_turn(
                             dependency_kind="execution",
                             dependency_id=str(execution_id),
                             instruction=str(message),
-                            arguments={},
+                            arguments=output_event.get("tool_arguments") if isinstance(output_event.get("tool_arguments"), dict) else {},
                             dependency_status=str(execution.get("status") or "queued"),
                         )
                         attach_continuation_plan(run, plan)
+
+                continuation = get_continuation_plan(run)
+                if (
+                    output_event.get("type") == "final"
+                    and pending_async_execution
+                    and not continuation_resume
+                    and continuation
+                    and (
+                        continuation.get("status") == "waiting"
+                        or (
+                            not settings.note_execution_agent_wait_enabled
+                            and continuation.get("status") in {"ready", "failed"}
+                        )
+                    )
+                ):
+                    output_event["continuation_pending"] = True
 
                 event_type = str(output_event.get("type") or event_type)
                 if event_type in {"final", "cancelled"} and token_buffer:
@@ -1513,13 +1532,43 @@ async def note_thread_turn(
                     )
                 if event_type in {"final", "cancelled"}:
                     cancelled = event_type == "cancelled" or run_cancel_requested(db, str(run.id))
+                    continuation = get_continuation_plan(run)
+                    waiting_for_continuation = (
+                        event_type == "final"
+                        and bool(continuation)
+                        and continuation.get("status") == "waiting"
+                    )
+                    if (
+                        event_type == "final"
+                        and pending_async_execution
+                        and not continuation_resume
+                        and not settings.note_execution_agent_wait_enabled
+                        and bool(continuation)
+                        and continuation.get("status") in {"ready", "failed"}
+                    ):
+                        waiting_for_continuation = True
+                    if (
+                        not cancelled
+                        and not waiting_for_continuation
+                        and continuation
+                        and continuation.get("status") in {"ready", "failed", "running"}
+                    ):
+                        consumed = mark_continuation_consumed(run)
+                        if consumed:
+                            record_stream_event(
+                                db,
+                                run,
+                                {"type": "continuation_consumed", "action": consumed.get("action")},
+                            )
                     target_status = "cancelled" if cancelled else "completed"
                     if run.status not in {"completed", "failed", "cancelled"}:
                         transition_agent_run(
                             db,
                             run,
                             target_status,
-                            event_type="run_cancelled" if cancelled else "run_completed",
+                            event_type=(
+                                "run_cancelled" if cancelled else "run_completed"
+                            ),
                             payload={"cell_id": str((output_event.get("cell") or {}).get("id")) if isinstance(output_event.get("cell"), dict) else None},
                         )
                     run.result_payload = {"cell_id": (output_event.get("cell") or {}).get("id") if isinstance(output_event.get("cell"), dict) else None, "event_type": event_type}
@@ -1529,7 +1578,7 @@ async def note_thread_turn(
                             run,
                             kind="agent",
                             operation="note_turn",
-                            status="cancelled" if cancelled else "completed",
+                            status=("cancelled" if cancelled else "completed"),
                             duration_ms=(asyncio.get_running_loop().time() - turn_started) * 1000,
                             provider=settings.llm_provider,
                             model=settings.llm_model,
@@ -1671,6 +1720,13 @@ async def note_thread_turn(
                 failure_db.close()
         finally:
             unregister_run_task(str(run.id), worker_task)
+            resume_db = worker_session_factory()
+            try:
+                from app.services.agent_continuations import dispatch_ready_continuations
+
+                dispatch_ready_continuations(resume_db, run_id=str(run.id))
+            finally:
+                resume_db.close()
             worker_db.close()
 
     worker_task = asyncio.create_task(consume_run(), name=f"note-agent-{run.id}")

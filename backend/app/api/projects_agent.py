@@ -153,7 +153,7 @@ async def workspace_agent_stream(
     from app.services.agent_plans import (
         attach_continuation_plan,
         build_continuation_plan,
-        continuation_is_ready,
+        continuation_can_resume,
         continuation_prompt,
         get_continuation_plan,
         mark_continuation_running,
@@ -197,14 +197,14 @@ async def workspace_agent_stream(
     continuation_plan = get_continuation_plan(run)
     continuation_resume = (
         not run_created
-        and continuation_is_ready(run)
+        and continuation_can_resume(run)
         and not is_run_task_active(str(run.id))
     )
     resume_existing_run = (
         not run_created
         and not is_run_task_active(str(run.id))
         and bool(run.resumable)
-        and (run.status == "paused" or continuation_resume)
+        and (continuation_resume or (run.status == "paused" and not continuation_plan))
     )
     if not run_created and not resume_existing_run:
         async def replay_existing_run():
@@ -831,7 +831,7 @@ async def workspace_agent_stream(
                     dependency_kind="job",
                     dependency_id=str(event["job_id"]),
                     instruction=str(event.get("message") or user_message.content or data.message),
-                    arguments=event.get("arguments") if isinstance(event.get("arguments"), dict) else {},
+                    arguments=arguments,
                 )
                 attach_continuation_plan(run, plan)
 
@@ -864,13 +864,23 @@ async def workspace_agent_stream(
                 )
             if event_type in {"final", "action_queued", "cancelled"}:
                 cancelled = event_type == "cancelled" or run_cancel_requested(db, str(run.id))
-                target_status = "cancelled" if cancelled else "completed"
+                continuation = get_continuation_plan(run)
+                waiting_for_continuation = (
+                    event_type == "action_queued"
+                    and bool(continuation)
+                    and continuation.get("status") in {"waiting", "ready", "failed", "running"}
+                )
+                target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                 if run.status not in {"completed", "failed", "cancelled"}:
                     transition_agent_run(
                         db,
                         run,
                         target_status,
-                        event_type="run_cancelled" if cancelled else "run_completed",
+                        event_type=(
+                            "run_cancelled" if cancelled
+                            else "run_waiting_continuation" if waiting_for_continuation
+                            else "run_completed"
+                        ),
                         payload={"message_id": event.get("message_id"), "event_type": event_type},
                     )
                 run.result_payload = {"message_id": event.get("message_id"), "event_type": event_type}
@@ -880,7 +890,7 @@ async def workspace_agent_stream(
                         run,
                         kind="agent",
                         operation="workspace_turn",
-                        status="cancelled" if cancelled else "completed",
+                        status=("cancelled" if cancelled else "paused" if waiting_for_continuation else "completed"),
                         duration_ms=(asyncio.get_running_loop().time() - turn_started) * 1000,
                         provider=settings.llm_provider,
                         model=settings.llm_model,
@@ -970,6 +980,13 @@ async def workspace_agent_stream(
                 failure_db.close()
         finally:
             unregister_run_task(str(run.id), worker_task)
+            resume_db = worker_session_factory()
+            try:
+                from app.services.agent_continuations import dispatch_ready_continuations
+
+                dispatch_ready_continuations(resume_db, run_id=str(run.id))
+            finally:
+                resume_db.close()
             worker_db.close()
 
     worker_task = asyncio.create_task(consume_run(), name=f"workspace-agent-{run.id}")

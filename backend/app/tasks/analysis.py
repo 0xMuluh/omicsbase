@@ -103,6 +103,13 @@ def _update_job(db, job_id: str | None, **kwargs):
                     result={"status": job.status, "error": job.error, "progress": job.progress},
                 )
                 db.commit()
+                from app.services.agent_continuations import dispatch_ready_continuations
+
+                dispatch_ready_continuations(
+                    db,
+                    dependency_kind="job",
+                    dependency_id=str(job.id),
+                )
             except Exception:
                 logger.exception("Could not advance continuation plan for job %s", job.id)
         publish_project_event(
@@ -126,6 +133,40 @@ def _parse_task_args(args):
     elif len(args) == 1:
         return str(args[0]), None
     raise ValueError(f"Invalid positional arguments for task: {args}")
+
+
+@task_decorator
+def resume_agent_continuation(*args):
+    """Resume a claimed Workspace or Note agent run after async completion."""
+    if len(args) >= 2:
+        run_id = str(args[1])
+    elif len(args) == 1:
+        run_id = str(args[0])
+    else:
+        raise ValueError("Missing agent run id for continuation")
+    from app.services.agent_continuations import run_agent_continuation
+
+    return asyncio.run(run_agent_continuation(run_id))
+
+
+
+
+def _repair_skip_result(result: dict) -> dict:
+    from app.services.agent_failures import diagnose_repair_failure
+
+    diagnosis = diagnose_repair_failure(result)
+    return {
+        "status": "skipped",
+        "reason": diagnosis.reason,
+        "diagnosis": diagnosis.to_dict(),
+        "apply_results": [],
+    }
+
+
+def _repair_is_allowed(result: dict) -> bool:
+    from app.services.agent_failures import diagnose_repair_failure
+
+    return diagnose_repair_failure(result).repairable
 
 
 def _is_timeout_failure(result: dict) -> bool:
@@ -647,6 +688,10 @@ def run_rendering(*args, **kwargs):
             repair_pass = 0
 
             while result["status"] != "completed" and repair_pass < MAX_REPAIR_ATTEMPTS:
+                if not _repair_is_allowed(result):
+                    if not _is_timeout_failure(result):
+                        result["repair"] = _repair_skip_result(result)
+                        break
                 if _is_timeout_failure(result):
                     timeout_message = (
                         "Rendering stopped because a page exceeded its time budget while computing. "
@@ -894,6 +939,10 @@ def run_recipe_execution(*args, **kwargs):
         repair_history = []
         repair_pass = 0
         while result["status"] != "completed" and repair_pass < 3:
+            if not _repair_is_allowed(result):
+                if not _is_timeout_failure(result):
+                    result["repair"] = _repair_skip_result(result)
+                    break
             if _is_timeout_failure(result):
                 progress_callback(
                     "repair",
@@ -1108,6 +1157,10 @@ def run_editing(*args, **kwargs):
         repair_pass = 0
         max_repair_attempts = 3
         while render_result["status"] != "completed" and repair_pass < max_repair_attempts:
+            if not _repair_is_allowed(render_result):
+                if not _is_timeout_failure(render_result):
+                    render_result["repair"] = _repair_skip_result(render_result)
+                    break
             if _is_timeout_failure(render_result):
                 timeout_message = (
                     "The edited report hit a computation time budget. "

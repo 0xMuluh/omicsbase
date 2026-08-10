@@ -6,7 +6,12 @@ import type { NoteTurnStreamEvent } from "./types/notes";
 type DurableStreamEvent = {
   type?: string;
   sequence?: number;
-  run?: { status?: string };
+  continuation_pending?: boolean;
+  continuation_status?: string | null;
+  run?: {
+    status?: string;
+    metadata?: { continuation_plan?: { status?: string } };
+  };
 };
 
 export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
@@ -22,8 +27,9 @@ export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
       ? suppliedKey
       : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   const requestBody = { ...body, idempotency_key: idempotencyKey };
-  const maxAttempts = 3;
+  const maxAttempts = 120;
   let lastSequence = -1;
+  let continuationPending = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (signal?.aborted) throw new Error("The agent stream was aborted.");
@@ -37,7 +43,9 @@ export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
       });
     } catch (error) {
       if (signal?.aborted || attempt === maxAttempts - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      await new Promise((resolve) =>
+        setTimeout(resolve, continuationPending ? Math.min(2_000, 250 * (attempt + 1)) : 250 * (attempt + 1)),
+      );
       continue;
     }
 
@@ -47,7 +55,9 @@ export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
       if (!retryable || attempt === maxAttempts - 1) {
         throw new Error("Agent stream error " + response.status + ": " + detail);
       }
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      await new Promise((resolve) =>
+        setTimeout(resolve, continuationPending ? Math.min(2_000, 250 * (attempt + 1)) : 250 * (attempt + 1)),
+      );
       continue;
     }
     if (!response.body) throw new Error("Agent stream did not return a response body.");
@@ -61,12 +71,18 @@ export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
         lastSequence = sequence;
       }
       onEvent(event);
+      const continuationStatus =
+        event.continuation_status || event.run?.metadata?.continuation_plan?.status;
+      continuationPending =
+        event.continuation_pending === true ||
+        ["waiting", "ready", "failed", "running"].includes(continuationStatus || "");
       if (
-        event.type === "final" ||
-        event.type === "cancelled" ||
-        event.type === "paused" ||
-        (event.type === "run" &&
-          ["completed", "failed", "cancelled"].includes(event.run?.status || ""))
+        !continuationPending &&
+        (event.type === "final" ||
+          event.type === "cancelled" ||
+          event.type === "paused" ||
+          (event.type === "run" &&
+            ["completed", "failed", "cancelled"].includes(event.run?.status || "")))
       ) {
         terminal = true;
       }
@@ -89,13 +105,17 @@ export async function streamNdjsonWithReplay<T extends DurableStreamEvent>(
       if (buffer.trim()) emitLine(buffer);
     } catch (error) {
       if (signal?.aborted || attempt === maxAttempts - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      await new Promise((resolve) =>
+        setTimeout(resolve, continuationPending ? Math.min(2_000, 250 * (attempt + 1)) : 250 * (attempt + 1)),
+      );
       continue;
     }
 
     if (terminal) return;
     if (attempt < maxAttempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      await new Promise((resolve) =>
+        setTimeout(resolve, continuationPending ? Math.min(2_000, 250 * (attempt + 1)) : 250 * (attempt + 1)),
+      );
     }
   }
 

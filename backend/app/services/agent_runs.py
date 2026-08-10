@@ -633,12 +633,19 @@ async def replay_agent_run_stream(
             replay["run_id"] = run_id
             replay["sequence"] = cursor
             yield replay
+        from app.services.agent_plans import get_continuation_plan
+
+        continuation = get_continuation_plan(run)
+        if status in TERMINAL_RUN_STATUSES and continuation and continuation.get("status") == "running":
+            await asyncio.sleep(0.25)
+            continue
         if status in TERMINAL_RUN_STATUSES:
             return
         if status == "paused":
             yield {
                 "type": "paused",
                 "status": "paused",
+                "continuation_status": continuation.get("status") if continuation else None,
                 "message": "This run was paused after the server lost its worker. Retry the same request to resume when it is safe, or continue with a new turn.",
                 "run_id": run_id,
                 "sequence": cursor,

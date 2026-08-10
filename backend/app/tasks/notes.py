@@ -66,6 +66,16 @@ def _mark_continuation(db, execution: CellExecution, result: dict | None = None)
     )
 
 
+def _dispatch_note_continuation(db, execution: CellExecution) -> None:
+    from app.services.agent_continuations import dispatch_ready_continuations
+
+    dispatch_ready_continuations(
+        db,
+        dependency_kind="execution",
+        dependency_id=str(execution.id),
+    )
+
+
 def _cancel_requested(execution_id: str) -> bool:
     db = SessionLocal()
     try:
@@ -182,6 +192,7 @@ def _mark_cancelled(db, execution: CellExecution, project_id: str, thread_id: st
     append_execution_event(db, execution, "note_execution_cancelled")
     _mark_continuation(db, execution, {"status": execution.status})
     db.commit()
+    _dispatch_note_continuation(db, execution)
     _publish(execution, project_id, thread_id)
 
 
@@ -199,6 +210,7 @@ def run_note_cell_execution(*args):
         if execution.status in TERMINAL_STATUSES:
             _mark_continuation(db, execution, {"status": execution.status})
             db.commit()
+            _dispatch_note_continuation(db, execution)
             return {"status": execution.status, "execution_id": execution_id}
 
         if execution.cancel_requested or execution.status == "cancel_requested":
@@ -258,6 +270,7 @@ def run_note_cell_execution(*args):
         )
         _mark_continuation(db, execution, terminal_payload)
         db.commit()
+        _dispatch_note_continuation(db, execution)
         _publish(execution, project_id, str(thread.id))
         return {"status": execution.status, "execution_id": execution_id}
     except Exception as exc:
@@ -279,6 +292,7 @@ def run_note_cell_execution(*args):
                 )
                 _mark_continuation(db, execution, {"error": execution.error[:2_000]})
                 db.commit()
+                _dispatch_note_continuation(db, execution)
             except Exception:
                 db.rollback()
             if thread is not None:

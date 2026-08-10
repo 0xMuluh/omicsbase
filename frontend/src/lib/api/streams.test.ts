@@ -67,4 +67,23 @@ describe("streamNdjsonWithReplay", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(events.map((event) => event.sequence)).toEqual([1, 2]);
   });
+
+  it("keeps replaying an interim continuation response", async () => {
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(responseFromChunks([JSON.stringify({ type: "final", continuation_pending: true, sequence: 1 }) + "\n"]))
+      .mockResolvedValueOnce(responseFromChunks([JSON.stringify({ type: "final", sequence: 2, message: "verified" }) + "\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events: Array<{ type?: string; sequence?: number }> = [];
+    await streamNdjsonWithReplay(
+      "/notes/thread/turn",
+      { message: "run this", idempotency_key: "continuation-key" },
+      {},
+      (event) => events.push(event),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events.map((event) => event.sequence)).toEqual([1, 2]);
+  });
 });

@@ -135,3 +135,67 @@ async def test_automatic_repair_cannot_weaken_contract_validator(tmp_path, monke
     assert result["status"] == "skipped"
     assert validator.read_text() == "stopifnot(result$value > 0)\n"
     assert any(item["strategy"] == "protected" for item in result["apply_results"])
+
+
+def test_line_targeted_repair_uses_runtime_range_and_hash(tmp_path):
+    code = tmp_path / "code"
+    code.mkdir()
+    target = code / "analysis.R"
+    target.write_text("alpha <- 1\nbeta <- 2\ngamma <- 3\n")
+    base_sha256 = repair.sha256_bytes(target.read_bytes())
+
+    result = repair._apply_line_repairs(
+        tmp_path,
+        [
+            {
+                "path": "code/analysis.R",
+                "line": 2,
+                "diagnosis": "replace the stale beta assignment",
+                "replacement": "beta <- 9",
+                "base_sha256": base_sha256,
+            }
+        ],
+    )
+
+    assert all(item.ok for item in result)
+    assert target.read_text() == "alpha <- 1\nbeta <- 9\ngamma <- 3\n"
+    assert result[0].strategy == "line_replace"
+
+
+def test_line_targeted_repair_rejects_stale_hash_without_writing(tmp_path):
+    code = tmp_path / "code"
+    code.mkdir()
+    target = code / "analysis.R"
+    target.write_text("alpha <- 1\nbeta <- 2\n")
+    original = target.read_text()
+
+    result = repair._apply_line_repairs(
+        tmp_path,
+        [
+            {
+                "path": "code/analysis.R",
+                "line": 1,
+                "replacement": "alpha <- 9",
+                "base_sha256": "0" * 64,
+            }
+        ],
+    )
+
+    assert not any(item.ok for item in result)
+    assert target.read_text() == original
+    assert any(item.strategy == "conflict" for item in result)
+
+
+@pytest.mark.asyncio
+async def test_external_failure_is_routed_without_model_call(tmp_path, monkeypatch):
+    async def unexpected_model_call(*args, **kwargs):
+        raise AssertionError("external failures must not call the repair model")
+
+    monkeypatch.setattr(repair, "call_llm", unexpected_model_call)
+    result = await repair.repair_generated_project(
+        str(tmp_path),
+        {"status": "failed", "errors": ["there is no package called 'vegan'"]},
+    )
+
+    assert result["status"] == "skipped"
+    assert result["diagnosis"]["route"] == "dependency_policy"

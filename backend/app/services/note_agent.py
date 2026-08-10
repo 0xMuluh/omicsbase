@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Callable
 
 from app.config import settings
 from app.models.notes import NoteCell, NoteCellRevision, NoteThread
-from app.services.agent_core import ToolCallResult, friendly_tool_label, run_agent_loop
+from app.services.agent_core import ToolCallResult, friendly_tool_label, persistable_tool_arguments, run_agent_loop
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
 from app.services.context_budget import bounded_json
 from app.services.agent_runtime import normalise_cell_type
@@ -437,6 +437,7 @@ class NoteAgentExecutor:
                 "execution": observation["execution"],
                 "cell": observation.get("cell"),
                 "turn_id": observation.get("turn_id"),
+                "tool_arguments": persistable_tool_arguments(arguments),
             })
         return ToolCallResult(observation=observation, events=events)
 

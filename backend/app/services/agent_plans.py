@@ -12,6 +12,7 @@ WAITING = "waiting"
 READY = "ready"
 RUNNING = "running"
 FAILED = "failed"
+DONE = "done"
 
 
 def _now() -> str:
@@ -92,6 +93,24 @@ def continuation_is_ready(run: Any) -> bool:
     return bool(plan and plan.get("status") == READY)
 
 
+def continuation_can_resume(run: Any) -> bool:
+    """Return whether a completed dependency has not been consumed yet."""
+    plan = get_continuation_plan(run)
+    return bool(plan and plan.get("status") in {READY, FAILED, RUNNING})
+
+
+def mark_continuation_consumed(run: Any) -> dict[str, Any] | None:
+    """Close a continuation after its resumed agent turn produced a result."""
+    plan = get_continuation_plan(run)
+    if not plan or plan.get("status") not in {READY, FAILED, RUNNING}:
+        return None
+    plan["status"] = DONE
+    plan["updated_at"] = _now()
+    attach_continuation_plan(run, plan)
+    run.resumable = False
+    return plan
+
+
 def continuation_prompt(plan: dict[str, Any]) -> str:
     """Return a deterministic resume instruction; the model need not re-queue."""
     status = str(plan.get("dependency_status") or "completed")
@@ -158,6 +177,7 @@ def mark_dependency_complete(
 
 __all__ = [
     "FAILED",
+    "DONE",
     "PLAN_KEY",
     "READY",
     "RUNNING",
@@ -165,8 +185,10 @@ __all__ = [
     "attach_continuation_plan",
     "build_continuation_plan",
     "continuation_is_ready",
+    "continuation_can_resume",
     "continuation_prompt",
     "get_continuation_plan",
+    "mark_continuation_consumed",
     "mark_continuation_running",
     "mark_dependency_complete",
 ]

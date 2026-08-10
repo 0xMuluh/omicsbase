@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
 
     from app.database import SessionLocal
     from app.services.agent_runs import pause_stale_agent_runs
+    from app.services.agent_continuations import (
+        dispatch_ready_continuations,
+        recover_interrupted_continuations,
+    )
 
     startup_db = SessionLocal()
     try:
@@ -44,6 +48,13 @@ async def lifespan(app: FastAPI):
         )
         if paused_runs:
             print(f"! Paused {paused_runs} stale agent run(s) during startup")
+        recovered_continuations = recover_interrupted_continuations(startup_db)
+        dispatched_continuations = dispatch_ready_continuations(startup_db)
+        if recovered_continuations or dispatched_continuations:
+            print(
+                f"✓ Recovered {recovered_continuations} and dispatched "
+                f"{dispatched_continuations} continuation plan(s) during startup"
+            )
     finally:
         startup_db.close()
 
