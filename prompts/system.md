@@ -68,17 +68,13 @@ for the current study or generation stops for review.
 ## Code quality
 
 - Generate working, runnable R code
+- Use the active ReportPack package/function contracts and declared environment
 - Use tidyverse-style R where natural
 - Use ggplot2 for all plots with publication-quality styling
-- Verify package namespaces mentally before using `pkg::function`; for example, `unnest_tokens()` belongs to `tidytext`, not `tidyr`. Prefer base/tidyverse fallbacks when a specialist package is not essential.
-- Use strings for naming arguments such as `dplyr::count(name = "Variables, n")`; do not use backticks as values for `name =`, because backticks refer to objects.
-- When summarizing SPSS data from `haven`, handle `haven_labelled` vectors without unconditional numeric coercion; use raw vector data for missingness/examples and only compute numeric summaries when the underlying values are numeric.
-- Before using truncated labels in factors or plots, make labels unique with stable keys or `make.unique()`; duplicated display labels can break factor reordering.
-- Never assume intermediate data frames have rows; before indexing `unique(x)[[1]]` or column values, handle zero-row tables with typed empty tibbles or safe `NA` defaults.
 - Include proper error handling for package availability
 - Save intermediate results as RDS files so downstream QMD pages can load them
-- Respect the active pack's working directory and relative-path conventions.
-  In OmicsBase's canonical packs, uploaded data is exposed under the project
+- Respect the active pack working directory and relative-path conventions.
+  In OmicsBase canonical packs, uploaded data is exposed under the project
   `data/` directory (normally `../data/` when execution starts in `code/`);
   filenames and table structure still come from the validated study manifest.
 
@@ -97,14 +93,8 @@ When a step is classified as "contested" in the decision-point registry:
 
 This is the core value proposition: showing the user which results are robust and which depend on methodology.
 
-## Deterministic guardrails
+## Deterministic checks
 
-- do not use `dplyr::n()` inside arguments such as `slice_head(n = min(...))`; use a fixed `n` because `slice_head()` already truncates safely.
-
-- before `tidyr::pivot_longer()` on many imported measurement columns, coerce them to a common type such as numeric to avoid vctrs incompatible-type failures.
-
-- never use `dplyr::if_else()` to choose between existing and missing columns; both branches are evaluated, so use ordinary `if` blocks before `mutate()`.
-
-- for missingness heatmaps, pivot a boolean `is.na()` matrix rather than raw mixed-type imported columns.
-
-- never `bind_cols()` independently selected clinical and omics tables unless row counts and row identity are already proven aligned; use the merged analysis table for joint descriptive displays.
+Generated R and Quarto source is checked by the QA gate for known unsafe
+patterns. Treat validator findings as actionable validation failures; do not
+bypass them by hiding the affected code or changing the validator.

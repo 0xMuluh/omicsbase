@@ -12,7 +12,7 @@ from app.config import settings
 from app.services.providers import api_key_for, base_url_for, default_model_for
 from app.services.provider_errors import raise_classified_provider_exception
 from app.services.sanitizer import sanitize_text
-from app.services.prompt_rules import inspect_prompt, prompt_fingerprint
+from app.services.prompt_rules import inspect_prompt, inspect_system_prompt, prompt_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -976,9 +976,17 @@ def load_system_prompt(
 
     parts = []
     try:
-        parts.append(_load_prompt("system"))
+        base_prompt = _load_prompt("system")
     except FileNotFoundError:
-        parts.append("You are a scientific omics analysis assistant.")
+        base_prompt = "You are a scientific omics analysis assistant."
+    parts.append(base_prompt)
+
+    system_prompt_issues = inspect_system_prompt(base_prompt)
+    if system_prompt_issues["forbidden"]:
+        logger.warning(
+            "Global system prompt contains implementation-specific rules: %s",
+            system_prompt_issues,
+        )
 
     if include_registry and registry_path.exists():
         parts.append("\n\n## Decision-Point Registry\n\n```yaml\n" + registry_path.read_text() + "\n```")

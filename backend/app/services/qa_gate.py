@@ -104,6 +104,151 @@ class QaResult:
         self.errors.extend(other.errors)
 
 
+_SOURCE_LINT_SUFFIXES = {".r", ".rmd", ".qmd"}
+
+
+def lint_source_files(project_dir: str | Path) -> list[str]:
+    """Find known generated-code failure patterns before report rendering."""
+    code_dir = Path(project_dir) / "code"
+    if not code_dir.is_dir():
+        return []
+    findings: list[str] = []
+    for path in sorted(code_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _SOURCE_LINT_SUFFIXES:
+            continue
+        try:
+            source = path.read_text(errors="replace")
+        except OSError:
+            continue
+        if path.suffix.lower() in {".qmd", ".rmd"}:
+            chunks = re.findall(
+                r"```(?:\s*\{r\b[^}]*\}|\s*r)\s*\n?(.*?)```",
+                source,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            source = "\n".join(chunks)
+        relative = path.relative_to(code_dir).as_posix()
+        findings.extend(_lint_source_text(source, relative))
+    return findings
+
+
+def _call_matches(text: str, function: str) -> list[tuple[int, int, str]]:
+    pattern = re.compile(rf"\b(?:[A-Za-z_][\w.]*)?{re.escape(function)}\s*\(")
+    matches: list[tuple[int, int, str]] = []
+    for match in pattern.finditer(text):
+        depth = 1
+        quote = ""
+        escaped = False
+        close = None
+        for index in range(match.end(), min(len(text), match.end() + 4000)):
+            char = text[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == chr(92):
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char == "\"" or char == chr(39) or char == chr(96):
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    close = index
+                    break
+        if close is not None:
+            matches.append((match.start(), close + 1, text[match.end():close]))
+    return matches
+
+
+def _lint_finding(text: str, relative: str, start: int, rule: str, message: str) -> str:
+    line = text.count("\n", 0, start) + 1
+    return f"{relative}:{line}: {rule}: {message}"
+
+
+def _lint_source_text(text: str, relative: str) -> list[str]:
+    findings: list[str] = []
+    for start, _, body in _call_matches(text, "slice_head") + _call_matches(text, "slice_tail"):
+        if re.search(r"\bn\s*=[^,]*?(?:dplyr::)?n\s*\(", body, flags=re.DOTALL):
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "unsafe_dplyr_n",
+                    "do not use dplyr::n() as a dynamic slice bound",
+                )
+            )
+    for start, _, body in _call_matches(text, "if_else"):
+        if re.search(r"\b(?:names|has_name)\s*\(", body) and re.search(r"\$|\[\[", body):
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "if_else_missing_column",
+                    "branch on column existence before calling if_else",
+                )
+            )
+    for start, _, body in _call_matches(text, "bind_cols"):
+        selected_sources = re.findall(
+            r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*(?:\$|\[\[|\[[^]\n]{0,100},)",
+            body,
+        )
+        if len(set(selected_sources)) >= 2:
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "independent_bind_cols",
+                    "prove row identity before binding independently selected tables",
+                )
+            )
+    for start, end, body in _call_matches(text, "unique"):
+        suffix = text[end:]
+        prefix = text[max(0, start - 500):start]
+        guarded = re.search(r"\bif\s*\([^)]*\b(?:length|nrow|NROW)\s*\(", prefix, flags=re.DOTALL)
+        if (re.match(r"\s*\[\[\s*1\s*\]\]", suffix) or re.match(r"\s*\[\s*1\s*\]", suffix)) and not guarded:
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "unchecked_unique_index",
+                    "guard direct unique(...)[[1]] or unique(...)[1] access for empty input",
+                )
+            )
+    imported = re.search(r"\b(?:read_sav|read_excel|read_xlsx|read_delim|read_csv)\s*\(", text)
+    imported = imported or "haven_labelled" in text
+    for start, _, body in _call_matches(text, "pivot_longer"):
+        prefix = text[max(0, start - 1600):start]
+        if imported and not re.search(r"\b(?:values_transform|values_ptypes)\s*=", body) and not re.search(r"\bas\.(?:numeric|double|character)\s*\(", prefix):
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "mixed_pivot_longer",
+                    "coerce imported measurement columns to a common type before pivot_longer",
+                )
+            )
+    for start, _, body in _call_matches(text, "as.numeric"):
+        if re.search(r"\b(?:haven_labelled|haven|[A-Za-z_]\w*labelled\w*)\b", body):
+            findings.append(
+                _lint_finding(
+                    text,
+                    relative,
+                    start,
+                    "haven_labelled_numeric",
+                    "do not unconditionally coerce haven-labelled data to numeric",
+                )
+            )
+    return findings
+
 def run_qa(project_dir: str, project_name: str = "") -> QaResult:
     """Run the presentation gate over a generated project's code/ tree."""
     result = QaResult()
@@ -132,6 +277,8 @@ def run_qa(project_dir: str, project_name: str = "") -> QaResult:
             continue
         findings = _language_findings(content, relative, owned_study_terms)
         result.language.extend(findings)
+
+    result.errors.extend(lint_source_files(base))
 
     quarto_yml = code_dir / "_quarto.yml"
     if quarto_yml.exists():

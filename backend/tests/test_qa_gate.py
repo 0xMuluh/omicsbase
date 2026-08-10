@@ -96,3 +96,47 @@ def test_prune_files_removes_only_requested(tmp_path: Path):
     assert removed == ["daa/daa_mtc.qmd"]
     assert not drop.exists()
     assert keep.exists()
+
+
+def test_source_lint_catches_known_failure_patterns(tmp_path: Path):
+    source = """
+library(haven)
+imported <- read_sav("study.sav")
+top <- imported %>% slice_head(n = min(dplyr::n(), 5))
+value <- if_else("sample_id" %in% names(imported), imported$sample_id, NA)
+long <- imported %>% pivot_longer(cols = everything())
+label <- as.numeric(haven_labelled_column)
+first <- unique(imported$group)[[1]]
+joined <- bind_cols(clinical[, c("id")], omics[, c("id")])
+"""
+    _write(tmp_path, "analysis.R", source)
+
+    findings = qa_gate.lint_source_files(tmp_path)
+
+    for rule in (
+        "unsafe_dplyr_n",
+        "if_else_missing_column",
+        "mixed_pivot_longer",
+        "haven_labelled_numeric",
+        "unchecked_unique_index",
+        "independent_bind_cols",
+    ):
+        assert any(rule in finding for finding in findings), (rule, findings)
+    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    assert result.errors == findings
+
+
+def test_source_lint_allows_explicit_safe_variants(tmp_path: Path):
+    source = """
+safe_top <- imported %>% slice_head(n = 5)
+value <- if ("sample_id" %in% names(imported)) imported$sample_id else NA
+long <- imported %>% pivot_longer(
+    cols = everything(),
+    values_transform = list(value = as.numeric)
+)
+joined <- bind_cols(clinical, omics)
+first <- if (length(unique(imported$group)) > 0) unique(imported$group)[[1]] else NA_character_
+"""
+    _write(tmp_path, "safe.R", source)
+
+    assert qa_gate.lint_source_files(tmp_path) == []
