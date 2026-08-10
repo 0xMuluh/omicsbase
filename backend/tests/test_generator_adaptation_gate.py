@@ -415,6 +415,8 @@ async def test_adaptation_prompt_contains_manifest_and_safe_project_bindings(mon
     )
 
     prompt = captured["user_prompt"]
+    assert prompt.index("## Analysis Plan") < prompt.index("## Current file:")
+    assert prompt.index("## Current file:") < prompt.index("## Task")
     assert "Validated Study Manifest" in prompt
     assert '"columns": ["sample_id", "condition"]' in prompt
     assert "feature_table[1]: ../data/counts.csv" in prompt
@@ -460,8 +462,8 @@ async def test_large_file_is_inspected_beyond_old_40k_cutoff(monkeypatch):
     )
 
     assert isinstance(decision, generator.AdaptationEdits)
-    assert calls == decision.inspected_chunks
-    assert decision.inspected_chunks >= 2
+    assert calls == decision.inspected_chunks == 1
+    assert decision.inspected_chunks == 1
     assert any(edit["search"] == marker for edit in decision.edits)
 
 
@@ -655,3 +657,15 @@ def test_manifest_finalization_rehashes_qa_mutations(tmp_path: Path):
     assert outcomes[0]["status"] == "qa_repaired"
     assert outcomes[0]["result_sha256"] == generator._content_hash("after QA repair")
     assert outcomes[0]["finalized"] is True
+
+
+def test_oversized_source_uses_structural_units_without_gaps():
+    sections = [f"# Section {index}\n" + "generic line\n" * 1600 for index in range(4)]
+    content = "".join(sections)
+
+    units = generator._split_source_units(content, "code/page.qmd")
+
+    assert len(units) >= 3
+    assert "".join(unit[2] for unit in units) == content
+    assert all(len(unit[2]) <= generator.MAX_ADAPT_CHUNK_CHARS for unit in units)
+    assert all(unit[2].startswith("# Section") for unit in units)

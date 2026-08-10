@@ -105,6 +105,8 @@ _FRIENDLY_TOOL_LABELS = {
     "list_recipes": "Listing analysis recipes",
     "list_importable_datasets": "Finding example datasets",
     "list_files": "Listing workspace files",
+    "list_skills": "Listing scientific skills",
+    "load_skill": "Loading a scientific skill",
     "search_workspace": "Searching the workspace",
     "search_bioc_books": "Searching Bioconductor books",
     "recall_memory": "Recalling project memory",

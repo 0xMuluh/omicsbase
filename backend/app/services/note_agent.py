@@ -68,6 +68,8 @@ For purely conceptual questions that do not require calculation, provide a markd
 
 For methodological questions involving omics or Bioconductor workflows, call `search_bioc_books` before producing reusable analysis code when relevant guidance is likely to exist. Treat returned excerpts as methodological guidance, not evidence about the user’s data. Preserve and cite the source metadata.
 
+For specialized methodology or report questions, call `list_skills` first and then `load_skill` with only the relevant references. Do not preload whole skill packs; loaded skill text is guidance, not evidence about the notebook’s data.
+
 For stochastic procedures, set and display a reproducible seed. Avoid unexplained changes to the working directory, global options, contrasts, or other session-wide state. Preserve alignment between assays, samples, features, and metadata.
 
 Do not edit the Workspace. When the user explicitly asks to move a tested notebook step into the report, use `promote_to_workspace` to copy the validated cell into the project code directory. Promotion defaults to creating a new file; updating an existing file requires an explicit base_sha256 and an append or replace strategy.
@@ -398,7 +400,19 @@ class NoteAgentExecutor:
             "step": step,
             "message": friendly_tool_label(tool_name),
         }]
-        if tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace", "inspect_data_files"}:
+        if tool_name == "list_skills":
+            from app.services.skills import list_skills
+
+            observation = list_skills(arguments)
+        elif tool_name == "load_skill":
+            from app.services.skills import load_skill
+
+            observation = load_skill(
+                str(arguments.get("skill") or ""),
+                arguments.get("references"),
+                arguments.get("max_chars", 12_000),
+            )
+        elif tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace", "inspect_data_files"}:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
         elif self.action_handler is None:
             observation = {"status": "error", "error": "NoteThread tools are unavailable"}

@@ -183,6 +183,8 @@ WORKSPACE_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("list_recipes", "List available analysis recipes for this project domain with parameters and enabled state", capability="legacy_recipe", parallel=True),
     ToolSpec("list_importable_datasets", "List R package datasets that can be imported into the study", capability="acquisition", parallel=True),
     ToolSpec("list_files", "List all files in the project workspace", parallel=True),
+    ToolSpec("list_skills", "List available scientific skill packs without loading their full instructions", _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 20}}), parallel=True),
+    ToolSpec("load_skill", "Load one skill and only explicitly requested reference files, bounded to the requested size", _schema({"skill": {"type": "string", "description": "Skill id returned by list_skills"}, "references": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Optional paths under the skill's references/ directory"}, "max_chars": {"type": "integer", "minimum": 512, "maximum": 20000, "default": 12000}}, required=["skill"])),
     ToolSpec("search_workspace", "Search workspace artifacts by text query", _schema({"query": {"type": "string", "description": "Search query"}, "limit": {"type": "integer", "default": 8}}, required=["query"]), parallel=True),
     ToolSpec("search_bioc_books", "Search the pinned stable Bioconductor books for methodological guidance and reusable QMD examples", _schema({"query": {"type": "string", "description": "Scientific or coding question"}, "channel": {"type": "string", "enum": ["stable", "preview"], "default": "stable"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5}, "book": {"type": "string", "description": "Optional curated book slug"}}, required=["query"])),
     ToolSpec("recall_memory", "Recall durable project memories (preferences, decisions, constraints, findings)"),
@@ -199,22 +201,114 @@ WORKSPACE_TOOL_SPECS: tuple[ToolSpec, ...] = (
 )
 
 
-_EDIT_SCHEMA = _schema(
-    {
-        "path": {"type": "string", "description": "Project-relative file path for a targeted edit"},
-        "search": {"type": "string", "description": "Exact text block to find; it must identify one location"},
-        "replace": {"type": "string", "description": "Replacement text"},
-        "content": {"type": "string", "description": "Complete UTF-8 file content for a justified rewrite"},
-        "patch": {"type": "string", "description": "*** Begin Patch envelope; Update/Add/Delete paths are embedded in the patch"},
-        "edits": {"type": "array", "description": "Multiple path/search/replace, patch, or content operations; all succeed or none are written", "items": _schema({"path": {"type": "string"}, "search": {"type": "string"}, "replace": {"type": "string"}, "content": {"type": "string"}, "patch": {"type": "string"}, "allow_multiple": {"type": "boolean", "default": False}, "reason": {"type": "string"}})},
-        "allow_multiple": {"type": "boolean", "default": False},
-        "reason": {"type": "string"},
-        "instruction": {"type": "string", "description": "High-level edit instruction for complex changes; inspect first and make the concrete edit explicit"},
-        "mode": {"type": "string", "enum": ["search_replace", "content", "patch", "batch", "instruction"], "description": "Discriminator for the edit payload"},
-        "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Optional expected hash for the targeted file"},
-        "approval": {"type": "string", "enum": ["auto", "preview", "require"], "default": "auto", "description": "Use preview/require to prepare a diff for explicit approval before committing."},
+_EDIT_COMMON_PROPERTIES = {
+    "reason": {"type": "string"},
+    "approval": {"type": "string", "enum": ["auto", "preview", "require"], "default": "auto", "description": "Use preview/require to prepare a diff for explicit approval before committing."},
+}
+
+_EDIT_OPERATION_ITEM = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "search": {"type": "string"},
+                "replace": {"type": "string"},
+                "allow_multiple": {"type": "boolean", "default": False},
+                "reason": {"type": "string"},
+            },
+            "required": ["path", "search", "replace"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "patch": {"type": "string", "description": "*** Begin Patch envelope"},
+                "reason": {"type": "string"},
+            },
+            "required": ["patch"],
+            "additionalProperties": False,
+        },
+    ]
+}
+
+
+def _edit_branch(mode: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "mode": {"const": mode},
+            **_EDIT_COMMON_PROPERTIES,
+            **properties,
+        },
+        "required": ["mode", *required],
+        "additionalProperties": False,
     }
-)
+
+
+_EDIT_ENVELOPE_PROPERTIES = {
+    "mode": {"type": "string", "enum": ["search_replace", "content", "patch", "batch"]},
+    "path": {"type": "string"},
+    "search": {"type": "string"},
+    "replace": {"type": "string"},
+    "content": {"type": "string"},
+    "patch": {"type": "string", "description": "*** Begin Patch envelope"},
+    "edits": {"type": "array", "items": _EDIT_OPERATION_ITEM},
+    "allow_multiple": {"type": "boolean", "default": False},
+    "reason": {"type": "string"},
+    "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}\x24"},
+    "approval": {"type": "string", "enum": ["auto", "preview", "require"], "default": "auto"},
+}
+
+
+_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": _EDIT_ENVELOPE_PROPERTIES,
+    "additionalProperties": False,
+    "oneOf": [
+        _edit_branch(
+            "search_replace",
+            {
+                "path": {"type": "string"},
+                "search": {"type": "string"},
+                "replace": {"type": "string"},
+                "allow_multiple": {"type": "boolean", "default": False},
+                "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}\x24"},
+            },
+            ["path", "search", "replace"],
+        ),
+        _edit_branch(
+            "content",
+            {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "expected_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}\x24"},
+            },
+            ["path", "content"],
+        ),
+        _edit_branch(
+            "patch",
+            {"patch": {"type": "string", "description": "*** Begin Patch envelope"}},
+            ["patch"],
+        ),
+        _edit_branch(
+            "batch",
+            {"edits": {"type": "array", "items": _EDIT_OPERATION_ITEM}},
+            ["edits"],
+        ),
+    ]
+}
+
 
 ACTION_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("import_package_data", "Import an R package dataset into the study", _schema({"package": {"type": "string"}, "dataset": {"type": "string"}, "role": {"type": "string", "default": "auto"}}, required=["package", "dataset"]), kind="inline", risk="write", capability="acquisition", idempotency="non_idempotent"),
@@ -229,7 +323,7 @@ ACTION_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("render_report", "Render the report; if the last render failed, repair the smallest failing scope before retrying", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent"),
     ToolSpec("repair_report", "Compatibility alias for render_report with repair-on-failure behavior", kind="async", risk="execute", capability="report_execution", idempotency="non_idempotent", advertised=False, alias_of="render_report"),
     ToolSpec("rollback_analysis_configuration", "Rollback analysis configuration to previous state", kind="async", risk="write", idempotency="non_idempotent"),
-    ToolSpec("edit_project", "Edit project source through one atomic, hash-checked transaction. Use exact search/replace for a small change, a Codex patch envelope for multi-file hunks, or edits for a batch.", _EDIT_SCHEMA, kind="async", risk="write", idempotency="non_idempotent"),
+    ToolSpec("edit_project", "Edit project source through one atomic, hash-checked transaction. Choose exactly one mode: search_replace, content, patch, or batch. Inspect first and include the mode discriminator.", _EDIT_SCHEMA, kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("queue_guidance", "Queue guidance for after the current running job finishes", _schema({"guidance": {"type": "string"}}, required=["guidance"]), kind="async", risk="write", idempotency="non_idempotent"),
 )
 
@@ -241,6 +335,8 @@ NOTE_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("add_note", "Insert a concise markdown explanation into the notebook at this point, between code steps.", _schema({"text": {"type": "string", "description": "The markdown text for the note (2-4 sentences)."}}, required=["text"]), lens="note", kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("promote_to_workspace", "Copy a tested R cell into the project's code directory after immutable provenance checks.", _schema({"cell_id": {"type": "string"}, "revision_id": {"type": "string"}, "execution_id": {"type": "string"}, "path": {"type": "string"}, "strategy": {"type": "string", "enum": ["replace", "append", "create_only"], "default": "create_only"}, "base_sha256": {"type": "string", "description": "SHA-256 of the current target, required when appending to or replacing an existing file"}, "purpose": {"type": "string"}}, required=["cell_id", "revision_id", "execution_id", "path"]), lens="note", kind="async", risk="write", idempotency="non_idempotent"),
     ToolSpec("inspect_data_files", "List data files attached to this notebook with format, columns, and the R path to read each.", lens="note"),
+    ToolSpec("list_skills", "List available scientific skill packs without loading their full instructions.", _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 20}}), lens="note", parallel=True),
+    ToolSpec("load_skill", "Load one skill and only explicitly requested reference files, bounded to the requested size.", _schema({"skill": {"type": "string", "description": "Skill id returned by list_skills"}, "references": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Optional paths under the skill's references/ directory"}, "max_chars": {"type": "integer", "minimum": 512, "maximum": 20000, "default": 12000}}, required=["skill"]), lens="note"),
 )
 
 TOOL_REGISTRY = ToolSpecRegistry(WORKSPACE_TOOL_SPECS + ACTION_TOOL_SPECS + NOTE_TOOL_SPECS)

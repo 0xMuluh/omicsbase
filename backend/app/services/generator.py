@@ -84,6 +84,7 @@ class DeleteDecision:
 ADAPTATION_ACTIONS = {"preserve", "parameterize", "extend", "replace"}
 
 MAX_ADAPT_CHUNK_CHARS = 28_000
+MAX_ADAPT_COMPLETE_FILE_CHARS = 64_000
 MAX_CONTEXT_CHARS = 28_000
 
 
@@ -147,6 +148,102 @@ def _dependency_inputs(generated_files: dict[str, str], paths: set[str]) -> dict
         for path in sorted(paths)
         if path in generated_files
     }
+
+
+
+def _decode_dependency_json(value: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _lookup_dependency_value(mapping: dict[str, Any], token: str) -> Any:
+    if token in mapping:
+        return mapping[token]
+    for key in ("parameters", "study", "contract", "variables"):
+        nested = mapping.get(key)
+        if isinstance(nested, dict) and token in nested:
+            return nested[token]
+    return None
+
+
+def _generated_dependency_snapshot(generated_files: dict[str, str]) -> list[dict[str, str]]:
+    return [
+        {"path": path, "sha256": _content_hash(generated_files[path])}
+        for path in sorted(generated_files)
+    ]
+
+
+def _adaptation_dependency_inputs(
+    dependencies: tuple[str, ...] | None,
+    *,
+    plan_json: str,
+    file_descriptions: str,
+    uploaded_file_paths: dict[str, list[str]],
+    study_manifest_json: str,
+    generated_files: dict[str, str],
+) -> dict[str, str]:
+    """Hash only the declared study inputs that can affect one pack file.
+
+    A missing declaration retains legacy conservative behavior by hashing the
+    complete adaptation context. An explicit empty tuple is the meaningful
+    zero-dependency declaration used to avoid an unnecessary LLM inspection.
+    """
+    plan = _decode_dependency_json(plan_json)
+    manifest = _decode_dependency_json(study_manifest_json)
+    uploads = {
+        role: [
+            {
+                "name": Path(raw_path).name,
+                "sha256": file_sha256(Path(raw_path)) if Path(raw_path).is_file() else None,
+            }
+            for raw_path in paths
+        ]
+        for role, paths in sorted(uploaded_file_paths.items())
+    }
+    generated = _generated_dependency_snapshot(generated_files)
+    aliases: dict[str, Any] = {
+        "data_bindings": uploads,
+        "uploaded_files": uploads,
+        "file_summaries": _content_hash(file_descriptions),
+        "study_manifest": manifest,
+        "report_pages": [
+            item for item in generated if Path(item["path"]).suffix.lower() in {".qmd", ".rmd"}
+        ],
+        "generated_files": generated,
+        "result_artifacts": [
+            item for item in generated if item["path"].startswith(("output/", "results/"))
+        ],
+    }
+    full_context = {
+        "plan": _content_hash(plan_json),
+        "file_descriptions": _content_hash(file_descriptions),
+        "uploads": uploads,
+        "study_manifest": _content_hash(study_manifest_json),
+        "generated_files": generated,
+    }
+    selected = dependencies
+    if selected is None:
+        selected = ("__legacy_full_context__",)
+        aliases["__legacy_full_context__"] = full_context
+    result: dict[str, str] = {}
+    for token in selected:
+        if token in aliases:
+            value = aliases[token]
+        else:
+            value = _lookup_dependency_value(plan, token)
+            if value is None:
+                value = _lookup_dependency_value(manifest, token)
+            if value is None:
+                # Unknown tokens are safe but conservative: custom packs still
+                # invalidate when any generation input changes.
+                value = full_context
+        result[token] = _content_hash(
+            json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+        )
+    return result
 
 
 def _adaptation_context_paths(kind: str, relative_path: str, generated_files: dict[str, str]) -> set[str]:
@@ -219,23 +316,7 @@ async def _request_file_edits_chunk(
     decision. An empty edit array is rejected because it cannot distinguish
     inspection from provider/parser failure.
     """
-    user_prompt = f"""## Task
-
-The current file `{target_file}` is below. Adapt it with targeted SEARCH/REPLACE edits.
-
-{instruction}
-
-## Adaptation classification
-
-Before editing, classify this file as exactly one of `preserve`, `parameterize`, `extend`, or `replace`. Use `preserve` only when the template is already correct and return an evidence-bearing `no_change` decision. Use `parameterize` for study-specific values or paths, `extend` for a bounded addition that retains the template structure, and `replace` only when the structure cannot express the requested analysis. Classified edits must include the chosen `adaptation` value.
-
-## Current file: {target_file}
-
-```text
-{file_content[:40000]}
-```
-
-## Analysis Plan
+    user_prompt = f"""## Analysis Plan
 
 ```json
 {plan_json}
@@ -259,11 +340,29 @@ Before editing, classify this file as exactly one of `preserve`, `parameterize`,
 
 {_build_context_text(generated_context, exclude=target_file, include=context_paths)}
 
+## Target
+
+## Current file: {target_file}
+
+```text
+{file_content}
+```
+
+## Task
+
+The current file `{target_file}` is the target below. Adapt it with targeted SEARCH/REPLACE edits.
+
+{instruction}
+
+## Adaptation classification
+
+Before editing, classify this file as exactly one of `preserve`, `parameterize`, `extend`, or `replace`. Use `preserve` only when the template is already correct and return an evidence-bearing `no_change` decision. Use `parameterize` for study-specific values or paths, `extend` for a bounded addition that retains the template structure, and `replace` only when the structure cannot express the requested analysis. Classified edits must include the chosen `adaptation` value.
+
 ## Output
 
 Return ONLY the JSON edits, explicit no-change object, or exactly DELETE.
 Never return an empty array. No markdown fences, no explanation.
-"""
+    """
     response = await call_llm(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -385,6 +484,88 @@ def _split_source_chunks(
     return chunks
 
 
+def _structural_source_blocks(content: str, target_file: str) -> list[tuple[int, int]]:
+    """Find deterministic boundaries that keep related source together.
+
+    This is deliberately a lightweight scanner rather than a language parser:
+    it never changes source and it has a safe line-based fallback. Headings,
+    fenced blocks, top-level R assignments, and YAML sections are useful
+    adaptation units because a study-specific path or narrative normally lives
+    inside one of them.
+    """
+    suffix = Path(target_file).suffix.lower()
+    if suffix in {".qmd", ".rmd", ".md", ".txt"}:
+        pattern = re.compile(r"(?m)^(?:#{1,6}\s+|```|---\s*(?:\n|\Z))")
+    elif suffix == ".r":
+        pattern = re.compile(r"(?m)^(?:[A-Za-z.][\w.]*\s*(?:<-|=)\s*)")
+    elif suffix in {".yml", ".yaml"}:
+        pattern = re.compile(r"(?m)^[A-Za-z][\w.-]*:\s*(?:\n|\Z)")
+    else:
+        pattern = re.compile(r"(?m)^#{1,6}\s+")
+
+    boundaries = {0, len(content)}
+    boundaries.update(match.start() for match in pattern.finditer(content))
+    ordered = sorted(boundaries)
+    blocks = [
+        (start, end)
+        for start, end in zip(ordered, ordered[1:])
+        if start < end
+    ]
+    return blocks or [(0, len(content))]
+
+
+def _split_source_units(
+    content: str,
+    target_file: str,
+    *,
+    max_chars: int = MAX_ADAPT_CHUNK_CHARS,
+    complete_file_chars: int = MAX_ADAPT_COMPLETE_FILE_CHARS,
+) -> list[tuple[int, int, str]]:
+    """Return complete-file or semantic units for one adaptation pass.
+
+    A normal file is sent once, even when it is larger than the old arbitrary
+    chunk size. An oversized file is packed from structural blocks and only a
+    single overlarge block falls back to line-boundary splitting. Every source
+    character is still covered exactly once, so a no-change or DELETE decision
+    remains truthful.
+    """
+    if not content:
+        return [(0, 0, "")]
+    if len(content) <= complete_file_chars:
+        return [(0, len(content), content)]
+
+    units: list[tuple[int, int, str]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+
+    def flush() -> None:
+        nonlocal current_start, current_end
+        if current_start is not None and current_end is not None:
+            units.append((current_start, current_end, content[current_start:current_end]))
+        current_start = None
+        current_end = None
+
+    for block_start, block_end in _structural_source_blocks(content, target_file):
+        block_length = block_end - block_start
+        if block_length > max_chars:
+            flush()
+            for start, end, chunk in _split_source_chunks(
+                content[block_start:block_end],
+                max_chars=max_chars,
+            ):
+                units.append((block_start + start, block_start + end, chunk))
+            continue
+        if current_start is None:
+            current_start, current_end = block_start, block_end
+        elif block_end - current_start <= max_chars:
+            current_end = block_end
+        else:
+            flush()
+            current_start, current_end = block_start, block_end
+    flush()
+    return units or [(0, len(content), content)]
+
+
 async def _request_file_edits(
     instruction: str,
     file_content: str,
@@ -398,18 +579,18 @@ async def _request_file_edits(
     study_manifest_json: str = "{}",
     context_paths: set[str] | None = None,
 ) -> AdaptationEdits | DeleteDecision | NoChangeDecision:
-    """Inspect the complete file, requiring a valid decision for every chunk."""
-    chunks = _split_source_chunks(file_content)
+    """Inspect every complete-file/structural unit with one bounded request."""
+    chunks = _split_source_units(file_content, target_file)
     content_sha256 = _content_hash(file_content)
     decisions: list[tuple[AdaptationEdits | str | NoChangeDecision, str]] = []
     for chunk_index, (start, end, chunk) in enumerate(chunks, start=1):
         chunk_instruction = (
             instruction
             + "\n\n## Required source coverage\n\n"
-            + f"You are inspecting chunk {chunk_index} of {len(chunks)}, "
+            + f"You are inspecting source unit {chunk_index} of {len(chunks)}, "
             + f"character range [{start}, {end}), from a file with SHA-256 "
-            + f"{content_sha256}. SEARCH blocks must occur inside this chunk. "
-            + "Your decision must cover this entire chunk."
+            + f"{content_sha256}. SEARCH blocks must occur inside this source unit. "
+            + "Your decision must cover this entire source unit."
         )
         decision = await _request_file_edits_chunk(
             chunk_instruction,
@@ -427,7 +608,7 @@ async def _request_file_edits(
             for edit in decision.edits:
                 if edit["search"] not in chunk:
                     raise AdaptationResponseError(
-                        f"Adapt edit response for {target_file} chunk {chunk_index} "
+                        f"Adapt edit response for {target_file} source unit {chunk_index} "
                         "contained a SEARCH block outside the inspected chunk"
                     )
         decisions.append((decision, chunk))
@@ -1261,6 +1442,11 @@ async def generate_project(
                 "study_dependent": classification.study_dependent,
                 "matched_rule_id": classification.matched_rule_id,
                 "classification_source": classification.classification_source,
+                "depends_on": (
+                    list(classification.depends_on)
+                    if classification.depends_on is not None
+                    else None
+                ),
                 "source_sha256": _content_hash(original),
                 "result_sha256": _content_hash(original),
                 "status": "pending",
@@ -1281,6 +1467,15 @@ async def generate_project(
                 + f"- semantic role: {classification.role}\n"
                 + f"- adaptation policy: {classification.adaptation}\n"
                 + (
+                    "- declared study dependencies: none; this inspect rule is deterministic and does not require an LLM call.\n"
+                    if classification.depends_on == ()
+                    else (
+                        "- declared study dependencies: "
+                        + (", ".join(classification.depends_on) if classification.depends_on is not None else "legacy full-context inspection")
+                        + "\n"
+                    )
+                )
+                + (
                     "- This file must receive at least one material, targeted "
                     "study adaptation; no_change and DELETE are invalid.\n"
                     if classification.adaptation == "required"
@@ -1290,11 +1485,25 @@ async def generate_project(
             original = generated_files.get(relative_path, "")
             outcome = _base_outcome(relative_path, kind, classification)
             unit_id = f"adapt:{relative_path}"
+            dependency_inputs = _adaptation_dependency_inputs(
+                classification.depends_on,
+                plan_json=plan_json,
+                file_descriptions=file_desc,
+                uploaded_file_paths=uploaded_file_paths,
+                study_manifest_json=study_manifest_json,
+                generated_files=generated_files,
+            )
             unit_inputs = {
                 "instruction_sha256": _content_hash(instruction),
                 "role": classification.role,
                 "adaptation": classification.adaptation,
                 "matched_rule_id": classification.matched_rule_id,
+                "depends_on": (
+                    list(classification.depends_on)
+                    if classification.depends_on is not None
+                    else None
+                ),
+                "dependency_inputs": dependency_inputs,
             }
             decision = checkpoint.decide(
                 unit_id,
@@ -1332,6 +1541,26 @@ async def generate_project(
                     unit_id,
                     [relative_path],
                     reason=decision.reason,
+                    unit_inputs=unit_inputs,
+                    metadata={"outcome": outcome},
+                )
+                return outcome
+
+            if classification.adaptation == "inspect" and classification.depends_on == ():
+                outcome["adaptation"] = "preserve"
+                outcome["status"] = "inspected_no_change"
+                outcome["inspection_sha256"] = _content_hash(original)
+                outcome["decision_reason"] = (
+                    "ReportPack declares no study dependencies for this inspect rule"
+                )
+                outcome["decision_evidence"] = [
+                    "The manifest dependency list is explicitly empty"
+                ]
+                outcome["reason"] = outcome["decision_reason"]
+                checkpoint.preserve(
+                    unit_id,
+                    [relative_path],
+                    reason=outcome["reason"],
                     unit_inputs=unit_inputs,
                     metadata={"outcome": outcome},
                 )

@@ -245,6 +245,7 @@ async def test_supported_recipe_generation_only_uses_llm_for_pack_adaptation(
     assert "assign_meal" in (tmp_path / "code" / "funct.R").read_text()
     # The LLM was used only for the adapt (edit) stage.
     assert len(adapted_targets) >= 8
+    assert "code/funct.R" not in adapted_targets
     assert "code/main.R" in adapted_targets
     assert "README.md" not in adapted_targets
     adaptation = json.loads((tmp_path / "adaptation_manifest.json").read_text())

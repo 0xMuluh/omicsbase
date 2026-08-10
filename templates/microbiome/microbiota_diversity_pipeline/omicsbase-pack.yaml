@@ -55,38 +55,67 @@ file_rules:
     match: code/main.R
     role: orchestrator
     adaptation: inspect
+    depends_on:
+      - project_name
+      - workflow
+      - data_bindings
 
   - id: quarto-assembly
     match: code/_quarto.yml
     role: assembly
     adaptation: inspect
+    depends_on:
+      - report_pages
 
   - id: primary-loader
     match: code/data.R
     role: data_loader
     adaptation: required
+    depends_on:
+      - data_bindings
+      - study_manifest
+      - grouping_variable
+      - covariates
 
   - id: study-helpers
     match: code/funct.R
     role: helper
     adaptation: inspect
+    depends_on: []
 
   - id: delta-analysis
     match: code/data_delta.R
     role: analysis
     adaptation: inspect
+    depends_on:
+      - grouping_variable
+      - group_levels
+      - covariates
+      - distance
+      - workflow
 
   - id: report-pages
     match: code/**/*.qmd
     role: page
     adaptation: inspect
+    depends_on:
+      - project_name
+      - question
+      - grouping_variable
+      - group_levels
+      - workflow
+      - study_manifest
 
   - id: preprocessing-loaders
     match: preprocessing/*.R
     role: data_loader
     adaptation: required
+    depends_on:
+      - data_bindings
+      - study_manifest
 
   - id: pack-readme
     match: README.md
     role: static
     adaptation: none
+    depends_on: []

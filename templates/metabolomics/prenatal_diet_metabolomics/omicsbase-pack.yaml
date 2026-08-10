@@ -54,58 +54,91 @@ file_rules:
     match: code/main.R
     role: orchestrator
     adaptation: none
+    depends_on: []
 
   - id: quarto-assembly
     match: code/_quarto.yml
     role: assembly
     adaptation: inspect
+    depends_on:
+      - report_pages
 
   - id: mae-loader
     match: code/make_mae.R
     role: data_loader
     adaptation: required
+    depends_on:
+      - data_bindings
+      - study_manifest
+      - sample_id
 
   - id: primary-analysis
     match: code/prenatal_diet_analysis.R
     role: analysis
     adaptation: required
+    depends_on:
+      - exposure
+      - outcome
+      - covariates
+      - grouping_variable
+      - study_type
+      - workflow
 
   - id: study-data-helpers
     match: code/analysis_data_utils.R
     role: helper
     adaptation: inspect
+    depends_on: []
 
   - id: report-helpers
     match: code/report_utils.R
     role: helper
     adaptation: required
+    depends_on:
+      - study_manifest
+      - result_artifacts
 
   - id: result-validator
     match: code/validate_results.R
     role: validator
     adaptation: required
+    depends_on:
+      - result_artifacts
+      - workflow
 
   - id: shared-method-helpers
     match: code/shared/*.R
     role: helper
     adaptation: none
+    depends_on: []
 
   - id: report-pages
     match: code/**/*.qmd
     role: page
     adaptation: inspect
+    depends_on:
+      - project_name
+      - question
+      - exposure
+      - outcome
+      - covariates
+      - workflow
+      - study_manifest
 
   - id: static-css
     match: code/*.css
     role: static
     adaptation: none
+    depends_on: []
 
   - id: static-javascript
     match: code/*.js
     role: static
     adaptation: none
+    depends_on: []
 
   - id: pack-readme
     match: README.md
     role: static
     adaptation: none
+    depends_on: []

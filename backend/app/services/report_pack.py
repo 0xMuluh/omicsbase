@@ -45,7 +45,7 @@ _ROOT_FIELDS = {
     "execution",
     "capabilities",
 }
-_RULE_FIELDS = {"id", "match", "role", "adaptation"}
+_RULE_FIELDS = {"id", "match", "role", "adaptation", "depends_on"}
 _EXECUTION_FIELDS = {"working_directory", "render", "steps", "artifacts"}
 _EXECUTION_STEP_FIELDS = {"id", "path", "role"}
 _CAPABILITY_FIELDS = {"sources", "execution_steps", "parameters", "outputs", "validators"}
@@ -83,6 +83,40 @@ _SOURCE_SKIP_FILENAMES = {MANIFEST_NAME, ".rhistory", ".rdata"}
 
 class ReportPackError(ValueError):
     """Raised when a report-pack manifest is unsafe or internally invalid."""
+
+
+_DEPENDENCY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*\Z")
+
+
+def _parse_depends_on(value: Any, *, rule_id: str) -> tuple[str, ...] | None:
+    """Parse an optional open-world dependency list from a file rule.
+
+    ``None`` means an older manifest did not declare dependencies and therefore
+    keeps the conservative inspect behavior. An explicit empty list is a
+    meaningful declaration that the file is independent of study inputs.
+    """
+    if "depends_on" not in value:
+        return None
+    raw = value.get("depends_on")
+    if not isinstance(raw, list):
+        raise ReportPackError(f"depends_on for {rule_id} must be a list of strings")
+    dependencies: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ReportPackError(
+                f"depends_on for {rule_id} must contain only strings"
+            )
+        token = item.strip()
+        if not token or not _DEPENDENCY_TOKEN.fullmatch(token):
+            raise ReportPackError(
+                f"depends_on for {rule_id} contains an invalid dependency token: {item!r}"
+            )
+        if token in dependencies:
+            raise ReportPackError(
+                f"depends_on for {rule_id} contains duplicate token: {token}"
+            )
+        dependencies.append(token)
+    return tuple(dependencies)
 
 
 def _normalise_relative(value: str, *, label: str) -> str:
@@ -215,6 +249,7 @@ class ReportPackRule:
     match: str
     role: str
     adaptation: str
+    depends_on: tuple[str, ...] | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "ReportPackRule":
@@ -236,7 +271,13 @@ class ReportPackRule:
             raise ReportPackError(
                 f"Unknown adaptation policy {adaptation!r}; expected none, inspect, or required"
             )
-        return cls(rule_id=rule_id, match=match, role=role, adaptation=adaptation)
+        return cls(
+            rule_id=rule_id,
+            match=match,
+            role=role,
+            adaptation=adaptation,
+            depends_on=_parse_depends_on(value, rule_id=rule_id),
+        )
 
     def matches(self, relative_path: str) -> bool:
         path = PurePosixPath(relative_path)
@@ -250,6 +291,7 @@ class ReportPackFile:
     adaptation: str
     matched_rule_id: str | None = None
     classification_source: str = "discovered"
+    depends_on: tuple[str, ...] | None = None
 
     @property
     def study_dependent(self) -> bool:
@@ -263,6 +305,7 @@ class ReportPackFile:
             "study_dependent": self.study_dependent,
             "matched_rule_id": self.matched_rule_id,
             "classification_source": self.classification_source,
+            "depends_on": list(self.depends_on) if self.depends_on is not None else None,
         }
 
 
@@ -343,6 +386,7 @@ class ReportPack:
                     adaptation=rule.adaptation,
                     matched_rule_id=rule.rule_id,
                     classification_source="declared",
+                    depends_on=rule.depends_on,
                 )
         role, discovered_policy = _discover_classification(relative)
         return ReportPackFile(
@@ -354,6 +398,7 @@ class ReportPack:
                 else self.default_adaptation
             ),
             classification_source="discovered",
+            depends_on=None,
         )
 
     def inventory(self, relative_paths: Iterable[str] | None = None) -> list[ReportPackFile]:
@@ -378,6 +423,18 @@ class ReportPack:
             "manifest_sha256": self.manifest_sha256,
             "source_tree_sha256": self.source_tree_sha256,
             "prompt_references": list(self.prompt_references),
+            "file_rules": [
+                {
+                    "id": rule.rule_id,
+                    "match": rule.match,
+                    "role": rule.role,
+                    "adaptation": rule.adaptation,
+                    "depends_on": (
+                        list(rule.depends_on) if rule.depends_on is not None else None
+                    ),
+                }
+                for rule in self.rules
+            ],
             "execution": self.execution.as_dict() if self.execution else None,
             "capabilities": [capability.as_dict() for capability in self.capabilities],
         }

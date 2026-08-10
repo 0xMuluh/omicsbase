@@ -42,27 +42,48 @@ file_rules:
     match: code/load.R
     role: data_loader
     adaptation: required
+    depends_on:
+      - data_bindings
+      - study_manifest
   - id: analysis
     match: code/analysis.R
     role: analysis
     adaptation: required
+    depends_on:
+      - grouping_variable
+      - group_levels
+      - covariates
+      - workflow
   - id: validator
     match: code/validate.R
     role: validator
     adaptation: none
+    depends_on: []
   - id: report
     match: code/report.qmd
     role: page
     adaptation: inspect
+    depends_on:
+      - project_name
+      - question
+      - grouping_variable
+      - group_levels
+      - workflow
   - id: assembly
     match: code/_quarto.yml
     role: assembly
     adaptation: inspect
+    depends_on:
+      - report_pages
   - id: main
     match: code/main.R
     role: orchestrator
     adaptation: inspect
+    depends_on:
+      - workflow
+      - data_bindings
   - id: static
     match: README.md
     role: static
     adaptation: none
+    depends_on: []

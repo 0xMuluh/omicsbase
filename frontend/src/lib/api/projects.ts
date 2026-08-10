@@ -49,6 +49,7 @@ export const projectsApi = {
       method: "POST",
       body: JSON.stringify({ instruction }),
     }),
+  /**  Use the unified workspace agent stream. */
   assistantMessage: (projectId: string, message: string, history: ChatMessage[] = []) =>
     request<AssistantMessage>(`/projects/${projectId}/assistant`, {
       method: "POST",

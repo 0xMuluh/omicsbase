@@ -13,7 +13,11 @@ from app.services.workspace_agent import WorkspaceAgentExecutor, _read_results
 def test_registry_has_strict_edit_schema_and_hidden_render_alias():
     edit = TOOL_REGISTRY.require("edit_project", lens="workspace")
     assert edit.parameters["additionalProperties"] is False
-    assert edit.parameters["properties"]["edits"]["items"]["additionalProperties"] is False
+    assert set(edit.parameters["properties"]) == {"mode", "path", "search", "replace", "content", "patch", "edits", "allow_multiple", "reason", "expected_sha256", "approval"}
+    assert len(edit.parameters["oneOf"]) == 4
+    assert {branch["properties"]["mode"]["const"] for branch in edit.parameters["oneOf"]} == {"search_replace", "content", "patch", "batch"}
+    assert all(branch["additionalProperties"] is False for branch in edit.parameters["oneOf"])
+    assert "instruction" not in str(edit.parameters)
     assert TOOL_REGISTRY.require("repair_report", lens="workspace").advertised is False
     assert "render_report" in {item.name for item in TOOL_REGISTRY.advertised(lens="workspace", capabilities={"report_execution"})}
     assert "repair_report" not in {item.name for item in TOOL_REGISTRY.advertised(lens="workspace", capabilities={"report_execution"})}

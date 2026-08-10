@@ -28,15 +28,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/{project_id}/assistant", response_model=AssistantResponse)
+@router.post("/{project_id}/assistant", response_model=AssistantResponse, deprecated=True)
 async def assistant_message(
     project_id: str,
     data: AssistantRequest,
+    response: Response,
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Handle conversational workspace prompts without starting a background job."""
+    """Compatibility endpoint; new clients should use the unified agent stream."""
     project = get_project_for_tenant(db, project_id, tenant_id)
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f"</projects/{project_id}/agent/stream>; rel=\"successor-version\""
 
     from app.services.assistant import respond_to_prompt
 

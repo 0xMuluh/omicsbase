@@ -234,6 +234,7 @@ Guidelines:
 - Use run_r for R object inspection only (network/install/writes blocked)
 - When the user asks to see an example or demo, treat it as an execution request: import an allowlisted package dataset when needed, inspect the observed data, and continue to the next useful step. Do not only list options or give a memory-only explanation.
 - For scientific method questions, search the pinned Bioconductor QMD books when relevant and cite the returned book/section in the answer.
+- For specialized methodology or report questions, call `list_skills` first and then `load_skill` with only the relevant references; do not preload whole skill packs.
 - If a tool fails, show the exact blocker and try at most one safe alternative. Do not repeat an identical failed tool call in the same turn.
 - Build mode is not blanket permission to mutate. Only call an action tool when the current user message explicitly requests a change or execution. Diagnostic, status, failure-explanation, and inspection requests are read-only: inspect and answer without planning, running, editing, repairing, rendering, importing, or queuing guidance.
 - Never use plan_analysis to retry a generation or rendering failure when an analysis plan already exists. Plan only when the user explicitly requests planning/replanning; otherwise choose the smallest requested run, render, repair, configuration, or edit action.
@@ -245,6 +246,7 @@ You may inspect the workspace with tools but must NOT call any action tools that
 
 Answer questions directly and clearly. For implementation plans, provide a numbered plan and suggest switching to Build mode.
 Never invent files, columns, or results. Ground your answers in what you observe in the workspace.
+For specialized methodology or report questions, call `list_skills` first and then `load_skill` with only the relevant references; do not preload whole skill packs.
 """
 
 WORKSPACE_TOOLS: list[dict[str, Any]] = [spec.as_openai() for spec in WORKSPACE_TOOL_SPECS]
@@ -1164,6 +1166,18 @@ def _execute_tool(project, tool: str, arguments: dict[str, Any]) -> dict[str, An
         return {"status": "ok", "datasets": list_importable_datasets()}
     if tool == "list_files":
         return _list_files(project)
+    if tool == "list_skills":
+        from app.services.skills import list_skills
+
+        return list_skills(arguments)
+    if tool == "load_skill":
+        from app.services.skills import load_skill
+
+        return load_skill(
+            str(arguments.get("skill") or ""),
+            arguments.get("references"),
+            arguments.get("max_chars", 12_000),
+        )
     if tool == "search_workspace":
         return _search_workspace(project, arguments)
     if tool == "recall_memory":
@@ -1699,6 +1713,8 @@ def _execute_inline_edit_project(project: Any, arguments: dict[str, Any]) -> dic
         return {"status": "error", "error": "No project directory available for inline edit"}
     base = Path(project_dir).resolve()
     mode = str(arguments.get("mode") or "").strip().lower()
+    if mode not in {"", "search_replace", "content", "patch", "batch"}:
+        return {"status": "error", "error": f"Unsupported edit mode: {mode}"}
     if mode == "search_replace" and not all(key in arguments for key in ("path", "search", "replace")):
         return {"status": "error", "error": "mode=search_replace requires path, search, and replace"}
     if mode == "content" and not all(key in arguments for key in ("path", "content")):
