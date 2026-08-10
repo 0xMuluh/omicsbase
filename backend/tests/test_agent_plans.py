@@ -2,13 +2,16 @@ from types import SimpleNamespace
 
 from app.services.agent_plans import (
     DEAD_LETTER,
+    DONE,
     READY,
     WAITING,
+    append_continuation_step,
     attach_continuation_plan,
     build_continuation_plan,
     continuation_is_ready,
     continuation_prompt,
     get_continuation_plan,
+    mark_continuation_consumed,
     mark_continuation_running,
 )
 
@@ -106,3 +109,81 @@ def test_continuation_attempt_ceiling_dead_letters_plan():
     assert stored["status"] == DEAD_LETTER
     assert stored["requires_user"] is True
     assert run.resumable is False
+
+
+def test_appending_a_step_preserves_previous_progress_and_prompt():
+    run = _run()
+    first = build_continuation_plan(
+        run,
+        action="run_analysis",
+        dependency_kind="job",
+        dependency_id="job-1",
+        instruction="Run the first analysis",
+        dependency_status="completed",
+    )
+    attach_continuation_plan(run, first)
+    assert mark_continuation_running(run)["status"] == "running"
+
+    second = append_continuation_step(
+        run,
+        action="write_report",
+        dependency_kind="job",
+        dependency_id="job-2",
+        instruction="Write the report after the analysis",
+        arguments={"format": "html"},
+    )
+
+    assert second["status"] == WAITING
+    assert second["active_step_id"] == "step-2"
+    assert second["steps"][0]["status"] == DONE
+    assert second["steps"][1]["depends_on"] == ["step-1"]
+    assert "Step 2 of 2" in continuation_prompt(second)
+    assert "write_report" in continuation_prompt(second)
+
+
+def test_dag_steps_activate_in_deterministic_topological_order():
+    run = _run()
+    plan = build_continuation_plan(
+        run,
+        action="prepare",
+        dependency_kind="job",
+        dependency_id="job-1",
+        instruction="Prepare the input",
+        steps=[
+            {
+                "id": "step-1",
+                "action": "prepare",
+                "dependency_kind": "job",
+                "dependency_id": "job-1",
+                "instruction": "Prepare the input",
+                "dependency_status": "completed",
+                "status": READY,
+            },
+            {
+                "id": "step-2",
+                "action": "report",
+                "instruction": "Create the report",
+                "dependency_status": "completed",
+                "depends_on": ["step-1"],
+            },
+            {
+                "id": "step-3",
+                "action": "archive",
+                "instruction": "Archive the report",
+                "dependency_status": "completed",
+                "depends_on": ["step-1"],
+            },
+        ],
+    )
+    attach_continuation_plan(run, plan)
+
+    first_consumed = mark_continuation_consumed(run)
+    assert first_consumed["status"] == READY
+    assert first_consumed["active_step_id"] == "step-2"
+    assert first_consumed["steps"][1]["status"] == READY
+    assert first_consumed["steps"][2]["status"] == READY
+
+    second_consumed = mark_continuation_consumed(run)
+    assert second_consumed["status"] == READY
+    assert second_consumed["active_step_id"] == "step-3"
+    assert second_consumed["completed_steps"] == ["step-1", "step-2"]

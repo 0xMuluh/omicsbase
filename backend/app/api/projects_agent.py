@@ -151,11 +151,11 @@ async def workspace_agent_stream(
     from app.services.agent_runtime import build_run_event_metadata, record_project_message as persist_project_message
     from app.services.workspace_agent import stream_workspace_agent
     from app.services.agent_plans import (
-        attach_continuation_plan,
-        build_continuation_plan,
+        append_continuation_step,
         continuation_can_resume,
         continuation_prompt,
         get_continuation_plan,
+        mark_continuation_consumed,
         mark_continuation_running,
     )
 
@@ -836,7 +836,7 @@ async def workspace_agent_stream(
                 db.commit()
 
             if event.get("type") == "action_queued" and event.get("job_id"):
-                plan = build_continuation_plan(
+                append_continuation_step(
                     run,
                     action=str(event.get("action") or "workspace action"),
                     dependency_kind="job",
@@ -844,7 +844,6 @@ async def workspace_agent_stream(
                     instruction=str(user_message.content or data.message).strip(),
                     arguments=arguments,
                 )
-                attach_continuation_plan(run, plan)
 
             event_type = str(event.get("type") or event_type)
             if event_type in {"final", "action_queued", "cancelled"} and token_buffer:
@@ -883,7 +882,37 @@ async def workspace_agent_stream(
                         and bool(continuation)
                         and continuation.get("status") in {"waiting", "ready", "failed", "running"}
                     )
+                    or (
+                        event_type == "final"
+                        and bool(continuation)
+                        and continuation.get("status") == "waiting"
+                    )
                 )
+                if (
+                    not cancelled
+                    and not waiting_for_continuation
+                    and continuation
+                    and continuation.get("status") in {"ready", "failed", "running"}
+                ):
+                    consumed = mark_continuation_consumed(run)
+                    if consumed:
+                        continuation = consumed
+                        waiting_for_continuation = continuation.get("status") in {
+                            "waiting",
+                            "ready",
+                            "failed",
+                            "running",
+                        }
+                        record_stream_event(
+                            db,
+                            run,
+                            {
+                                "type": "continuation_consumed",
+                                "action": consumed.get("action"),
+                                "step_id": consumed.get("active_step_id"),
+                                "continuation_status": consumed.get("status"),
+                            },
+                        )
                 target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                 if run.status not in {"completed", "failed", "cancelled"}:
                     transition_agent_run(

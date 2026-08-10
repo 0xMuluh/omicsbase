@@ -86,6 +86,7 @@ ADAPTATION_ACTIONS = {"preserve", "parameterize", "extend", "replace"}
 
 MAX_ADAPT_CHUNK_CHARS = 28_000
 MAX_ADAPT_COMPLETE_FILE_CHARS = 64_000
+MAX_ADAPTATION_CALLS_PER_FILE = 8
 MAX_CONTEXT_CHARS = 28_000
 
 
@@ -744,6 +745,12 @@ async def _request_file_edits(
 ) -> AdaptationEdits | DeleteDecision | NoChangeDecision:
     """Inspect every complete-file/structural unit with one bounded request."""
     chunks = _split_source_units(file_content, target_file)
+    if len(chunks) > MAX_ADAPTATION_CALLS_PER_FILE:
+        raise AdaptationResponseError(
+            f"Adaptation for {target_file} would require {len(chunks)} model calls; "
+            f"the per-file safety bound is {MAX_ADAPTATION_CALLS_PER_FILE}. Split the "
+            "exemplar or declare a smaller report-pack adaptation surface."
+        )
     content_sha256 = _content_hash(file_content)
     decisions: list[tuple[AdaptationEdits | str | NoChangeDecision, str]] = []
     for chunk_index, (start, end, chunk) in enumerate(chunks, start=1):

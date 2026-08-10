@@ -1016,8 +1016,7 @@ async def note_thread_turn(
     if thread.status != "active":
         raise HTTPException(status_code=409, detail="Cannot add turns to an archived NoteThread")
     from app.services.agent_plans import (
-        attach_continuation_plan,
-        build_continuation_plan,
+        append_continuation_step,
         continuation_can_resume,
         continuation_prompt,
         get_continuation_plan,
@@ -1487,7 +1486,7 @@ async def note_thread_turn(
                     execution = output_event["execution"]
                     execution_id = execution.get("id")
                     if execution_id:
-                        plan = build_continuation_plan(
+                        append_continuation_step(
                             run,
                             action="run_r_cell",
                             dependency_kind="execution",
@@ -1496,7 +1495,6 @@ async def note_thread_turn(
                             arguments=output_event.get("tool_arguments") if isinstance(output_event.get("tool_arguments"), dict) else {},
                             dependency_status=str(execution.get("status") or "queued"),
                         )
-                        attach_continuation_plan(run, plan)
 
                 continuation = get_continuation_plan(run)
                 if (
@@ -1569,10 +1567,22 @@ async def note_thread_turn(
                     ):
                         consumed = mark_continuation_consumed(run)
                         if consumed:
+                            continuation = consumed
+                            waiting_for_continuation = continuation.get("status") in {
+                                "waiting",
+                                "ready",
+                                "failed",
+                                "running",
+                            }
                             record_stream_event(
                                 db,
                                 run,
-                                {"type": "continuation_consumed", "action": consumed.get("action")},
+                                {
+                                    "type": "continuation_consumed",
+                                    "action": consumed.get("action"),
+                                    "step_id": consumed.get("active_step_id"),
+                                    "continuation_status": consumed.get("status"),
+                                },
                             )
                     target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
                     if run.status not in {"completed", "failed", "cancelled"}:

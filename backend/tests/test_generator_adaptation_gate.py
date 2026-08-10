@@ -719,6 +719,28 @@ def test_oversized_source_uses_structural_units_without_gaps():
 
 
 
+@pytest.mark.asyncio
+async def test_oversized_adaptation_call_bound_fails_before_provider(monkeypatch):
+    chunks = [(index, index + 1, "x") for index in range(generator.MAX_ADAPTATION_CALLS_PER_FILE + 1)]
+    monkeypatch.setattr(
+        generator,
+        "_split_source_units",
+        lambda content, target_file: chunks,
+    )
+
+    with pytest.raises(generator.AdaptationResponseError, match="per-file safety bound"):
+        await generator._request_file_edits(
+            "Inspect the file",
+            "content",
+            system_prompt="system",
+            plan_json="{}",
+            file_descriptions="",
+            uploaded_file_paths={},
+            target_file="code/page.qmd",
+            generated_context={},
+        )
+
+
 def test_generation_rejects_a_single_contested_method_before_writing(tmp_path):
     plan = AnalysisPlan(
         project_name="Contested contract",
