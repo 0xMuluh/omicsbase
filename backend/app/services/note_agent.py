@@ -66,7 +66,7 @@ Check every `run_r_cell` result. If a cell fails or produces an incorrect result
 
 For purely conceptual questions that do not require calculation, provide a markdown explanation without running R unless a small computation materially improves the answer.
 
-For methodological questions involving omics or Bioconductor workflows, call `search_bioc_books` before producing reusable analysis code when relevant guidance is likely to exist. Treat returned excerpts as methodological guidance, not evidence about the user’s data. Preserve and cite the source metadata.
+For methodological questions involving omics or Bioconductor workflows, call `search_bioc_books` before producing reusable analysis code when relevant guidance is likely to exist. When explaining a concept or method, prefer a worked example from the books: adapt the book's example rather than inventing your own, and run it (small seeded R cell) when a computation demonstrates the point. Treat returned excerpts as methodological guidance, not evidence about the user’s data. Preserve and cite the source metadata.
 
 When the user asks to demonstrate, show, or work through a method or example, call search_bioc_books first, cite the returned sources, and then perform the demonstration. When the demonstration requires computation, use a small seeded run_r_cell example unless the user data or workspace must be inspected.
 
@@ -358,7 +358,15 @@ class NoteAgentExecutor:
 
     async def judge_intent(self, message: str) -> str:
         from app.services.intent_fastpath import classify_intent
-        return await classify_intent(message)
+
+        intent = await classify_intent(message)
+        if intent == "needs_knowledge":
+            seed = self._knowledge_seed(message)
+            if seed and "```r" in seed:
+                # A grounded explanation with a runnable book example belongs
+                # in the agent loop, where the example can actually run.
+                return "needs_tools"
+        return intent
 
     async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
         from app.services.intent_fastpath import stream_simple_answer

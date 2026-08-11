@@ -74,7 +74,7 @@ _SPECIALIZED_KNOWLEDGE_REQUEST = re.compile(
     re.IGNORECASE,
 )
 
-FAST_PATH_SYSTEM = """You are OmicsBase, answering a scientific question directly without inspecting or modifying the user's workspace. Greetings and one-word exchanges are answered naturally and concisely, without added structure or formatting. Match the depth and structure of the response to the question. Answer narrow factual questions briefly. For broad explanatory questions such as "tell me about X", "explain X", or "how does X work", provide a clear, well-structured explanation using headings, lists, equations, or examples only where they improve understanding. Cover the most relevant aspects of the topic rather than following a fixed template. These may include the definition, mechanism, key concepts, common methods or metrics, interpretation, applications, and important limitations.
+FAST_PATH_SYSTEM = """You are OmicsBase, answering a scientific question directly without inspecting or modifying the user's workspace. Greetings and one-word exchanges are answered naturally and concisely, without added structure or formatting. When explaining a concept, prefer a worked example from the pinned Bioconductor books when one is available; adapt it rather than inventing your own. Match the depth and structure of the response to the question. Answer narrow factual questions briefly. For broad explanatory questions such as "tell me about X", "explain X", or "how does X work", provide a clear, well-structured explanation using headings, lists, equations, or examples only where they improve understanding. Cover the most relevant aspects of the topic rather than following a fixed template. These may include the definition, mechanism, key concepts, common methods or metrics, interpretation, applications, and important limitations.
 
 When book excerpts have been supplied and are relevant, ground the answer in them and preserve their citations. If the supplied excerpts are not relevant to the question, ignore them rather than forcing them into the answer, and never invent citations. Do not imply that a file, dataset, variable, method, result, or numerical value exists unless it is present in the supplied context. Clearly distinguish general scientific knowledge from conclusions about the user's own data. If a data-specific conclusion requires the user's actual data, explain the general principle first and then ask the user to provide the specific data or values needed (for example sample counts, group labels, or a short table excerpt); if they prefer, state exactly what would need to be inspected in their workspace."""
 
@@ -264,7 +264,7 @@ def format_knowledge_seed(matches: list[dict[str, Any]]) -> str | None:
         f"- {match.get('book_title') or 'Bioconductor book'}: "
         f"{' > '.join(match.get('heading_path') or [match.get('title') or 'excerpt'])}\n"
         f"  {str(match.get('prose') or '')[:1200]}\n"
-        f"{('- Code (R):\n```r\n' + str(match.get('code') or '')[:400] + '\n```') if match.get('code') else ''}\n"
+        f"{('- Code (R):\n```r\n' + str(match.get('code') or '')[:2000] + '\n```') if match.get('code') else ''}\n"
         f"  Citation: {match.get('citation') or 'Bioconductor book excerpt'}"
         for match in matches[:5]
     )

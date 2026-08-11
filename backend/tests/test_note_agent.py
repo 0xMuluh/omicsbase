@@ -6,6 +6,8 @@ import asyncio
 import json
 import uuid
 
+import pytest
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -443,3 +445,49 @@ def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(bind=engine)
+
+
+@pytest.mark.asyncio
+async def test_note_judge_bridges_knowledge_with_runnable_example_to_agent_loop(monkeypatch):
+    """needs_knowledge with a runnable book example routes to the agent loop
+    so the worked example can actually run."""
+    from app.services import intent_fastpath
+    from app.services import note_agent as na_module
+
+    executor = na_module.NoteAgentExecutor(
+        message="explain multiple testing",
+        cells=[],
+        context={},
+        knowledge_search_handler=lambda args: {
+            "matches": [{"book_title": "OMA", "code": "p.adjust(x, method='BH')", "prose": "x", "citation": "c"}]
+        },
+    )
+
+    async def fake_classify(message):
+        return "needs_knowledge"
+
+    monkeypatch.setattr(intent_fastpath, "classify_intent", fake_classify)
+    intent = await executor.judge_intent("explain multiple testing")
+    assert intent == "needs_tools"
+
+
+@pytest.mark.asyncio
+async def test_note_judge_keeps_conceptual_without_runnable_example(monkeypatch):
+    from app.services import intent_fastpath
+    from app.services import note_agent as na_module
+
+    executor = na_module.NoteAgentExecutor(
+        message="what is a p-value?",
+        cells=[],
+        context={},
+        knowledge_search_handler=lambda args: {
+            "matches": [{"book_title": "OMA", "prose": "no code here", "citation": "c"}]
+        },
+    )
+
+    async def fake_classify(message):
+        return "conceptual"
+
+    monkeypatch.setattr(intent_fastpath, "classify_intent", fake_classify)
+    intent = await executor.judge_intent("what is a p-value?")
+    assert intent == "conceptual"

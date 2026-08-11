@@ -162,3 +162,16 @@ def test_resolve_target(monkeypatch):
     assert resolve_target("agent") == ("qwen", "qwen3.7-max")
     assert resolve_target("fast") == ("groq", "llama-3.3-70b-versatile")
     assert resolve_target("planner") == (None, None)
+
+
+def test_format_knowledge_seed_includes_full_worked_example():
+    """Worked R examples survive the seed cap (code excerpt up to 2000 chars)."""
+    from app.services.intent_fastpath import format_knowledge_seed
+
+    long_code = "# worked example\n" + ("p.adjust(p_values, method = 'BH')\n" * 20)
+    seed = format_knowledge_seed([
+        {"book_title": "OMA", "heading_path": ["diversity"], "prose": "excerpt", "code": long_code, "citation": "OMA"},
+    ])
+    assert "```r" in seed
+    assert len(long_code) > 400  # would have been truncated at the old cap
+    assert long_code in seed  # fully present at the new cap
