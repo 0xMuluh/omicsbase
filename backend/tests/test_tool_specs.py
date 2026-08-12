@@ -4,7 +4,7 @@ import asyncio
 
 from app.services import agent_core
 from app.services.agent_core import ToolCallResult, TurnBudget
-from app.services.note_agent import NoteAgentExecutor
+from app.services.note_agent import NOTE_AGENT_SYSTEM_PROMPT, NoteAgentExecutor
 from app.services.context_budget import bounded_json
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
 from app.services.workspace_agent import WorkspaceAgentExecutor, _read_results
@@ -72,6 +72,17 @@ def test_read_results_requires_named_artifact_and_reports_available_paths(tmp_pa
     named = _read_results(project, "output/results/answer.csv")
     assert named["status"] == "ok"
     assert named["rows"] == [{"group": "A", "value": "2"}]
+
+
+def test_note_contract_does_not_prescribe_notebook_choreography():
+    assert "For each logical analysis step" not in NOTE_AGENT_SYSTEM_PROMPT
+    assert "Do not impose a fixed" in NOTE_AGENT_SYSTEM_PROMPT
+    assert "Never claim a computed value" in NOTE_AGENT_SYSTEM_PROMPT
+    assert "consequential study-design ambiguity" in NOTE_AGENT_SYSTEM_PROMPT
+    assert "call `list_skills` first" not in NOTE_AGENT_SYSTEM_PROMPT
+    assert "Use `list_skills` and `load_skill` only when" in NOTE_AGENT_SYSTEM_PROMPT
+    assert "code" not in TOOL_REGISTRY.require("add_note", lens="note").description.lower()
+    assert "queued or running execution is not a result" in TOOL_REGISTRY.require("run_r_cell", lens="note").description
 
 
 class _DuplicateExecutor:

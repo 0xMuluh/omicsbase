@@ -171,6 +171,37 @@ def _execution_payload(execution: CellExecution) -> dict:
     }
 
 
+def _note_execution_observation_payload(execution_payload: dict[str, Any], cell_payload: dict[str, Any], *, turn_id: str) -> dict[str, Any]:
+    """Shape an execution result without treating queued work as success."""
+    status = str((execution_payload or {}).get("status") or "unknown").lower()
+    metadata = (execution_payload or {}).get("result_metadata") or {}
+    if status == "completed":
+        observation_status = "ok"
+    elif status in {"queued", "running", "cancel_requested"}:
+        observation_status = "pending"
+    else:
+        observation_status = "error"
+    stderr = str(
+        metadata.get("stderr_preview")
+        or (execution_payload or {}).get("error")
+        or ""
+    )[:4000]
+    return {
+        "status": observation_status,
+        "stdout": str(metadata.get("stdout_preview") or "")[:4000],
+        "stderr": stderr,
+        "summary": {
+            "execution_status": status,
+            "output_chars": metadata.get("output_chars", 0),
+            "output_truncated": bool(metadata.get("output_truncated")),
+            "had_errors": bool(metadata.get("had_errors")) or status != "completed",
+        },
+        "cell": cell_payload,
+        "execution": execution_payload,
+        "turn_id": turn_id,
+    }
+
+
 def _event_payload(event: NoteExecutionEvent) -> dict:
     return {
         "id": str(event.id),
@@ -1159,24 +1190,7 @@ async def note_thread_turn(
                 timeout_seconds,
                 cancel_check=lambda: run_cancel_requested(db, str(run.id)),
             )
-        return {
-            "status": "ok",
-            "stdout": str(((execution_payload or {}).get("result_metadata") or {}).get("stdout_preview") or "")[:4000],
-            "stderr": (
-                str(execution_payload.get("error") or "")[:4000]
-                if str(execution_payload.get("status") or "") in {"failed", "timed_out", "cancelled"}
-                else ""
-            ),
-            "summary": {
-                "execution_status": str(execution_payload.get("status") or "queued"),
-                "output_chars": ((execution_payload or {}).get("result_metadata") or {}).get("output_chars", 0),
-                "output_truncated": bool(((execution_payload or {}).get("result_metadata") or {}).get("output_truncated")),
-                "had_errors": bool(((execution_payload or {}).get("result_metadata") or {}).get("had_errors")),
-            },
-            "cell": cell_payload,
-            "execution": execution_payload,
-            "turn_id": turn_id,
-        }
+        return _note_execution_observation_payload(execution_payload, cell_payload, turn_id=turn_id)
 
     def knowledge_search_handler(arguments: dict) -> dict:
         from app.services.bioc_knowledge import search_bioc_knowledge

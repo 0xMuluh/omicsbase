@@ -71,6 +71,36 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
     assert "run_r_cell" not in str(started.get("message"))
 
 
+def test_note_execution_observation_preserves_truthful_status():
+    from app.api.projects_notes import _note_execution_observation_payload
+
+    queued = _note_execution_observation_payload(
+        {"id": "execution-1", "status": "queued", "result_metadata": {}},
+        {"id": "cell-1"},
+        turn_id="turn-1",
+    )
+    assert queued["status"] == "pending"
+    assert queued["summary"]["execution_status"] == "queued"
+    assert queued["summary"]["had_errors"] is True
+
+    completed = _note_execution_observation_payload(
+        {"id": "execution-2", "status": "completed", "result_metadata": {"stdout_preview": "42\n"}},
+        {"id": "cell-2"},
+        turn_id="turn-2",
+    )
+    assert completed["status"] == "ok"
+    assert completed["stdout"] == "42\n"
+    assert completed["summary"]["had_errors"] is False
+
+    failed = _note_execution_observation_payload(
+        {"id": "execution-3", "status": "failed", "error": "missing package", "result_metadata": {}},
+        {"id": "cell-3"},
+        turn_id="turn-3",
+    )
+    assert failed["status"] == "error"
+    assert failed["stderr"] == "missing package"
+
+
 def _setup_db():
     engine = create_engine(
         "sqlite://",
