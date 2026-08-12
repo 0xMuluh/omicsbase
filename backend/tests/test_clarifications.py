@@ -300,3 +300,56 @@ def test_chat_origin_planning_never_auto_builds(monkeypatch):
 def json_dumps(data: dict) -> str:
     import json
     return json.dumps(data)
+
+
+def test_fallback_rejects_custom_plan_instead_of_substituting_default():
+    with pytest.raises(
+        planner.CustomPlanRequiresPlannerError,
+        match="No default workflow was substituted",
+    ):
+        planner._build_default_plan(
+            "Compare two groups",
+            [],
+            custom_plan_text="Use a longitudinal mixed-effects model with subject random intercepts.",
+            study_manifest=MANIFEST_WITH_GROUPS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_planner_rejects_custom_plan(monkeypatch):
+    from app.services import providers
+
+    monkeypatch.setattr(providers, "is_configured", lambda _provider: False)
+
+    with pytest.raises(
+        planner.CustomPlanRequiresPlannerError,
+        match="No default workflow was substituted",
+    ):
+        await planner.generate_plan(
+            "Compare treatment vs control",
+            [],
+            custom_plan_text="Use a longitudinal mixed-effects model with subject random intercepts.",
+            study_manifest=MANIFEST_WITH_GROUPS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_llm_parse_failure_rejects_custom_plan(monkeypatch):
+    from app.services import providers
+
+    async def fail(**_kwargs):
+        raise ValueError("invalid planner response")
+
+    monkeypatch.setattr(providers, "is_configured", lambda _provider: True)
+    monkeypatch.setattr(planner, "call_llm", fail)
+
+    with pytest.raises(
+        planner.CustomPlanRequiresPlannerError,
+        match="No default workflow was substituted",
+    ):
+        await planner.generate_plan(
+            "Compare treatment vs control",
+            [],
+            custom_plan_text="Use a longitudinal mixed-effects model with subject random intercepts.",
+            study_manifest=MANIFEST_WITH_GROUPS,
+        )

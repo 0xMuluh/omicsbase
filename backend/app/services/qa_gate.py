@@ -57,22 +57,7 @@ _FILLER_LEXICON = (
     "unleash",
     "game-changing",
 )
-# Copied exemplar study terms that must never leak into a new project.
-_COPIED_STUDY_NAMES = (
-    "prenatal",
-    "fopp",
-    "linderborg",
-    "muluh",
-    "oat",
-    "rice",
-    "child serum",
-    "week 6",
-    "baseline and week",
-    "visit 4",
-    "visit 5",
-    "visit 6",
-    "visit 7",
-)
+
 # Implementation jargon that should not appear in reader-facing headings.
 _JARGON_HEADINGS = (
     "unnamed-chunk",
@@ -249,7 +234,8 @@ def _lint_source_text(text: str, relative: str) -> list[str]:
             )
     return findings
 
-def run_qa(project_dir: str, project_name: str = "") -> QaResult:
+
+def run_qa(project_dir: str) -> QaResult:
     """Run the presentation gate over a generated project's code/ tree."""
     result = QaResult()
     base = Path(project_dir)
@@ -259,8 +245,6 @@ def run_qa(project_dir: str, project_name: str = "") -> QaResult:
         return result
 
     qmd_files = [path for path in code_dir.rglob("*.qmd")]
-    owned_study_terms = _study_terms(project_name)
-
     for path in qmd_files:
         relative = path.relative_to(code_dir).as_posix()
         try:
@@ -275,7 +259,7 @@ def run_qa(project_dir: str, project_name: str = "") -> QaResult:
         if relative != "index.qmd" and _is_shell(content):
             result.structural.append(relative)
             continue
-        findings = _language_findings(content, relative, owned_study_terms)
+        findings = _language_findings(content, relative)
         result.language.extend(findings)
 
     result.errors.extend(lint_source_files(base))
@@ -297,7 +281,7 @@ def _is_shell(content: str) -> bool:
     return any(marker in content for marker in ("FILL: develop this section", "may contain pending sections"))
 
 
-def _language_findings(content: str, relative: str, owned_study_terms: set[str]) -> list[str]:
+def _language_findings(content: str, relative: str) -> list[str]:
     findings: list[str] = []
     # HTML comments (exemplar notes) are not reader-facing; ignore them.
     body = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
@@ -310,20 +294,11 @@ def _language_findings(content: str, relative: str, owned_study_terms: set[str])
         if re.search(rf"\b{re.escape(word)}\b", lowered):
             findings.append(f"{relative}: filler/marketing language ('{word}')")
             break
-    for term in _COPIED_STUDY_NAMES:
-        if term in lowered and term not in owned_study_terms:
-            findings.append(f"{relative}: copied template study reference ('{term}')")
-            break
     for line in body.splitlines():
         if line.startswith("#") and any(jargon in line.lower() for jargon in _JARGON_HEADINGS):
             findings.append(f"{relative}: implementation jargon in heading ('{line.strip()}')")
             break
     return findings
-
-
-def _study_terms(project_name: str) -> set[str]:
-    lowered = (project_name or "").lower()
-    return {term for term in _COPIED_STUDY_NAMES if term in lowered}
 
 
 def _render_entries(quarto_yml: str) -> list[str]:

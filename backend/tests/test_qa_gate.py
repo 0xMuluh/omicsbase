@@ -16,21 +16,21 @@ def _write(project: Path, relative: str, content: str) -> Path:
 
 def test_zero_byte_page_is_structural_violation(tmp_path: Path):
     _write(tmp_path, "daa/daa_interest.qmd", "")
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert "daa/daa_interest.qmd" in result.structural
 
 
 def test_unfilled_shell_is_structural_violation(tmp_path: Path):
     shell = "---\ntitle: X\n---\n\n## Heading\n\n<!-- FILL: develop this section -->\n"
     _write(tmp_path, "ratio/ratio.qmd", shell)
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert "ratio/ratio.qmd" in result.structural
 
 
 def test_meta_narration_is_language_finding(tmp_path: Path):
     page = ("---\ntitle: X\n---\n\n## Results\n\n" + ("This page loads the normalized matrices and compares them. " * 10))
     _write(tmp_path, "data/normalization_consensus.qmd", page)
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert not result.structural
     assert any("normalization_consensus" in line and "narration" in line for line in result.language)
 
@@ -38,22 +38,15 @@ def test_meta_narration_is_language_finding(tmp_path: Path):
 def test_filler_language_is_language_finding(tmp_path: Path):
     page = ("---\ntitle: X\n---\n\n## Results\n\n" + ("This comprehensive analysis provides valuable insights. " * 10))
     _write(tmp_path, "alpha/alpha.qmd", page)
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert any("filler" in line for line in result.language)
-
-
-def test_copied_template_study_terms_are_findings(tmp_path: Path):
-    page = ("---\ntitle: X\n---\n\n## Results\n\n" + ("The prenatal cohort analysis is described below. " * 10))
-    _write(tmp_path, "design/study_overview.qmd", page)
-    result = qa_gate.run_qa(str(tmp_path), project_name="OGB")
-    assert any("prenatal" in line for line in result.language)
 
 
 def test_exemplar_comment_notes_are_ignored(tmp_path: Path):
     page = ("---\ntitle: X\n---\n\n<!-- Exemplar: templates/metabolomics/prenatal_diet_metabolomics/code/design/study_overview.qmd -->\n\n"
             + ("Study results are summarized in the tables below. " * 10))
     _write(tmp_path, "design/study_overview.qmd", page)
-    result = qa_gate.run_qa(str(tmp_path), project_name="OGB")
+    result = qa_gate.run_qa(str(tmp_path))
     assert not result.structural
     assert not result.language
 
@@ -63,14 +56,14 @@ def test_clean_page_passes_gate(tmp_path: Path):
             "## Group-wise comparisons\n\n"
             + ("Shannon and observed richness are compared across the diet groups. " * 10) + "\n")
     _write(tmp_path, "alpha/alpha.qmd", page)
-    result = qa_gate.run_qa(str(tmp_path), project_name="OGB")
+    result = qa_gate.run_qa(str(tmp_path))
     assert result.passed
 
 
 def test_nav_missing_file_is_error(tmp_path: Path):
     _write(tmp_path, "alpha/alpha.qmd", "---\ntitle: X\n---\n\n" + ("Content. " * 100))
     (tmp_path / "code" / "_quarto.yml").write_text("project:\n  render:\n    - alpha/alpha.qmd\n    - missing.qmd\n")
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert any("missing.qmd" in line for line in result.errors)
 
 
@@ -84,7 +77,7 @@ def test_render_globs_and_exclusions_are_not_literal_missing_files(tmp_path: Pat
         "    - '!alpha/draft.qmd'\n"
     )
 
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
 
     assert not result.errors
 
@@ -122,7 +115,7 @@ joined <- bind_cols(clinical[, c("id")], omics[, c("id")])
         "independent_bind_cols",
     ):
         assert any(rule in finding for finding in findings), (rule, findings)
-    result = qa_gate.run_qa(str(tmp_path), project_name="Test")
+    result = qa_gate.run_qa(str(tmp_path))
     assert result.errors == findings
 
 

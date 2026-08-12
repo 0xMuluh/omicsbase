@@ -415,7 +415,7 @@ Adapt it to the current study by returning ONLY targeted SEARCH/REPLACE edits:
 - Never rewrite the file: anything you do not edit stays exactly as the template has it.
 - Do not rename objects, artifact files, helper functions, or the data-construction approach; the rest of the project loads them.
 - Write in the template's voice — a careful analyst reporting the study. No "This page...", no workflow/method meta-commentary, no filler.
-- Do not leave template study references (oat, rice, prenatal, FOPP, linderborg, child serum, Muluh, or any copied visit/diet/cohort detail) in any text you touch.
+- Do not carry exemplar-specific names, cohort labels, paths, measurements, or narrative into the current study. Use only the current plan, validated study manifest, uploaded-file evidence, and declared ReportPack dependencies for study-specific values.
 - Keep sections whose source artifacts do not exist yet, saying what artifact is missing.
 
 Return ONLY one of:
@@ -2078,7 +2078,7 @@ async def generate_project(
         return removed
 
     _report("qa_gate", "running", {"detail": "Checking presentation directives"})
-    qa = run_qa(project_dir=project_dir, project_name=plan.project_name)
+    qa = run_qa(project_dir=project_dir)
     if qa.structural:
         removed = _prune_structural_findings(qa.structural)
         _report(
@@ -2086,7 +2086,7 @@ async def generate_project(
             "running",
             {"detail": f"Pruned {len(removed)} unfilled/empty page(s): {', '.join(removed)}"},
         )
-        qa = run_qa(project_dir=project_dir, project_name=plan.project_name)
+        qa = run_qa(project_dir=project_dir)
 
     if qa.language and settings.qa_repair_rounds > 0:
         _report("qa_gate", "running", {"detail": f"Repairing {len(qa.language)} language finding(s)"})
@@ -2260,10 +2260,10 @@ async def generate_project(
             blocked_language,
             source="Language QA repair",
         )
-        qa = run_qa(project_dir=project_dir, project_name=plan.project_name)
+        qa = run_qa(project_dir=project_dir)
         if qa.structural:
             _prune_structural_findings(qa.structural)
-        qa = run_qa(project_dir=project_dir, project_name=plan.project_name)
+        qa = run_qa(project_dir=project_dir)
 
     if adaptation_manifest is not None and pack_metadata is not None:
         _finalize_adaptation_outcomes(base, adaptation_outcomes)

@@ -25,6 +25,10 @@ from app.services.spawner import (
 logger = logging.getLogger(__name__)
 
 
+class CustomPlanRequiresPlannerError(RuntimeError):
+    """Raised when a supplied plan cannot be safely mapped by the fallback."""
+
+
 def _answers_by_id(clarifications: list[ClarificationAnswer] | None) -> dict[str, list[str]]:
     return {answer.id: answer.values for answer in (clarifications or [])}
 
@@ -369,8 +373,21 @@ def _build_default_plan(
     study_manifest: dict | None = None,
     answers: dict[str, list[str]] | None = None,
 ) -> AnalysisPlan | ClarificationRequest:
-    """Generate a high-quality scientific rule-based analysis plan fallback."""
+    """Generate a deterministic plan only when no user plan needs mapping.
+
+    The fallback contains a product default workflow. It cannot faithfully
+    translate arbitrary user-supplied prose into executable steps, so using it
+    with a custom plan would silently replace the user's requested analysis.
+    """
     from app.schemas.schemas import WorkflowStep
+
+    if custom_plan_text and custom_plan_text.strip():
+        raise CustomPlanRequiresPlannerError(
+            "A user-provided analysis plan could not be mapped into an executable "
+            "workflow because the language-model planner was unavailable or failed. "
+            "No default workflow was substituted; retry planning after restoring the "
+            "planner or provide a supported structured plan."
+        )
 
     answers = answers or {}
     detected = []
