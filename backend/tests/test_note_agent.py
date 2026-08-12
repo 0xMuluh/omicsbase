@@ -18,7 +18,11 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThread
 from app.models.runs import AgentRun, RunTelemetry
-from app.services import note_agent
+from app.services import agent_core, note_agent
+
+
+async def _drain(stream):
+    return [event async for event in stream]
 
 
 def test_note_agent_preserves_native_tool_history(monkeypatch):
@@ -81,7 +85,7 @@ def test_note_execution_observation_preserves_truthful_status():
     )
     assert queued["status"] == "pending"
     assert queued["summary"]["execution_status"] == "queued"
-    assert queued["summary"]["had_errors"] is True
+    assert queued["summary"]["had_errors"] is False
 
     completed = _note_execution_observation_payload(
         {"id": "execution-2", "status": "completed", "result_metadata": {"stdout_preview": "42\n"}},
@@ -99,6 +103,89 @@ def test_note_execution_observation_preserves_truthful_status():
     )
     assert failed["status"] == "error"
     assert failed["stderr"] == "missing package"
+
+
+def test_note_short_followup_keeps_durable_history():
+    from types import SimpleNamespace
+
+    prior_revision = SimpleNamespace(
+        cell_type="markdown",
+        language=None,
+        content="CLR is useful here because it centers sample-wise compositional effects.",
+        revision_metadata={},
+    )
+    prior_cell = SimpleNamespace(position=0, created_at=0, revisions=[prior_revision])
+    executor = note_agent.NoteAgentExecutor(
+        message="Why?",
+        cells=[prior_cell],
+        context={"cells": [{"content": prior_revision.content}]},
+    )
+
+    assert executor.deterministic_intent("Why?") == "needs_tools"
+    messages = executor.build_messages("Why?")
+    assert messages[0]["content"] == prior_revision.content
+
+
+def _run_scripted_note_tool(monkeypatch, message, tool_name, arguments):
+    provider_calls = []
+    action_calls = []
+    scripts = [
+        tool_turn(tool_name, arguments),
+        text_turn("The requested notebook action is complete."),
+    ]
+
+    async def fake_stream(**kwargs):
+        provider_calls.append(kwargs["messages"])
+        for event in scripts[len(provider_calls) - 1]:
+            yield event
+
+    async def action_handler(name, _arguments):
+        action_calls.append(name)
+        return {"status": "ok", "cell": {"id": f"{name}-cell"}}
+
+    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    executor = note_agent.NoteAgentExecutor(
+        message=message,
+        cells=[],
+        context={},
+        action_handler=action_handler,
+    )
+    executor.use_fast_path = lambda _message: False
+    events = asyncio.run(_drain(agent_core.run_agent_loop(executor, message)))
+    return action_calls, events, provider_calls
+
+
+def test_note_interaction_uses_computation_without_unrequested_note(monkeypatch):
+    action_calls, _events, _provider_calls = _run_scripted_note_tool(
+        monkeypatch,
+        "Calculate this",
+        "run_r_cell",
+        {"code": "mean(c(1, 2, 3))", "purpose": "Calculate the requested value"},
+    )
+    assert action_calls == ["run_r_cell"]
+
+
+def test_note_interaction_uses_add_note_only_for_documentation(monkeypatch):
+    action_calls, _events, _provider_calls = _run_scripted_note_tool(
+        monkeypatch,
+        "Document that decision",
+        "add_note",
+        {"text": "Excluded S17 because contamination exceeded the threshold."},
+    )
+    assert action_calls == ["add_note"]
+
+
+def test_note_conceptual_answer_uses_no_notebook_tool(monkeypatch):
+    async def fake_stream_simple_answer(message, knowledge_context=None):
+        yield {"type": "final", "message": "Shannon diversity measures within-sample diversity.", "fast": True}
+
+    monkeypatch.setattr("app.services.intent_fastpath.stream_simple_answer", fake_stream_simple_answer)
+    executor = note_agent.NoteAgentExecutor(message="What is Shannon diversity?", cells=[], context={})
+    executor.use_fast_path = lambda _message: True
+    events = asyncio.run(_drain(agent_core.run_agent_loop(executor, "What is Shannon diversity?")))
+
+    assert events[-1]["fast"] is True
+    assert not any(event["type"] in {"tool_started", "note_cell", "execution_queued"} for event in events)
 
 
 def _setup_db():
@@ -481,7 +568,7 @@ def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
 async def test_note_judge_keeps_knowledge_with_runnable_example_on_fast_path(monkeypatch):
     """Retrieved code must not turn a knowledge answer into execution."""
     from app.services import intent_fastpath
-    from app.services import note_agent as na_module
+    from app.services import agent_core, note_agent as na_module
 
     executor = na_module.NoteAgentExecutor(
         message="explain multiple testing",
@@ -503,7 +590,7 @@ async def test_note_judge_keeps_knowledge_with_runnable_example_on_fast_path(mon
 @pytest.mark.asyncio
 async def test_note_judge_keeps_conceptual_without_runnable_example(monkeypatch):
     from app.services import intent_fastpath
-    from app.services import note_agent as na_module
+    from app.services import agent_core, note_agent as na_module
 
     executor = na_module.NoteAgentExecutor(
         message="what is a p-value?",

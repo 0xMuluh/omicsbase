@@ -47,10 +47,6 @@ interpretation, methodology, or explicitly requested documentation. Use both
 when a computed result should be preserved with explanatory context. Never
 add a note merely because an analysis step exists.
 
-When computation is needed, keep each cell focused on one coherent operation.
-Exceed that boundary only when the operations are tightly related or when a
-small correction is needed after an execution error.
-
 Notebook cells share one persistent R workspace. Variables created earlier remain available later, and previously attached packages remain attached. Reuse existing objects and do not reload large datasets unnecessarily. Load only packages or data that are missing.
 
 Keep computational cells focused on the requested operation. Do not combine
@@ -418,6 +414,7 @@ class NoteAgentExecutor:
             "step": step,
             "message": friendly_tool_label(tool_name),
         }]
+        spec = TOOL_REGISTRY.get(tool_name, lens="note")
         if tool_name == "list_skills":
             from app.services.skills import list_skills
 
@@ -430,7 +427,7 @@ class NoteAgentExecutor:
                 arguments.get("references"),
                 arguments.get("max_chars", 12_000),
             )
-        elif tool_name not in {"inspect_note", "search_bioc_books", "run_r_cell", "add_note", "promote_to_workspace", "inspect_data_files"}:
+        elif spec is None:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
         elif self.action_handler is None:
             observation = {"status": "error", "error": "NoteThread tools are unavailable"}

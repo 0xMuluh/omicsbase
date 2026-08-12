@@ -83,6 +83,7 @@ def test_note_contract_does_not_prescribe_notebook_choreography():
     assert "Use `list_skills` and `load_skill` only when" in NOTE_AGENT_SYSTEM_PROMPT
     assert "code" not in TOOL_REGISTRY.require("add_note", lens="note").description.lower()
     assert "queued or running execution is not a result" in TOOL_REGISTRY.require("run_r_cell", lens="note").description
+    assert "2-4 sentences" not in TOOL_REGISTRY.require("add_note", lens="note").parameters["properties"]["text"]["description"]
 
 
 class _DuplicateExecutor:

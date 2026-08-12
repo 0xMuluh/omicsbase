@@ -63,6 +63,13 @@ def test_deterministic_gate_handles_clear_cases_and_defers_ambiguity():
     assert deterministic_intent("Which ordination method works best for compositional data?", lens="workspace") == "needs_knowledge"
 
 
+def test_note_short_followups_keep_notebook_context():
+    assert deterministic_intent("Why?", lens="note", notebook_state=True) == "needs_tools"
+    assert deterministic_intent("How?", lens="note", notebook_state=True) == "needs_tools"
+    assert deterministic_intent("Why?", lens="note", notebook_state=False) is None
+    assert deterministic_intent("are you there", lens="note", notebook_state=True) is None
+
+
 def test_demonstration_gate_routes_explicit_examples_to_the_agent_loop():
     assert deterministic_intent("lets do a little example", lens="note") == "needs_tools"
     assert deterministic_intent("show me an example of a t-test", lens="workspace") == "needs_tools"

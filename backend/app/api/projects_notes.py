@@ -194,7 +194,7 @@ def _note_execution_observation_payload(execution_payload: dict[str, Any], cell_
             "execution_status": status,
             "output_chars": metadata.get("output_chars", 0),
             "output_truncated": bool(metadata.get("output_truncated")),
-            "had_errors": bool(metadata.get("had_errors")) or status != "completed",
+            "had_errors": bool(metadata.get("had_errors")) or status in {"failed", "timed_out", "cancelled", "completed_with_errors"},
         },
         "cell": cell_payload,
         "execution": execution_payload,

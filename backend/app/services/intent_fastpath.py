@@ -31,6 +31,11 @@ _CONTEXT_REFERENCE = re.compile(
 _DEICTIC_REFERENCE = re.compile(
     r"\b(?:this|that|these|those|it|here|above|below|selected|current)\b"
 )
+_AMBIGUOUS_FOLLOW_UP = re.compile(
+    r"^(?:why|how|what now|what next|then what|and then|which one|what about|"
+    r"can you elaborate|explain|go on|continue|more)(?:\s+\w+){0,3}\??$",
+    re.IGNORECASE,
+)
 _NOTE_OPERATION = re.compile(
     r"^(?:calculate|compute|run|execute|load|import|inspect|read|plot|compare|"
     r"summari[sz]e|analy[sz]e|continue|retry|rerun|resume|use|show|render|repair|fix|build|edit|change|update|set|check|describe|list|search|find|validate|review)\b"
@@ -135,6 +140,11 @@ def deterministic_intent(
         or _CONTEXT_REFERENCE.search(text)
         or len(text.split()) <= 4
     ):
+        return "needs_tools"
+
+    if lens == "note" and notebook_state and _AMBIGUOUS_FOLLOW_UP.fullmatch(text):
+        # Short follow-ups need the durable notebook conversation. Do not let
+        # the direct-answer path guess what a bare "why?" refers to.
         return "needs_tools"
 
     if _PROCEDURE_REQUEST.match(text):
