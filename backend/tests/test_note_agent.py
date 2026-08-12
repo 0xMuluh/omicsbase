@@ -91,7 +91,7 @@ def _setup_db():
     return engine, testing_session
 
 
-def test_demonstration_fast_path_persists_grounding_citations(monkeypatch, tmp_path):
+def test_knowledge_fast_path_persists_grounding_citations(monkeypatch, tmp_path):
     engine, testing_session = _setup_db()
     client = TestClient(app)
     headers = {"X-Tenant-ID": "tenant_demo", "X-User-ID": "user_demo"}
@@ -125,7 +125,7 @@ def test_demonstration_fast_path_persists_grounding_citations(monkeypatch, tmp_p
         response = client.post(
             f"/api/notes/{thread_id}/turn",
             headers=headers,
-            json={"message": "show me an example of a t-test"},
+            json={"message": "what is FDR?"},
         )
         assert response.status_code == 200
 
@@ -448,9 +448,8 @@ def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_note_judge_bridges_knowledge_with_runnable_example_to_agent_loop(monkeypatch):
-    """needs_knowledge with a runnable book example routes to the agent loop
-    so the worked example can actually run."""
+async def test_note_judge_keeps_knowledge_with_runnable_example_on_fast_path(monkeypatch):
+    """Retrieved code must not turn a knowledge answer into execution."""
     from app.services import intent_fastpath
     from app.services import note_agent as na_module
 
@@ -468,7 +467,7 @@ async def test_note_judge_bridges_knowledge_with_runnable_example_to_agent_loop(
 
     monkeypatch.setattr(intent_fastpath, "classify_intent", fake_classify)
     intent = await executor.judge_intent("explain multiple testing")
-    assert intent == "needs_tools"
+    assert intent == "needs_knowledge"
 
 
 @pytest.mark.asyncio

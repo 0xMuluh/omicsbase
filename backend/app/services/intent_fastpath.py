@@ -146,7 +146,10 @@ def deterministic_intent(
         or _DEMONSTRATION_USER_CONTEXT.search(text)
     )
     if demonstration_request:
-        return "needs_tools" if user_context else "needs_knowledge"
+        # An explicit demonstration is an execution request. The agent loop can
+        # retrieve grounding and decide whether a seeded computation is
+        # useful; source code alone must not make that decision.
+        return "needs_tools"
 
     if _SPECIALIZED_KNOWLEDGE_REQUEST.search(text):
         return "needs_tools" if user_context else "needs_knowledge"

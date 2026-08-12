@@ -32,8 +32,8 @@ CASES: tuple[dict[str, Any], ...] = (
     {"name": "continuation", "message": "Continue", "lens": "workspace", "expected": "needs_tools"},
     {"name": "note_follow_up", "message": "What does this output contain?", "lens": "note", "notebook_state": True, "expected": "needs_tools"},
     {"name": "method_selection", "message": "Which ordination method works best for compositional data?", "lens": "workspace", "expected": "needs_knowledge"},
-    {"name": "demonstration_example", "message": "lets do a little example", "lens": "note", "expected": "needs_knowledge"},
-    {"name": "demonstration_t_test", "message": "show me an example of a t-test", "lens": "note", "expected": "needs_knowledge"},
+    {"name": "demonstration_example", "message": "lets do a little example", "lens": "note", "expected": "needs_tools"},
+    {"name": "demonstration_t_test", "message": "show me an example of a t-test", "lens": "note", "expected": "needs_tools"},
     {"name": "specialized_fdr_definition", "message": "what is FDR?", "lens": "workspace", "expected": "needs_knowledge"},
     {"name": "analysis_regression", "message": "run the analysis", "lens": "workspace", "expected": "needs_tools"},
     # Greetings are model territory: no hardcoded vocabulary, judge decides.
