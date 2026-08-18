@@ -158,3 +158,56 @@ def test_execution_provenance_endpoint_is_empty_before_a_run(workspace):
     response = client.get(f"/api/projects/{project.id}/execution-runs")
     assert response.status_code == 200
     assert response.json() == {"runs": []}
+
+
+def _tree_nodes(nodes):
+    result = []
+    for node in nodes:
+        result.append(node)
+        result.extend(_tree_nodes(node.get("children") or []))
+    return result
+
+
+def test_file_tree_exposes_the_project_root_and_editability(workspace):
+    project, root, _file_path = workspace
+    (root / "data").mkdir()
+    (root / "data" / "input.csv").write_text("sample,value\nA,1\n")
+    (root / "preprocessing").mkdir()
+    (root / "preprocessing" / "prepare.R").write_text("message(\"prepare\")\n")
+    (root / "output").mkdir()
+    (root / "output" / "index.html").write_text("<html></html>\n")
+    (root / "report_pack.yaml").write_text("schema_version: \"1.0\"\n")
+
+    response = TestClient(app).get(f"/api/projects/{project.id}/files/tree")
+
+    assert response.status_code == 200
+    nodes = _tree_nodes(response.json())
+    by_path = {node["path"]: node for node in nodes}
+    assert {"code", "data", "preprocessing", "output", "report_pack.yaml"}.issubset(by_path)
+    assert by_path["code/analysis.R"]["editable"] is True
+    assert by_path["preprocessing/prepare.R"]["editable"] is True
+    assert by_path["data/input.csv"]["editable"] is False
+    assert by_path["output/index.html"]["editable"] is False
+    assert by_path["report_pack.yaml"]["editable"] is False
+
+
+def test_browser_cannot_edit_project_inputs_or_contracts(workspace):
+    project, root, _file_path = workspace
+    data_file = root / "data" / "input.csv"
+    data_file.parent.mkdir()
+    data_file.write_text("sample,value\nA,1\n")
+    contract = root / "execution_contract.json"
+    contract.write_text("{}\n")
+    client = TestClient(app)
+
+    for relative_path in ("data/input.csv", "execution_contract.json"):
+        response = client.patch(
+            f"/api/projects/{project.id}/files/content/{relative_path}",
+            headers={"If-Match": "*"},
+            json={"content": "changed\n"},
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"]["code"] == "protected_project_file"
+
+    assert data_file.read_text() == "sample,value\nA,1\n"
+    assert contract.read_text() == "{}\n"

@@ -16,8 +16,6 @@ from app.config import settings
 from app.database import get_db
 from app.models.project import Job, Project, ProjectMessage, UploadedFile
 from app.schemas.schemas import (
-    AssistantRequest,
-    AssistantResponse,
     JobOut,
     ProjectMessageOut,
     WorkspaceAgentRequest,
@@ -28,27 +26,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/{project_id}/assistant", response_model=AssistantResponse, deprecated=True)
-async def assistant_message(
-    project_id: str,
-    data: AssistantRequest,
-    response: Response,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_current_tenant),
-):
-    """Compatibility endpoint; new clients should use the unified agent stream."""
-    project = get_project_for_tenant(db, project_id, tenant_id)
-    response.headers["Deprecation"] = "true"
-    response.headers["Link"] = f"</projects/{project_id}/agent/stream>; rel=\"successor-version\""
-
-    from app.services.assistant import respond_to_prompt
-
-    result = await respond_to_prompt(project, data.message, history=data.history)
-    return AssistantResponse(
-        type=result["type"],
-        message=result["message"],
-        instruction=result.get("instruction"),
-    )
 
 
 @router.get("/{project_id}/messages", response_model=list[ProjectMessageOut])
@@ -379,68 +356,48 @@ async def workspace_agent_stream(
             finally:
                 title_db.close()
 
-        def inline_action_handler(action: str, arguments: dict):
-            from app.services.agent_runtime import record_agent_action
-            from app.services.data_acquisition import fetch_url_into_study, import_package_dataset
+        from app.services.workspace_handlers import (
+            make_inline_action_handler,
+            make_knowledge_search_handler,
+            make_plan_handler,
+            make_render_handler,
+        )
 
-            if action == "import_package_data":
-                result = import_package_dataset(
-                    db,
-                    project,
-                    package=str(arguments.get("package") or ""),
-                    dataset=str(arguments.get("dataset") or ""),
-                    role=str(arguments.get("role") or "auto"),
-                )
-            elif action == "fetch_url":
-                result = fetch_url_into_study(
-                    db,
-                    project,
-                    url=str(arguments.get("url") or ""),
-                    filename=arguments.get("filename"),
-                    role=str(arguments.get("role") or "auto"),
-                )
-            else:
-                result = {"status": "error", "error": f"Unsupported inline action: {action}"}
+        inline_action_handler = make_inline_action_handler(db, project)
+        knowledge_search_handler = make_knowledge_search_handler(db)
+        render_handler = make_render_handler(db, project)
+        plan_handler = make_plan_handler(db, project)
 
-            db.refresh(project)
-            status = "completed" if result.get("status") != "error" else "failed"
-            record_agent_action(
-                db,
+        if settings.agent_backend == "opencode":
+            from app.services.opencode_client import stream_opencode
+            from app.services.spawner import exemplar_root
+
+            domain = getattr(project, "domain", None) or "microbiome"
+            template_path = exemplar_root(domain)
+            project_dir = Path(settings.projects_dir) / str(project.id)
+            project_dir.mkdir(parents=True, exist_ok=True)
+
+            stream_source = stream_opencode(
+                project_dir=project_dir,
+                instruction=data.message,
+                provider=agent_provider,
+                model=agent_model,
+                reference_template=template_path,
+                session_id=str(project.id),
+            )
+        else:
+            stream_source = stream_workspace_agent(
                 project,
-                action,
-                status,
-                (
-                    f"{action} completed"
-                    if status == "completed"
-                    else f"{action} failed: {result.get('error', 'unknown error')}"
-                ),
-                {"arguments": arguments, "result": result},
-            )
-            return result
-
-        def knowledge_search_handler(arguments: dict):
-            from app.services.bioc_knowledge import search_bioc_knowledge
-
-            try:
-                limit = max(1, min(8, int(arguments.get("limit") or 5)))
-            except (TypeError, ValueError):
-                limit = 5
-            return search_bioc_knowledge(
-                db,
-                str(arguments.get("query") or ""),
-                channel=str(arguments.get("channel") or "stable"),
-                limit=limit,
-                source_slug=arguments.get("book") or None,
+                agent_request,
+                persisted_history,
+                inline_action_handler=inline_action_handler,
+                knowledge_search_handler=knowledge_search_handler,
+                render_handler=render_handler,
+                plan_handler=plan_handler,
+                cancel_check=lambda: run_cancel_requested(db, str(run.id)),
             )
 
-        async for event in stream_workspace_agent(
-            project,
-            agent_request,
-            persisted_history,
-            inline_action_handler=inline_action_handler,
-            knowledge_search_handler=knowledge_search_handler,
-            cancel_check=lambda: run_cancel_requested(db, str(run.id)),
-        ):
+        async for event in stream_source:
             event = dict(event)
             event_type = str(event.get("type") or "stream_event")
             if event_type == "usage":
@@ -1130,7 +1087,7 @@ def _queue_agent_planning(
 ) -> Job:
     from app.api.projects_pipeline import _dispatch_task
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import run_planning
+    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
 
     files = db.query(UploadedFile).filter(UploadedFile.project_id == project.id).all()
     data_files = [f for f in files if f.file_role != "analysis_plan"]
@@ -1154,12 +1111,12 @@ def _queue_agent_planning(
         job_id=str(job.id),
     )
     _dispatch_task(
-        run_planning,
+        run_agent_job,
         project,
         job,
         db,
         background_tasks,
-        task_kwargs={"allow_auto_build": False},
+        task_kwargs={"instruction": PLAN_INSTRUCTION, "job_kind": "plan"},
     )
     return job
 
@@ -1171,7 +1128,7 @@ def _queue_agent_edit(
     background_tasks: BackgroundTasks,
 ) -> Job:
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import run_editing
+    from app.tasks.analysis import edit_instruction, run_agent_job
 
     job = Job(project_id=project.id, job_type="edit", status="pending")
     db.add(job)
@@ -1189,9 +1146,9 @@ def _queue_agent_edit(
         job_id=str(job.id),
     )
     if settings.task_backend.lower() == "celery":
-        run_editing.delay(str(project.id), str(job.id), instruction=instruction)
+        run_agent_job.delay(str(project.id), str(job.id), instruction=edit_instruction(instruction), job_kind="edit")
     elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(run_editing, str(project.id), str(job.id), instruction=instruction)
+        background_tasks.add_task(run_agent_job, str(project.id), str(job.id), instruction=edit_instruction(instruction), job_kind="edit")
     else:
         raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
     return job
@@ -1204,7 +1161,7 @@ def _queue_agent_render(
 ) -> Job:
     from app.api.projects_pipeline import _dispatch_task
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import run_rendering
+    from app.tasks.analysis import run_agent_job
 
     job = Job(project_id=project.id, job_type="render", status="pending")
     db.add(job)
@@ -1213,7 +1170,20 @@ def _queue_agent_render(
     db.refresh(job)
     set_agent_state(db, project, "rendering", "Rendering report")
     record_agent_action(db, project, "render", "started", "Workspace agent requested a render", job_id=str(job.id))
-    _dispatch_task(run_rendering, project, job, db, background_tasks)
+    _dispatch_task(
+        run_agent_job,
+        project,
+        job,
+        db,
+        background_tasks,
+        task_kwargs={
+            "instruction": (
+                "Render the report now with render_report. If it fails, read the errors, "
+                "repair the workspace source, and render again until it passes."
+            ),
+            "job_kind": "render",
+        },
+    )
     return job
 
 
@@ -1228,7 +1198,7 @@ def _queue_agent_generation(
         raise ValueError("The project has no analysis plan to execute.")
 
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import run_generation
+    from app.tasks.analysis import BUILD_INSTRUCTION, run_agent_job
 
     job = Job(project_id=project.id, job_type="generate", status="pending")
     db.add(job)
@@ -1245,20 +1215,9 @@ def _queue_agent_generation(
         job_id=str(job.id),
     )
     if settings.task_backend.lower() == "celery":
-        run_generation.delay(
-            str(project.id),
-            str(job.id),
-            target_recipe_id=target_recipe_id,
-            resume_from_checkpoint=resume_from_checkpoint,
-        )
+        run_agent_job.delay(str(project.id), str(job.id), instruction=BUILD_INSTRUCTION, job_kind="generate")
     elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(
-            run_generation,
-            str(project.id),
-            str(job.id),
-            target_recipe_id=target_recipe_id,
-            resume_from_checkpoint=resume_from_checkpoint,
-        )
+        background_tasks.add_task(run_agent_job, str(project.id), str(job.id), instruction=BUILD_INSTRUCTION, job_kind="generate")
     else:
         raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
     return job

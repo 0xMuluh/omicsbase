@@ -1,4 +1,0 @@
-interface:
-  display_name: "Static Report Publishing"
-  short_description: "Package and publish static reports"
-  default_prompt: "Use $static-report-publishing to package and validate a static research report release."

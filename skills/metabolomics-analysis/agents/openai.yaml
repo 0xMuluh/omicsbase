@@ -1,4 +1,0 @@
-interface:
-  display_name: "Metabolomics Analysis"
-  short_description: "Generate and review metabolomics workflows"
-  default_prompt: "Use $metabolomics-analysis to create or update a metabolomics analysis workflow from raw data and an analysis plan."

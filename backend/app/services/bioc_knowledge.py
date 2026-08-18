@@ -26,13 +26,22 @@ import yaml
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.knowledge import (
     BiocBookDocument,
     BiocBookSnapshot,
     BiocBookSource,
     BiocKnowledgeChunk,
+    BiocKnowledgeEmbedding,
     BiocKnowledgeSyncRun,
     BiocKnowledgeTermDf,
+)
+from app.services.bioc_embeddings import (
+    EmbeddingUnavailable,
+    cosine_similarity,
+    embed_texts,
+    pack_embedding,
+    unpack_embedding,
 )
 
 logger = logging.getLogger(__name__)
@@ -613,6 +622,116 @@ def sync_catalog(
     return summary
 
 
+def _chunk_embedding_text(chunk: BiocKnowledgeChunk) -> str:
+    """Build the stable text representation used for semantic retrieval."""
+
+    heading = " > ".join(str(item) for item in (chunk.heading_path or []) if str(item).strip())
+    parts = [heading, str(chunk.prose or "").strip()]
+    if chunk.code:
+        parts.append(f"R code:\n{str(chunk.code).strip()}")
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def _embedding_status(
+    db: Session,
+    snapshot: BiocBookSnapshot,
+    chunks: list[BiocKnowledgeChunk] | None = None,
+) -> dict[str, Any]:
+    """Ensure the configured model has vectors for a published snapshot."""
+
+    model_name = str(getattr(settings, "bioc_knowledge_embedding_model", "") or "").strip()
+    if not bool(getattr(settings, "bioc_knowledge_semantic_enabled", True)):
+        return {"status": "disabled", "model": model_name or None}
+    if not model_name:
+        return {"status": "unavailable", "error": "No embedding model configured"}
+
+    if chunks is None:
+        chunks = (
+            db.query(BiocKnowledgeChunk)
+            .join(BiocBookDocument, BiocKnowledgeChunk.document_id == BiocBookDocument.id)
+            .filter(BiocBookDocument.snapshot_id == snapshot.id)
+            .order_by(BiocKnowledgeChunk.ordinal.asc())
+            .all()
+        )
+    if not chunks:
+        return {"status": "complete", "model": model_name, "embedded": 0, "total": 0}
+
+    chunk_ids = [str(chunk.id) for chunk in chunks]
+    existing = (
+        db.query(BiocKnowledgeEmbedding)
+        .filter(
+            BiocKnowledgeEmbedding.model_name == model_name,
+            BiocKnowledgeEmbedding.chunk_id.in_(chunk_ids),
+        )
+        .all()
+    )
+    existing_by_chunk = {str(item.chunk_id): item for item in existing}
+    missing = [
+        chunk
+        for chunk in chunks
+        if (
+            str(chunk.id) not in existing_by_chunk
+            or existing_by_chunk[str(chunk.id)].content_sha256 != str(chunk.content_sha256)
+        )
+    ]
+    if not missing:
+        dimension = existing[0].dimension if existing else None
+        return {
+            "status": "complete",
+            "model": model_name,
+            "embedded": len(existing),
+            "total": len(chunks),
+            "dimension": dimension,
+        }
+
+    try:
+        vectors = embed_texts(
+            [_chunk_embedding_text(chunk) for chunk in missing],
+            model_name=model_name,
+            batch_size=int(getattr(settings, "bioc_knowledge_embedding_batch_size", 32) or 32),
+        )
+    except EmbeddingUnavailable as exc:
+        logger.warning(
+            "Semantic Bioconductor retrieval unavailable for snapshot %s: %s",
+            snapshot.id,
+            exc,
+        )
+        return {"status": "unavailable", "model": model_name, "error": str(exc)[:500]}
+    except Exception as exc:
+        logger.exception("Semantic Bioconductor embedding failed for snapshot %s", snapshot.id)
+        return {"status": "unavailable", "model": model_name, "error": str(exc)[:500]}
+
+    if len(vectors) != len(missing):
+        return {
+            "status": "unavailable",
+            "model": model_name,
+            "error": "Embedding model returned an unexpected vector count",
+        }
+
+    dimensions: set[int] = set()
+    for chunk, vector in zip(missing, vectors):
+        payload, dimension = pack_embedding(vector)
+        dimensions.add(dimension)
+        item = existing_by_chunk.get(str(chunk.id))
+        if item is None:
+            item = BiocKnowledgeEmbedding(
+                chunk_id=str(chunk.id),
+                model_name=model_name,
+            )
+            db.add(item)
+        item.dimension = dimension
+        item.vector = payload
+        item.content_sha256 = str(chunk.content_sha256)
+    db.flush()
+    return {
+        "status": "complete",
+        "model": model_name,
+        "embedded": len(chunks),
+        "total": len(chunks),
+        "dimension": max(dimensions) if dimensions else None,
+    }
+
+
 def _index_snapshot(
     db: Session,
     *,
@@ -639,6 +758,10 @@ def _index_snapshot(
             existing.requested_ref = requested_ref[:255]
             existing.updated_at = _now()
             db.flush()
+        embedding_metadata = _embedding_status(db, existing)
+        snapshot_metadata = dict(existing.snapshot_metadata or {})
+        snapshot_metadata["semantic_embedding"] = embedding_metadata
+        existing.snapshot_metadata = snapshot_metadata
         return existing
 
     if existing is None:
@@ -664,6 +787,7 @@ def _index_snapshot(
     document_count = 0
     chunk_count = 0
     term_doc_counts: Counter[str] = Counter()
+    indexed_chunks: list[BiocKnowledgeChunk] = []
     paths = list(iter_qmd_files(root))
     for path in paths:
         relative_path = path.relative_to(root).as_posix()
@@ -704,6 +828,7 @@ def _index_snapshot(
                 chunk_metadata=_safe_json(block.metadata),
             )
             db.add(chunk)
+            indexed_chunks.append(chunk)
             chunk_count += 1
     db.query(BiocKnowledgeTermDf).filter(BiocKnowledgeTermDf.snapshot_id == snapshot.id).delete()
     for term, doc_count in term_doc_counts.items():
@@ -713,6 +838,11 @@ def _index_snapshot(
     snapshot.status = "published" if channel == "stable" else "preview"
     snapshot.published_at = _now()
     snapshot.updated_at = _now()
+    db.flush()
+    embedding_metadata = _embedding_status(db, snapshot, indexed_chunks)
+    snapshot_metadata = dict(snapshot.snapshot_metadata or {})
+    snapshot_metadata["semantic_embedding"] = embedding_metadata
+    snapshot.snapshot_metadata = snapshot_metadata
     db.flush()
     _supersede_previous_snapshots(db, snapshot)
     return snapshot
@@ -750,63 +880,30 @@ def _source_file_url(
     return book_url
 
 
-_SEARCH_CACHE: dict[tuple[str, str, int, str | None], tuple[float, list[dict[str, Any]], dict[str, Any] | None]] = {}
+_SEARCH_CACHE: dict[
+    tuple[str, str, int, str | None, bool, str],
+    tuple[float, list[dict[str, Any]], dict[str, Any] | None, str],
+] = {}
 SEARCH_CACHE_TTL_SECONDS = 300
+RRF_K = 60.0
 
 
-def search_bioc_knowledge(
+def _semantic_candidate_limit(limit: int) -> int:
+    configured = int(getattr(settings, "bioc_knowledge_semantic_candidate_limit", 64) or 64)
+    return max(limit, min(200, max(16, configured)))
+
+
+def _lexical_ranked(
     db: Session,
+    snapshot_ids: list[str],
     query: str,
-    *,
-    channel: str = DEFAULT_CHANNEL,
-    limit: int = 6,
-    source_slug: str | None = None,
-) -> dict[str, Any]:
-    """Return cited QMD prose/code recipes relevant to a scientific question.
+    query_terms: set[str],
+    candidate_limit: int,
+) -> list[tuple[float, tuple[Any, Any, Any, Any]]]:
+    """Return the existing deterministic lexical ranking."""
 
-    Ranking and recall are identical to the full-scan implementation; the
-    speedup comes from loading only ``search_text`` for candidate scoring and
-    fetching full rows just for the top results, plus a short-lived cache for
-    repeated searches within the same process.
-    """
-    query = " ".join(str(query or "").split())
-    if not query:
-        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
-    if channel not in SUPPORTED_CHANNELS:
-        return {"status": "error", "error": f"Unsupported channel: {channel}"}
-
-    limit = max(1, min(limit, 20))
-    cache_key = (query, channel, limit, source_slug)
-    now = time.monotonic()
-    cached = _SEARCH_CACHE.get(cache_key)
-    if cached and now - cached[0] < SEARCH_CACHE_TTL_SECONDS:
-        return {
-            "status": "ok",
-            "query": query,
-            "matches": cached[1],
-            "knowledge_snapshot": cached[2],
-            "cached": True,
-            "retrieval_policy": "QMD source excerpts are methodological guidance; project data and executed results remain authoritative.",
-        }
-
-    query_tokens = set(_tokens(query))
-    query_terms = set(query_tokens)
-    snapshots_query = db.query(BiocBookSnapshot).filter(
-        BiocBookSnapshot.status == ("published" if channel == "stable" else "preview"),
-        BiocBookSnapshot.channel == channel,
-    )
-    if source_slug:
-        snapshots_query = snapshots_query.join(BiocBookSource).filter(BiocBookSource.slug == source_slug)
-    snapshots = snapshots_query.all()
-    snapshot_ids = [snapshot.id for snapshot in snapshots]
-    if not snapshot_ids:
-        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
-
-    # Phase 1: per-term document frequencies from the precomputed table and
-    # candidate chunk ids via the trigram-backed substring index (a superset
-    # of the token-overlap candidates, so recall cannot shrink).
     if not query_terms:
-        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
+        return []
     df_rows = (
         db.query(BiocKnowledgeTermDf.term, func.sum(BiocKnowledgeTermDf.doc_count))
         .filter(
@@ -831,8 +928,7 @@ def search_bioc_knowledge(
             .all()
         }
     else:
-        # Fallback: term-frequency table not populated (pre-backfill). Rebuild
-        # the frequencies from a narrow projection with identical semantics.
+        # Fallback for snapshots indexed before the term-frequency backfill.
         narrow_rows = (
             db.query(BiocKnowledgeChunk.id, BiocKnowledgeChunk.search_text)
             .join(BiocBookDocument, BiocKnowledgeChunk.document_id == BiocBookDocument.id)
@@ -848,11 +944,10 @@ def search_bioc_knowledge(
                 document_frequency[term] = document_frequency.get(term, 0) + 1
             if query_terms & terms:
                 candidate_ids.add(chunk_id)
-    if not candidate_ids:
-        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
 
-    # Phase 2: full rows only for candidates; scoring identical to the
-    # previous full-scan pass.
+    if not candidate_ids:
+        return []
+
     chunk_rows = (
         db.query(BiocKnowledgeChunk, BiocBookDocument, BiocBookSnapshot, BiocBookSource)
         .join(BiocBookDocument, BiocKnowledgeChunk.document_id == BiocBookDocument.id)
@@ -878,11 +973,190 @@ def search_bioc_knowledge(
             score += 0.25
         ranked.append((score, row))
     ranked.sort(key=lambda item: (-item[0], item[1][1].relative_path, item[1][0].ordinal))
+    return ranked[:candidate_limit]
+
+
+def _semantic_ranked(
+    db: Session,
+    snapshots: list[BiocBookSnapshot],
+    query: str,
+    candidate_limit: int,
+) -> tuple[list[tuple[float, tuple[Any, Any, Any, Any]]], bool]:
+    """Return local semantic candidates and whether the index was available."""
+
+    if not bool(getattr(settings, "bioc_knowledge_semantic_enabled", True)):
+        return [], False
+    model_name = str(getattr(settings, "bioc_knowledge_embedding_model", "") or "").strip()
+    if not model_name or not snapshots:
+        return [], False
+    snapshot_ids = [str(snapshot.id) for snapshot in snapshots]
+    has_embeddings = (
+        db.query(BiocKnowledgeEmbedding.id)
+        .join(BiocKnowledgeChunk, BiocKnowledgeEmbedding.chunk_id == BiocKnowledgeChunk.id)
+        .join(BiocBookDocument, BiocKnowledgeChunk.document_id == BiocBookDocument.id)
+        .filter(
+            BiocBookDocument.snapshot_id.in_(snapshot_ids),
+            BiocKnowledgeEmbedding.model_name == model_name,
+        )
+        .first()
+    )
+    if has_embeddings is None:
+        # Do not download/load an embedding model for an index that has not
+        # been backfilled yet. Lexical retrieval remains immediately usable.
+        return [], False
+    try:
+        query_vector = embed_texts(
+            [query],
+            model_name=model_name,
+            batch_size=1,
+        )[0]
+    except (EmbeddingUnavailable, IndexError) as exc:
+        logger.debug("Semantic knowledge query unavailable: %s", exc)
+        return [], False
+    except Exception as exc:
+        logger.warning("Semantic knowledge query failed; using lexical retrieval: %s", exc)
+        return [], False
+
+    rows = (
+        db.query(
+            BiocKnowledgeEmbedding,
+            BiocKnowledgeChunk,
+            BiocBookDocument,
+            BiocBookSnapshot,
+            BiocBookSource,
+        )
+        .join(BiocKnowledgeChunk, BiocKnowledgeEmbedding.chunk_id == BiocKnowledgeChunk.id)
+        .join(BiocBookDocument, BiocKnowledgeChunk.document_id == BiocBookDocument.id)
+        .join(BiocBookSnapshot, BiocBookDocument.snapshot_id == BiocBookSnapshot.id)
+        .join(BiocBookSource, BiocBookSnapshot.source_id == BiocBookSource.id)
+        .filter(
+            BiocBookSnapshot.id.in_(snapshot_ids),
+            BiocKnowledgeEmbedding.model_name == model_name,
+        )
+        .all()
+    )
+    ranked: list[tuple[float, tuple[Any, Any, Any, Any]]] = []
+    for embedding, chunk, document, snapshot, source in rows:
+        vector = unpack_embedding(embedding.vector, int(embedding.dimension or 0))
+        if vector is None:
+            continue
+        score = cosine_similarity(query_vector, vector)
+        ranked.append((score, (chunk, document, snapshot, source)))
+    ranked.sort(key=lambda item: (-item[0], item[1][1].relative_path, item[1][0].ordinal))
+    return ranked[:candidate_limit], bool(ranked)
+
+
+def _fuse_ranked(
+    lexical: list[tuple[float, tuple[Any, Any, Any, Any]]],
+    semantic: list[tuple[float, tuple[Any, Any, Any, Any]]],
+    limit: int,
+) -> list[tuple[float, tuple[Any, Any, Any, Any], float | None, float | None, str]]:
+    """Fuse complementary rankings without putting either score on a false scale."""
+
+    rows: dict[str, tuple[Any, Any, Any, Any]] = {}
+    fused: dict[str, float] = {}
+    lexical_scores: dict[str, float] = {}
+    semantic_scores: dict[str, float] = {}
+
+    for rank, (score, row) in enumerate(lexical, start=1):
+        key = str(row[0].id)
+        rows[key] = row
+        lexical_scores[key] = score
+        fused[key] = fused.get(key, 0.0) + 0.45 / (RRF_K + rank)
+
+    for rank, (score, row) in enumerate(semantic, start=1):
+        key = str(row[0].id)
+        rows[key] = row
+        semantic_scores[key] = score
+        fused[key] = fused.get(key, 0.0) + 0.55 / (RRF_K + rank)
+
+    ordered = sorted(
+        rows,
+        key=lambda key: (
+            -fused[key],
+            rows[key][1].relative_path,
+            rows[key][0].ordinal,
+        ),
+    )
+    result = []
+    for key in ordered[:limit]:
+        has_lexical = key in lexical_scores
+        has_semantic = key in semantic_scores
+        method = "hybrid" if has_lexical and has_semantic else ("semantic" if has_semantic else "lexical")
+        result.append(
+            (
+                fused[key],
+                rows[key],
+                lexical_scores.get(key),
+                semantic_scores.get(key),
+                method,
+            )
+        )
+    return result
+
+
+def search_bioc_knowledge(
+    db: Session,
+    query: str,
+    *,
+    channel: str = DEFAULT_CHANNEL,
+    limit: int = 6,
+    source_slug: str | None = None,
+    book: str | None = None,
+) -> dict[str, Any]:
+    """Return cited QMD prose/code recipes using hybrid local retrieval."""
+
+    source_slug = source_slug or book
+    query = " ".join(str(query or "").split())
+    if not query:
+        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
+    if channel not in SUPPORTED_CHANNELS:
+        return {"status": "error", "error": f"Unsupported channel: {channel}"}
+
+    limit = max(1, min(limit, 20))
+    semantic_enabled = bool(getattr(settings, "bioc_knowledge_semantic_enabled", True))
+    model_name = str(getattr(settings, "bioc_knowledge_embedding_model", "") or "").strip()
+    cache_key = (query, channel, limit, source_slug, semantic_enabled, model_name)
+    now = time.monotonic()
+    cached = _SEARCH_CACHE.get(cache_key)
+    if cached and now - cached[0] < SEARCH_CACHE_TTL_SECONDS:
+        return {
+            "status": "ok",
+            "query": query,
+            "matches": cached[1],
+            "knowledge_snapshot": cached[2],
+            "cached": True,
+            "retrieval_method": cached[3],
+            "retrieval_policy": "Local semantic retrieval is fused with exact lexical matching; QMD source excerpts are methodological guidance and executed project results remain authoritative.",
+        }
+
+    snapshots_query = db.query(BiocBookSnapshot).filter(
+        BiocBookSnapshot.status == ("published" if channel == "stable" else "preview"),
+        BiocBookSnapshot.channel == channel,
+    )
+    if source_slug:
+        snapshots_query = snapshots_query.join(BiocBookSource).filter(BiocBookSource.slug == source_slug)
+    snapshots = snapshots_query.all()
+    snapshot_ids = [snapshot.id for snapshot in snapshots]
+    if not snapshot_ids:
+        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
+
+    candidate_limit = _semantic_candidate_limit(limit)
+    query_terms = set(_tokens(query))
+    lexical = _lexical_ranked(db, snapshot_ids, query, query_terms, candidate_limit)
+    semantic, semantic_available = _semantic_ranked(db, snapshots, query, candidate_limit)
+    fused = _fuse_ranked(lexical, semantic, limit)
+    if not fused:
+        return {"status": "ok", "query": query, "matches": [], "knowledge_snapshot": None}
+
     matches = []
-    for score, (chunk, document, snapshot, source) in ranked[:limit]:
+    for fused_score, (chunk, document, snapshot, source), lexical_score, semantic_score, retrieval_method in fused:
         matches.append(
             {
-                "score": round(score, 3),
+                "score": round(fused_score, 6),
+                "lexical_score": round(lexical_score, 6) if lexical_score is not None else None,
+                "semantic_score": round(semantic_score, 6) if semantic_score is not None else None,
+                "retrieval_method": retrieval_method,
                 "book_slug": source.slug,
                 "book_title": source.title,
                 "channel": snapshot.channel,
@@ -901,15 +1175,22 @@ def search_bioc_knowledge(
                 "citation": _citation(source, snapshot, document, chunk),
             }
         )
-    _SEARCH_CACHE[cache_key] = (now, matches, _snapshot_label(snapshots))
-    if len(_SEARCH_CACHE) > 128:
-        _SEARCH_CACHE.clear()
+    retrieval_method = (
+        "hybrid" if semantic_available and lexical
+        else ("semantic" if semantic_available else "lexical")
+    )
+    snapshot_label = _snapshot_label(snapshots)
+    if not semantic_enabled or semantic_available:
+        _SEARCH_CACHE[cache_key] = (now, matches, snapshot_label, retrieval_method)
+        if len(_SEARCH_CACHE) > 128:
+            _SEARCH_CACHE.clear()
     return {
         "status": "ok",
         "query": query,
         "matches": matches,
-        "knowledge_snapshot": _snapshot_label(snapshots),
-        "retrieval_policy": "QMD source excerpts are methodological guidance; project data and executed results remain authoritative.",
+        "knowledge_snapshot": snapshot_label,
+        "retrieval_method": retrieval_method,
+        "retrieval_policy": "Local semantic retrieval is fused with exact lexical matching; QMD source excerpts are methodological guidance and executed project results remain authoritative.",
     }
 
 
@@ -944,8 +1225,22 @@ def knowledge_status(db: Session) -> dict[str, Any]:
     sources = db.query(BiocBookSource).order_by(BiocBookSource.title.asc()).all()
     snapshots = db.query(BiocBookSnapshot).order_by(BiocBookSnapshot.updated_at.desc()).all()
     runs = db.query(BiocKnowledgeSyncRun).order_by(BiocKnowledgeSyncRun.started_at.desc()).limit(20).all()
+    semantic_model = str(getattr(settings, "bioc_knowledge_embedding_model", "") or "").strip()
+    semantic_embeddings = (
+        db.query(func.count(BiocKnowledgeEmbedding.id))
+        .filter(BiocKnowledgeEmbedding.model_name == semantic_model)
+        .scalar()
+        if semantic_model
+        else 0
+    )
     return {
         "index_version": INDEX_VERSION,
+        "semantic_retrieval": {
+            "enabled": bool(getattr(settings, "bioc_knowledge_semantic_enabled", True)),
+            "model": semantic_model or None,
+            "embedding_count": int(semantic_embeddings or 0),
+            "candidate_limit": _semantic_candidate_limit(6),
+        },
         "sources": [
             {
                 "id": str(source.id),

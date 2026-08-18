@@ -245,4 +245,5 @@ def test_import_package_dataset_registers_files(tmp_path, monkeypatch):
     )
     assert result["status"] == "ok"
     assert len(result["files"]) == 2
+    assert {item["role"] for item in result["files"]} == {"other"}
     assert (tmp_path / "uploads" / "proj-1").exists()

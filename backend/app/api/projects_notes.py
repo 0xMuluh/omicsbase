@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import asyncio
 import hashlib
+import re
 import shutil
 import time
 from pathlib import Path
@@ -66,6 +67,28 @@ from app.services.note_execution import (
 )
 
 router = APIRouter()
+
+_DEMONSTRATION_METHOD = (
+    r"(?:test(?:\s+statistic)?|method(?:ology)?|analysis|statistic(?:al)?|"
+    r"algorithm|p[-\s]?value|fdr|false\s+discovery\s+rate|diversity|model|"
+    r"correlation|permanova|t[-\s]?test|wilcoxon|anova|regression|ordination|"
+    r"normalization|differential\s+abundance)"
+)
+_DEMONSTRATION_REQUEST = re.compile(
+    r"(?:"
+    rf"\b(?:demonstrat(?:e|ion)|demo|show)\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    rf"|\bwalk\s+(?:me\s+)?through\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    rf"|\blet(?:s|\x27s)\s+do\b.{{0,120}}\b(?:example|{_DEMONSTRATION_METHOD})\b"
+    r"|\b(?:do|run)\b.{0,100}\b(?:example|demonstration|demo)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_demonstration_request(message: str) -> bool:
+    """Return whether a message explicitly asks for a method demonstration."""
+    text = " ".join(str(message or "").strip().lower().split())
+    return bool(_DEMONSTRATION_REQUEST.search(text))
 logger = logging.getLogger(__name__)
 
 
@@ -1040,8 +1063,7 @@ async def note_thread_turn(
     from fastapi.responses import StreamingResponse
 
     message = data.message.strip()
-    from app.services.intent_fastpath import is_demonstration_request
-    demonstration_request = is_demonstration_request(message)
+    demonstration_request = _is_demonstration_request(message)
     if not message:
         raise HTTPException(status_code=422, detail="The notebook message cannot be blank")
 
@@ -1171,6 +1193,10 @@ async def note_thread_turn(
     agent_message = continuation_prompt(continuation_plan) if continuation_resume and continuation_plan else message
     generated_code_cells = 0
     generated_note_cells = 0
+    max_generated_code_cells = max(
+        1,
+        int(getattr(settings, "note_agent_max_generated_code_cells", 8) or 8),
+    )
     knowledge_sources: list[str] = []
 
     async def _execution_observation(
@@ -1283,7 +1309,7 @@ async def note_thread_turn(
             return {"status": "error", "error": "The R cell was empty", "turn_id": turn_id}
         if len(code) > 2_000_000:
             return {"status": "error", "error": "The R cell exceeds the 2 MB limit", "turn_id": turn_id}
-        if generated_code_cells >= 6:
+        if generated_code_cells >= max_generated_code_cells:
             return {"status": "error", "error": "This turn reached the generated R-cell limit", "turn_id": turn_id}
         parameters = arguments.get("parameters")
         if not isinstance(parameters, dict):
@@ -2293,7 +2319,7 @@ def create_workspace_from_note_thread(
                 from app.api.projects_pipeline import _dispatch_task
                 from app.models.project import Job
                 from app.services.agent_runtime import record_agent_action, set_agent_state
-                from app.tasks.analysis import run_planning
+                from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
 
                 auto_build_job = Job(project_id=str(project.id), job_type="plan", status="pending")
                 db.add(auto_build_job)
@@ -2311,11 +2337,12 @@ def create_workspace_from_note_thread(
                     job_id=str(auto_build_job.id),
                 )
                 _dispatch_task(
-                    run_planning,
+                    run_agent_job,
                     project,
                     auto_build_job,
                     db,
                     background_tasks,
+                    task_kwargs={"instruction": PLAN_INSTRUCTION, "job_kind": "plan"},
                 )
             except Exception as exc:
                 auto_build_reason = f"Auto-build could not be queued: {str(exc)[:500]}"

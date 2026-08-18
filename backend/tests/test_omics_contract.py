@@ -61,3 +61,16 @@ def test_contract_blocks_duplicate_or_negative_feature_inputs(tmp_path):
     assert "negative_abundance" in codes
     assert contract["required"]["feature_key"] is True
 
+
+def test_contract_does_not_promote_an_unclassified_table(tmp_path):
+    counts = tmp_path / "counts.csv"
+    counts.write_text(
+        "feature_id,S1,S2\n"
+        "gene_a,10,20\n"
+        "gene_b,2,4\n"
+    )
+
+    contract = build_input_contract([_record("counts", "other", str(counts))])
+
+    assert contract["summary"]["feature_table_count"] == 0
+    assert any(item["code"] == "feature_table_missing" for item in contract["validations"])

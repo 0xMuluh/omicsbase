@@ -13,7 +13,12 @@ from app.services.execution_contract import (
 from app.services.execution_provenance import list_execution_provenance
 from app.services.edit_validation import validate_text
 
-REQUIRED_CODE_FILES = ("data.R", "funct.R", "_quarto.yml", "main.R")
+# Legacy ReportPack layout. Kept for packs that still ship this quartet; the
+# contract-less OpenHands path must not require it (agents invent numbered
+# analysis pages and may not emit data.R/funct.R/main.R).
+LEGACY_REQUIRED_CODE_FILES = ("data.R", "funct.R", "_quarto.yml", "main.R")
+# Minimum sources for an agent-built Quarto project without an execution contract.
+AGENT_REQUIRED_CODE_FILES = ("_quarto.yml",)
 ERROR_MARKERS = ("error in", "execution halted", "quitting from lines")
 ABSOLUTE_PATH_PATTERN = re.compile(r'["\']/(?:home|Users|tmp|var)/[^"\']+["\']')
 
@@ -110,7 +115,11 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
     )
 
     if execution_contract is None:
-        required_sources = [f"code/{filename}" for filename in REQUIRED_CODE_FILES]
+        # Prefer the legacy quartet when it is already present (adapted packs).
+        # Otherwise only require Quarto config; qmd_pages enforces ≥1 page.
+        legacy_present = all((code_dir / name).exists() for name in LEGACY_REQUIRED_CODE_FILES)
+        required_names = LEGACY_REQUIRED_CODE_FILES if legacy_present else AGENT_REQUIRED_CODE_FILES
+        required_sources = [f"code/{filename}" for filename in required_names]
     else:
         checks.append(_check("execution_contract", True, "ReportPack execution contract is valid"))
         required_sources = [f"{source_root}/_quarto.yml"]
@@ -198,13 +207,22 @@ def review_render_output(project_dir: str) -> dict[str, Any]:
         )
 
     if qmd_files:
+        has_entrypoint = (
+            any(page.name.lower() in {"index.qmd", "report.qmd", "main.qmd", "summary.qmd", "overview.qmd"} for page in qmd_files)
+            or (output_dir / "index.html").is_file()
+            or len(qmd_files) >= 1
+        )
+        entry_name = next(
+            (page.name for page in qmd_files if page.name.lower() in {"index.qmd", "report.qmd", "main.qmd", "summary.qmd", "overview.qmd"}),
+            qmd_files[0].name if qmd_files else "primary document",
+        )
         checks.append(
             _check(
-                "index_page",
-                any(page.name in {"index.qmd", "index.Qmd"} for page in qmd_files),
-                f"{source_root}/index.qmd present"
-                if any(page.name.lower() == "index.qmd" for page in qmd_files)
-                else f"{source_root}/index.qmd missing",
+                "entrypoint_page",
+                has_entrypoint,
+                f"{source_root}/{entry_name} present"
+                if has_entrypoint
+                else f"No primary report document found in {source_root}",
                 severity="warning",
             )
         )

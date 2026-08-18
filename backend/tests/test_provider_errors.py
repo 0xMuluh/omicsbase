@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import llm, planner, providers
+from app.services import llm, providers
 from app.services.provider_errors import (
     LLMAuthenticationError,
     LLMQuotaError,
@@ -64,27 +64,3 @@ async def test_call_llm_raises_typed_quota_failure(monkeypatch):
 
     with pytest.raises(LLMQuotaError):
         await llm.call_llm("system", "user")
-
-
-@pytest.mark.asyncio
-async def test_planner_does_not_hide_provider_outage_with_fallback(monkeypatch):
-    async def fail(**_kwargs):
-        raise LLMQuotaError(
-            "qwen",
-            "quota exhausted",
-            code="AllocationQuota.FreeTierOnly",
-            status_code=403,
-        )
-
-    monkeypatch.setattr(planner.settings, "llm_provider", "qwen")
-    monkeypatch.setattr(providers, "is_configured", lambda _provider: True)
-    monkeypatch.setattr(planner, "load_system_prompt", lambda: "system")
-    monkeypatch.setattr(planner, "format_registry_for_llm", lambda: "registry")
-    monkeypatch.setattr(planner, "format_recipes_for_llm", lambda: "recipes")
-    monkeypatch.setattr(planner, "format_manifest_for_llm", lambda _manifest: "manifest")
-    monkeypatch.setattr(planner, "format_report_pack_catalog_for_llm", lambda: "packs")
-    monkeypatch.setattr(planner, "load_recipe_registry", lambda: {"version": "test"})
-    monkeypatch.setattr(planner, "call_llm", fail)
-
-    with pytest.raises(LLMQuotaError):
-        await planner.generate_plan("question", [], study_manifest={"status": "ready"})

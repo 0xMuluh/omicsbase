@@ -1,4 +1,4 @@
-"""Build a deterministic, analyst-facing contract from uploaded study files."""
+"""Build a structural, analyst-facing contract from uploaded study files."""
 
 from __future__ import annotations
 
@@ -133,11 +133,12 @@ def build_study_manifest(files: Iterable[Any]) -> dict[str, Any]:
             )
         )
 
-    error_count = sum(item["severity"] == "error" for item in validations)
-    warning_count = sum(item["severity"] == "warning" for item in validations)
-    status = "invalid" if error_count else ("needs_input" if warning_count else "ready")
-
     input_contract = build_input_contract(records)
+    contract_validations = input_contract.get("validations") or []
+    all_validations = [*validations, *contract_validations]
+    error_count = sum(item["severity"] == "error" for item in all_validations)
+    warning_count = sum(item["severity"] == "warning" for item in all_validations)
+    status = "invalid" if error_count else ("needs_input" if warning_count else "ready")
 
     return {
         "version": MANIFEST_VERSION,
@@ -165,15 +166,33 @@ def build_study_manifest(files: Iterable[Any]) -> dict[str, Any]:
     }
 
 
-def manifest_errors(manifest: dict[str, Any] | None) -> list[str]:
-    """Return blocking validation messages from a manifest."""
+def manifest_errors(
+    manifest: dict[str, Any] | None,
+    *,
+    include_input_contract: bool = True,
+) -> list[str]:
+    """Return blocking validation messages from a manifest.
+
+    Before LLM classification, callers may omit the nested contract because
+    its role-based checks are intentionally unresolved. After classification,
+    the nested contract is authoritative and its errors are blocking too.
+    """
     if not manifest:
         return ["Study manifest has not been created."]
-    return [
-        item.get("message", "Invalid study input")
-        for item in manifest.get("validations", [])
-        if item.get("severity") == "error"
-    ]
+    messages: list[str] = []
+    seen: set[str] = set()
+    validations = list(manifest.get("validations", []))
+    if include_input_contract:
+        contract = manifest.get("input_contract") or {}
+        validations.extend(contract.get("validations") or [])
+    for item in validations:
+        if item.get("severity") != "error":
+            continue
+        message = item.get("message", "Invalid study input")
+        if message not in seen:
+            seen.add(message)
+            messages.append(message)
+    return messages
 
 
 def format_manifest_for_llm(manifest: dict[str, Any] | None) -> str:
@@ -203,10 +222,21 @@ def format_manifest_for_llm(manifest: dict[str, Any] | None) -> str:
 
     validations = manifest.get("validations", [])
     if validations:
-        lines.append("Deterministic validation findings:")
+        lines.append("Structural validation findings:")
         for validation in validations:
             lines.append(
                 f"- [{validation.get('severity')}] {validation.get('message')}"
+            )
+    contract = manifest.get("input_contract") or {}
+    if contract:
+        lines.append(
+            "Structural input contract: "
+            f"status={contract.get('status', 'unknown')}, "
+            f"required={contract.get('required', {})}"
+        )
+        for validation in contract.get("validations") or []:
+            lines.append(
+                f"- [contract:{validation.get('severity')}] {validation.get('message')}"
             )
     return "\n".join(lines)
 

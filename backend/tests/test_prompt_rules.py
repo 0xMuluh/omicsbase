@@ -4,11 +4,11 @@ from app.services.prompt_rules import inspect_prompt, inspect_system_prompt, pro
 
 
 def test_system_prompt_rules_are_executable():
-    prompt = """The active ReportPack defines the working structure.
+    prompt = """Team report templates are methodological priors.
 NEVER fabricate statistics.
 NEVER silently resolve a contested choice.
 Include proper error handling for package availability.
-Respect the active pack working directory.
+Respect the project working directory.
 Generated R and Quarto source is checked by the QA gate."""
     assert prompt_contract_ok(prompt) is True
     assert inspect_prompt(prompt)["missing"] == []

@@ -20,6 +20,31 @@ AGENT_STATES = {
 }
 BUSY_PROJECT_STATUSES = frozenset({"planning", "generating", "rendering", "repairing", "reviewing", "editing"})
 
+EDIT_VERBS = (
+    "add",
+    "change",
+    "edit",
+    "fix",
+    "remove",
+    "replace",
+    "rerun",
+    "render",
+    "update",
+    "modify",
+    "make",
+    "show",
+    "plot",
+    "include",
+    "exclude",
+)
+
+
+def is_edit_prompt(instruction: str) -> bool:
+    normalized = " ".join(instruction.lower().strip().split())
+    if not normalized:
+        return False
+    return any(normalized.startswith(f"{verb} ") or normalized == verb for verb in EDIT_VERBS)
+
 MAX_ACTIONS = 200
 MAX_FILES = 300
 MAX_DURABLE_ITEMS = 40

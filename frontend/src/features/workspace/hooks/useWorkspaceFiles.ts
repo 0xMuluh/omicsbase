@@ -7,8 +7,11 @@ import { api, type Project } from "@/lib/api";
 import {
   collectDirPaths,
   filterFileTree,
+  findFileTreeNode,
   isEditableTabularPath,
-  isImagePath,
+  isEditableWorkspacePath,
+  isReadOnlyWorkspacePath,
+  isTextPath,
   isTabularPath,
 } from "../utils/filePaths";
 
@@ -49,7 +52,7 @@ export function useWorkspaceFiles({ projectId, project }: UseWorkspaceFilesOptio
   const showTableView = Boolean(activeTab && isTabularPath(activeTab) && dataViewMode === "table");
   const needsTextContent = Boolean(
     activeTab
-    && !isImagePath(activeTab)
+    && isTextPath(activeTab)
     && (!isTabularPath(activeTab) || (isEditableTabularPath(activeTab) && dataViewMode === "source")),
   );
   const fileContentQuery = useQuery({
@@ -181,6 +184,16 @@ export function useWorkspaceFiles({ projectId, project }: UseWorkspaceFilesOptio
     () => filterFileTree(fileTreeQuery.data || [], fileSearch),
     [fileTreeQuery.data, fileSearch],
   );
+  const activeFileNode = useMemo(
+    () => findFileTreeNode(fileTreeQuery.data || [], activeTab),
+    [fileTreeQuery.data, activeTab],
+  );
+  const activeFileEditable = Boolean(
+    activeTab
+    && activeFileNode?.type === "file"
+    && activeFileNode.editable !== false
+    && isEditableWorkspacePath(activeTab),
+  );
   const allDirPaths = useMemo(
     () => collectDirPaths(fileTreeQuery.data || []),
     [fileTreeQuery.data],
@@ -226,6 +239,8 @@ export function useWorkspaceFiles({ projectId, project }: UseWorkspaceFilesOptio
   return {
     activeDraft,
     activeTab,
+    activeFileEditable,
+    activeFileReadOnly: isReadOnlyWorkspacePath(activeTab),
 
     clearDrafts,
     closeConflictDialog: () => setShowConflictDialog(false),

@@ -1,4 +1,10 @@
-"""Standalone, deterministic input contract for downstream omics analysis."""
+"""Structural input contract for downstream omics analysis.
+
+The LLM owns semantic file roles. This module only inspects the files using
+their already-authoritative roles and validates dimensions, identifiers,
+orientation, and joins. It must never promote a file into a role from its
+name or column keywords.
+"""
 
 from __future__ import annotations
 
@@ -26,14 +32,8 @@ def build_input_contract(records: Iterable[Any]) -> dict[str, Any]:
         validations.extend(table.pop("validations", []))
         tables.append(table)
 
-    feature_tables = [
-        table for table in tables
-        if table.get("role") == "feature_table" or table.get("inferred_role") == "feature_table"
-    ]
-    metadata_tables = [
-        table for table in tables
-        if table.get("role") == "metadata" or table.get("inferred_role") == "metadata"
-    ]
+    feature_tables = [table for table in tables if table.get("role") == "feature_table"]
+    metadata_tables = [table for table in tables if table.get("role") == "metadata"]
     taxonomy_tables = [table for table in tables if table.get("role") == "taxonomy"]
 
     if not feature_tables:
@@ -113,12 +113,10 @@ def _inspect_record(record: Any) -> dict[str, Any]:
     path_value = _get(record, "file_path")
     path = Path(str(path_value)) if path_value else None
     columns = [str(value) for value in (summary.get("columns") or [])]
-    inferred_role = _infer_role(name, role, columns, detected_format)
     table: dict[str, Any] = {
         "id": str(_get(record, "id") or ""),
         "name": name,
         "role": role,
-        "inferred_role": inferred_role,
         "format": detected_format,
         "validation_mode": "summary",
         "dimensions": summary.get("dimensions") or {},
@@ -354,19 +352,6 @@ def _summary_feature_ids(summary: dict[str, Any], table: dict[str, Any]) -> list
     ])
 
 
-def _infer_role(name: str, role: str, columns: list[str], detected_format: str) -> str:
-    if role in {"feature_table", "metadata", "taxonomy"}:
-        return role
-    searchable = " ".join([name, role, detected_format, *columns]).lower()
-    if any(term in searchable for term in ("taxonomy", "taxon", "otu", "asv", "biom")):
-        return "feature_table"
-    if any(term in searchable for term in ("metadata", "sample", "phenotype", "clinical", "coldata")):
-        return "metadata"
-    if any(term in searchable for term in ("metabol", "abundance", "count", "feature", "assay")):
-        return "feature_table"
-    return "other"
-
-
 def _infer_domain(tables: list[dict[str, Any]]) -> str:
     searchable = " ".join(
         f"{table.get('name', '')} {table.get('role', '')} {table.get('format', '')} "
@@ -445,4 +430,3 @@ def _validation(code: str, severity: str, message: str) -> dict[str, str]:
 
 
 __all__ = ["CONTRACT_VERSION", "build_input_contract"]
-

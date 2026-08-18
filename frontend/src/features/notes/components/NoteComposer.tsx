@@ -43,11 +43,11 @@ function ComposerAddButton({
         variant="ghost"
         onClick={onToggle}
         disabled={disabled}
-        className="h-10 w-10 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="h-8 w-8 rounded-full p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
         title="Add to this note"
         aria-label="Add to this note"
       >
-        <Plus className="h-4 w-4" />
+        <Plus className="h-3.5 w-3.5" />
       </Button>
       <AnimatePresence>
         {open ? (
@@ -142,12 +142,12 @@ export function NoteComposer({
   onRemoveFile?: (index: number) => void;
 }) {
   return (
-    <div className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
+    <div className="relative rounded-[25px] border border-border bg-[var(--composer-surface)] p-1 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]">
       {beforeComposer}
       {stagedFiles && onRemoveFile ? (
         <FileChips files={stagedFiles} onRemove={onRemoveFile} className="mb-1.5 flex flex-wrap gap-2 px-1" />
       ) : null}
-      <div className="flex items-end gap-1.5">
+      <div className="flex items-center gap-1">
         <ComposerAddButton
           open={composerMenuOpen}
           onToggle={onToggleComposerMenu}
@@ -174,10 +174,10 @@ export function NoteComposer({
           disabled={inputDisabled}
           rows={1}
           placeholder="Ask OmicsBase..."
-          className={"max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0" + (inputDisabled ? " disabled:opacity-60" : "")}
+          className={"max-h-52 min-h-[36px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0" + (inputDisabled ? " disabled:opacity-60" : "")}
         />
-        <Button type="button" size="icon" className="h-10 w-10 shrink-0 rounded-full" onClick={() => void onSubmit()} disabled={submitDisabled} title="Send" aria-label="Send">
-          {submitPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+        <Button type="button" size="icon" className="h-9 w-9 shrink-0 rounded-full" onClick={() => void onSubmit()} disabled={submitDisabled} title="Send" aria-label="Send">
+          {submitPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
         </Button>
       </div>
     </div>

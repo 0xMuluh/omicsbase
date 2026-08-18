@@ -76,6 +76,7 @@ _SOURCE_SKIP_DIRS = {
     "lib",
     "node_modules",
     ".git",
+    ".omicsbase",
     ".venv",
 }
 _SOURCE_SKIP_FILENAMES = {MANIFEST_NAME, ".rhistory", ".rdata"}

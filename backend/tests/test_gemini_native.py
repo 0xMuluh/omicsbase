@@ -164,27 +164,40 @@ async def test_call_llm_gemini_compat_fallback_when_native_disabled(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_stream_gemini_with_tools_event_shape(monkeypatch):
-    class FakePart:
-        def __init__(self, text=None):
-            self.text = text
-
     class FakeFunctionCall:
         def __init__(self, call_id, name, args):
             self.id = call_id
             self.name = name
             self.args = args
 
+    class FakePart:
+        def __init__(self, text=None, function_call=None, thought_signature=None):
+            self.text = text
+            self.function_call = function_call
+            self.thought_signature = thought_signature
+
+    class FakeContent:
+        def __init__(self, parts):
+            self.parts = parts
+
+    class FakeCandidate:
+        def __init__(self, parts):
+            self.content = FakeContent(parts)
+
     class FakeChunk:
-        def __init__(self, function_calls=None, text=None, usage=None):
-            self.function_calls = function_calls or []
+        def __init__(self, parts=None, text=None, usage=None):
+            self.candidates = [FakeCandidate(parts or [])]
             self.text = text
             self.usage_metadata = usage
 
     chunk1 = FakeChunk(
-        function_calls=[FakeFunctionCall("call_1", "run_r", {"code": "1+"})],
+        parts=[FakePart(
+            function_call=FakeFunctionCall("call_1", "run_r", {"code": "1+"}),
+            thought_signature=b"sig-bytes",
+        )],
         usage=type("U", (), {"prompt_token_count": 10, "candidates_token_count": 5})(),
     )
-    chunk2 = FakeChunk(function_calls=[FakeFunctionCall("call_1", "", {"code": "1+1"})])
+    chunk2 = FakeChunk(parts=[FakePart(function_call=FakeFunctionCall("call_1", "", {"code": "1+1"}))])
     chunk3 = FakeChunk(text="done")
 
     class FakeStream:
@@ -228,6 +241,8 @@ async def test_stream_gemini_with_tools_event_shape(monkeypatch):
     assert tool_events[0]["id"] == "call_1"
     assert tool_events[0]["name"] == "run_r"
     assert tool_events[0]["arguments"] == {"code": "1+1"}
+    import base64
+    assert tool_events[0]["thought_signature"] == base64.b64encode(b"sig-bytes").decode("ascii")
     assert events[-1] == {"type": "done"}
     usage = [e for e in events if e["type"] == "usage"]
     assert usage == [{"type": "usage", "usage": {"input_tokens": 10, "output_tokens": 5}}]

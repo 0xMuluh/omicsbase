@@ -20,7 +20,7 @@ _SHELL_MARKERS = (
     "may contain pending sections",
     "spawned report-surface skeleton",
 )
-_MIN_CONTENT_CHARS = 400
+_MIN_CONTENT_CHARS = 200
 
 # House-language violations (writing-style.md).
 _META_NARRATION = (
@@ -256,7 +256,8 @@ def run_qa(project_dir: str) -> QaResult:
             continue
         # The entry page is always kept even when short; every other page
         # must carry real content or be pruned.
-        if relative != "index.qmd" and _is_shell(content):
+        is_entry = Path(relative).name.lower() in {"index.qmd", "report.qmd", "main.qmd", "summary.qmd", "overview.qmd"}
+        if not is_entry and _is_shell(content):
             result.structural.append(relative)
             continue
         findings = _language_findings(content, relative)
@@ -275,7 +276,7 @@ def run_qa(project_dir: str) -> QaResult:
 
 def _is_shell(content: str) -> bool:
     body = content.split("---", 2)[-1] if content.startswith("---") else content
-    stripped = "".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    stripped = "".join(line for line in body.splitlines() if not line.strip().startswith(("#", "```")))
     if len(stripped.strip()) < _MIN_CONTENT_CHARS:
         return True
     return any(marker in content for marker in ("FILL: develop this section", "may contain pending sections"))

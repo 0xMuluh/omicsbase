@@ -32,6 +32,7 @@ services:
       # Production deployments must use a dedicated sandbox runner instead.
       USE_DOCKER_SANDBOX: "false"
       AGENT_MAX_STEPS: "10"
+      OPENCODE_BIN: /usr/local/bin/opencode
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
@@ -41,9 +42,9 @@ services:
       - ./backend/alembic:/app/alembic
       - ./prompts:/app/prompts
       - ./registry:/app/registry
-      - ./skills:/app/skills
       - ./templates:/app/templates
       - ./backend/knowledge:/app/knowledge
+      - /home/simple/.opencode/bin/opencode:/usr/local/bin/opencode:ro
     depends_on:
       - postgres
       - redis
@@ -63,14 +64,15 @@ services:
       # Production deployments must use a dedicated sandbox runner instead.
       USE_DOCKER_SANDBOX: "false"
       AGENT_MAX_STEPS: "10"
+      OPENCODE_BIN: /usr/local/bin/opencode
     volumes:
       - ./backend/projects:/app/projects
       - ./backend/app:/app/app
       - ./prompts:/app/prompts
       - ./registry:/app/registry
-      - ./skills:/app/skills
       - ./templates:/app/templates
       - ./backend/knowledge:/app/knowledge
+      - /home/simple/.opencode/bin/opencode:/usr/local/bin/opencode:ro
     depends_on:
       - postgres
       - redis

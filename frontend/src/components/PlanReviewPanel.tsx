@@ -328,7 +328,7 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
     );
   };
 
-  const approveMutation = useMutation({
+  const buildMutation = useMutation({
     mutationFn: async () => {
       if (!project?.analysis_plan || !effectiveWorkflow) return;
       const selectedGrouping = project.study_manifest?.grouping_candidates.find(
@@ -340,7 +340,7 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
         grouping_variable: selectedGrouping?.column ?? project.analysis_plan.grouping_variable,
         group_levels: selectedGrouping?.levels ?? project.analysis_plan.group_levels,
       };
-      await api.approvePlan(projectId, updatedPlan);
+      await api.updatePlan(projectId, updatedPlan);
       await api.startGeneration(projectId);
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
       queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
@@ -591,16 +591,16 @@ export default function PlanReviewPanel({ projectId }: { projectId: string }) {
 
         <Separator className="my-8" />
         <Button
-          onClick={() => approveMutation.mutate()}
-          disabled={approveMutation.isPending}
+          onClick={() => buildMutation.mutate()}
+          disabled={buildMutation.isPending}
           className="w-full bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 gap-2 h-12 text-base shadow-lg shadow-teal-500/20"
         >
-          {approveMutation.isPending ? (
+          {buildMutation.isPending ? (
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
             <>
               <Play className="h-5 w-5" />
-              Approve & Build
+              Build report
             </>
           )}
         </Button>

@@ -13,12 +13,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from agent_test_helpers import text_turn, tool_turn
+from agent_test_helpers import openhands_from_stream, text_turn, tool_turn
 from app.database import Base, get_db
 from app.main import app
 from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThread
 from app.models.runs import AgentRun, RunTelemetry
-from app.services import agent_core, note_agent
+from app.services import note_agent, agent_loop
 
 
 async def _drain(stream):
@@ -37,12 +37,7 @@ def test_note_agent_preserves_native_tool_history(monkeypatch):
         for event in events:
             yield event
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
-
-    async def judge_needs_tools(message):
-        return "needs_tools"
-
-    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
 
     async def action_handler(_name, _arguments):
         return {
@@ -121,7 +116,6 @@ def test_note_short_followup_keeps_durable_history():
         context={"cells": [{"content": prior_revision.content}]},
     )
 
-    assert executor.deterministic_intent("Why?") == "needs_tools"
     messages = executor.build_messages("Why?")
     assert messages[0]["content"] == prior_revision.content
 
@@ -143,15 +137,14 @@ def _run_scripted_note_tool(monkeypatch, message, tool_name, arguments):
         action_calls.append(name)
         return {"status": "ok", "cell": {"id": f"{name}-cell"}}
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     executor = note_agent.NoteAgentExecutor(
         message=message,
         cells=[],
         context={},
         action_handler=action_handler,
     )
-    executor.use_fast_path = lambda _message: False
-    events = asyncio.run(_drain(agent_core.run_agent_loop(executor, message)))
+    events = asyncio.run(_drain(agent_loop.stream_agent_turn(executor, message)))
     return action_calls, events, provider_calls
 
 
@@ -176,15 +169,15 @@ def test_note_interaction_uses_add_note_only_for_documentation(monkeypatch):
 
 
 def test_note_conceptual_answer_uses_no_notebook_tool(monkeypatch):
-    async def fake_stream_simple_answer(message, knowledge_context=None):
-        yield {"type": "final", "message": "Shannon diversity measures within-sample diversity.", "fast": True}
+    async def fake_stream(**kwargs):
+        for event in text_turn("Shannon diversity measures within-sample diversity."):
+            yield event
 
-    monkeypatch.setattr("app.services.intent_fastpath.stream_simple_answer", fake_stream_simple_answer)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     executor = note_agent.NoteAgentExecutor(message="What is Shannon diversity?", cells=[], context={})
-    executor.use_fast_path = lambda _message: True
-    events = asyncio.run(_drain(agent_core.run_agent_loop(executor, "What is Shannon diversity?")))
+    events = asyncio.run(_drain(agent_loop.stream_agent_turn(executor, "What is Shannon diversity?")))
 
-    assert events[-1]["fast"] is True
+    assert events[-1]["message"] == "Shannon diversity measures within-sample diversity."
     assert not any(event["type"] in {"tool_started", "note_cell", "execution_queued"} for event in events)
 
 
@@ -208,13 +201,17 @@ def _setup_db():
     return engine, testing_session
 
 
-def test_knowledge_fast_path_persists_grounding_citations(monkeypatch, tmp_path):
+def test_knowledge_tool_persists_grounding_citations(monkeypatch, tmp_path):
     engine, testing_session = _setup_db()
     client = TestClient(app)
     headers = {"X-Tenant-ID": "tenant_demo", "X-User-ID": "user_demo"}
+    provider_calls = []
 
     async def fake_stream(**kwargs):
-        yield "A grounded demonstration is ready."
+        provider_calls.append(kwargs["messages"])
+        events = tool_turn("search_bioc_books", {"query": "what is FDR?"}) if len(provider_calls) == 1 else text_turn("A grounded demonstration is ready.")
+        for event in events:
+            yield event
 
     def fake_search(*args, **kwargs):
         return {
@@ -229,10 +226,9 @@ def test_knowledge_fast_path_persists_grounding_citations(monkeypatch, tmp_path)
             ],
         }
 
-    monkeypatch.setattr("app.services.intent_fastpath.stream_llm_text", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     monkeypatch.setattr("app.services.bioc_knowledge.search_bioc_knowledge", fake_search)
     monkeypatch.setattr(note_agent.settings, "projects_dir", str(tmp_path))
-    monkeypatch.setattr(note_agent.settings, "fast_path_enabled", True)
 
     try:
         created = client.post("/api/notes", headers=headers, json={"title": "Untitled note"})
@@ -328,7 +324,7 @@ def test_standalone_turn_receives_terminal_cell_result(monkeypatch, tmp_path):
             "artifacts": [],
         }
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     monkeypatch.setattr("app.api.projects_notes._wait_for_note_execution", fake_wait)
     from app.config import settings
@@ -338,7 +334,6 @@ def test_standalone_turn_receives_terminal_cell_result(monkeypatch, tmp_path):
     try:
         from app.config import settings
 
-        monkeypatch.setattr(settings, "fast_path_enabled", False)
         created = client.post(
             "/api/notes",
             headers=headers,
@@ -377,14 +372,10 @@ def test_standalone_turn_persists_user_code_execution_and_answer(monkeypatch, tm
         for event in events:
             yield event
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 
-    async def judge_needs_tools(message):
-        return "needs_tools"
-
-    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
     monkeypatch.setattr(settings, "note_execution_agent_wait_enabled", False)
 
@@ -461,16 +452,10 @@ def test_standalone_turn_interleaves_notes_and_code_cells(monkeypatch, tmp_path)
         for event in events:
             yield event
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     monkeypatch.setattr("app.api.projects_note_executions._dispatch_standalone", lambda *args: None)
     from app.config import settings
 
-    # The judge must not hit a live provider in tests: this message needs the
-    # tool loop, so pin the judge decision.
-    async def judge_returns_needs_tools(message):
-        return "needs_tools"
-
-    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_returns_needs_tools)
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
     monkeypatch.setattr(settings, "note_execution_agent_wait_enabled", False)
 
@@ -530,13 +515,9 @@ def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
             yield {"type": "text_delta", "content": answer[i:i + 30]}
         yield {"type": "done"}
 
-    monkeypatch.setattr("app.services.agent_core.stream_llm_with_tools", fake_stream)
+    monkeypatch.setattr("app.services.agent_loop.run_native_agent", openhands_from_stream(fake_stream))
     from app.config import settings
 
-    async def judge_needs_tools(message):
-        return "needs_tools"
-
-    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_needs_tools)
     monkeypatch.setattr(settings, "projects_dir", str(tmp_path))
 
     try:
@@ -564,46 +545,3 @@ def test_note_turn_streams_token_chunks_to_client(monkeypatch, tmp_path):
         Base.metadata.drop_all(bind=engine)
 
 
-@pytest.mark.asyncio
-async def test_note_judge_keeps_knowledge_with_runnable_example_on_fast_path(monkeypatch):
-    """Retrieved code must not turn a knowledge answer into execution."""
-    from app.services import intent_fastpath
-    from app.services import agent_core, note_agent as na_module
-
-    executor = na_module.NoteAgentExecutor(
-        message="explain multiple testing",
-        cells=[],
-        context={},
-        knowledge_search_handler=lambda args: {
-            "matches": [{"book_title": "OMA", "code": "p.adjust(x, method='BH')", "prose": "x", "citation": "c"}]
-        },
-    )
-
-    async def fake_classify(message):
-        return "needs_knowledge"
-
-    monkeypatch.setattr(intent_fastpath, "classify_intent", fake_classify)
-    intent = await executor.judge_intent("explain multiple testing")
-    assert intent == "needs_knowledge"
-
-
-@pytest.mark.asyncio
-async def test_note_judge_keeps_conceptual_without_runnable_example(monkeypatch):
-    from app.services import intent_fastpath
-    from app.services import agent_core, note_agent as na_module
-
-    executor = na_module.NoteAgentExecutor(
-        message="what is a p-value?",
-        cells=[],
-        context={},
-        knowledge_search_handler=lambda args: {
-            "matches": [{"book_title": "OMA", "prose": "no code here", "citation": "c"}]
-        },
-    )
-
-    async def fake_classify(message):
-        return "conceptual"
-
-    monkeypatch.setattr(intent_fastpath, "classify_intent", fake_classify)
-    intent = await executor.judge_intent("what is a p-value?")
-    assert intent == "conceptual"

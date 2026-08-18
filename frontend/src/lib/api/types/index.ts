@@ -429,6 +429,8 @@ export interface FileTreeNode {
   type: "file" | "directory";
   size?: number;
   extension?: string;
+  /** Whether the backend will allow browser edits for this file. */
+  editable?: boolean;
   children?: FileTreeNode[];
 }
 

@@ -105,7 +105,7 @@ class AgentRun(Base):
             "continuation_dependency_id",
         ),
         CheckConstraint(
-            "surface IN ('workspace', 'notes')",
+            "surface IN ('workspace', 'notes', 'project')",
             name="ck_agent_run_surface",
         ),
     )

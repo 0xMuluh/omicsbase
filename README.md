@@ -92,3 +92,5 @@ Post-render review checks the selected ReportPack's declared sources and artifac
 | Frontend | Next.js, React, Monaco, TanStack Query |
 | Backend | FastAPI, SQLAlchemy, Celery, Redis, PostgreSQL |
 | Analysis | R, Bioconductor, Quarto (Docker) |
+
+One agent loop owns a run end to end: it plans (`set_plan`), stages a ReportPack, adapts source, runs R, renders, reads its own failures, and repairs — all with inline tools in a single conversation. Pipeline endpoints (`/plan`, `/generate`, `/run`, `/edit`) are thin adapters that start the same loop headlessly; deterministic checks (validation, budgets, hash-checked edit journal) live below the model as tools, not above it as gates.

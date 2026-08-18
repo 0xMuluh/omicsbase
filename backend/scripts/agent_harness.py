@@ -16,14 +16,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.services import agent_core
+from app.services import agent_loop
 from app.services.agent_core import ToolCallResult, TurnBudget
 from app.services.agent_plans import build_continuation_plan, continuation_prompt
 from app.services.context_budget import bounded_json
-from app.services.intent_fastpath import deterministic_intent
 from app.services.tool_specs import TOOL_REGISTRY
 
-HARNESS_VERSION = "omicsbase-agent-harness-v4"
+HARNESS_VERSION = "omicsbase-agent-harness-v5"
 
 CASES: tuple[dict[str, Any], ...] = (
     {"name": "conceptual_definition", "message": "What is a p-value?", "lens": "workspace", "expected": "conceptual"},
@@ -43,33 +42,13 @@ CASES: tuple[dict[str, Any], ...] = (
 )
 
 REQUIRED_TOOLS = {
-    "workspace": ("inspect_project", "read_file", "read_results", "inspect_table", "ask_user"),
+    "workspace": ("inspect_project", "read_file", "read_results", "inspect_table", "ask_user", "render_report", "run_r_script", "set_plan"),
     "note": ("inspect_note", "run_r_cell", "add_note"),
 }
 
 
-def _route(case: dict[str, Any]) -> str | None:
-    return deterministic_intent(
-        case["message"],
-        lens=case["lens"],
-        explicit_mutation=bool(case.get("explicit_mutation", False)),
-        selected_resource=case.get("selected_resource"),
-        selected_content_dirty=bool(case.get("selected_content_dirty", False)),
-        active_job_status=case.get("active_job_status"),
-        prior_tool_activity=bool(case.get("prior_tool_activity", False)),
-        pending_question=bool(case.get("pending_question", False)),
-        notebook_state=bool(case.get("notebook_state", False)),
-    )
-
 
 def run_harness() -> dict[str, Any]:
-    routed = []
-    for case in CASES:
-        actual = _route(case)
-        expected = case["expected"]
-        # ``None`` is the deliberate hand-off to the semantic judge.
-        routed.append({**case, "actual": actual, "pass": actual == expected})
-
     budget = TurnBudget(max_units=5, max_tool_calls=3, max_mutations=1)
     budget_checks = [
         budget.try_consume_tool(cost=1, mutating=False)[0],
@@ -88,17 +67,8 @@ def run_harness() -> dict[str, Any]:
             for name in names
         }
 
-    passed_routes = sum(1 for item in routed if item["pass"])
-    total_routes = len(routed)
     return {
         "harness": HARNESS_VERSION,
-        "routing": {
-            "cases": routed,
-            "passed": passed_routes,
-            "total": total_routes,
-            "accuracy": round(passed_routes / total_routes, 4) if total_routes else 1.0,
-            "judge_handoff_cases": sum(item["actual"] is None for item in routed),
-        },
         "tool_contracts": contracts,
         "budget": {
             "checks_passed": all(budget_checks),
@@ -353,8 +323,6 @@ CANONICAL_EVAL_CASES: tuple[dict[str, Any], ...] = NATIVE_EVAL_CASES + tuple(
         ("run_analysis", "run_analysis", "Run the approved analysis", {"resume_from_checkpoint": True}, {"status": "queued", "job_type": "analysis"}, "analysis", False),
         ("rollback", "rollback_analysis_configuration", "Rollback the last analysis configuration", {}, {"status": "queued", "job_type": "rollback"}, "rollback", False),
         ("import_dataset", "import_package_data", "Import the supported example dataset", {"package": "phyloseq", "dataset": "GlobalPatterns"}, {"status": "ok", "files": ["GlobalPatterns_feature_table.csv"]}, "GlobalPatterns", False),
-        ("list_skills", "list_skills", "List relevant scientific skill packs", {"limit": 5}, {"status": "ok", "skills": [{"id": "microbiome-analysis"}]}, "microbiome", False),
-        ("load_skill", "load_skill", "Load the selected skill guidance", {"skill": "microbiome-analysis", "references": ["references/methods.md"]}, {"status": "ok", "skill": "microbiome-analysis", "content": "Use compositional methods"}, "compositional", False),
         ("fetch_url", "fetch_url", "Fetch the approved study file", {"url": "https://example.invalid/study.csv"}, {"status": "ok", "filename": "study.csv", "role": "metadata"}, "study.csv", False),
         ("ask_design", "ask_user", "Ask which column defines the biological groups", {"question": "Which column defines the groups?", "options": ["group", "condition"]}, {"status": "ok", "question": "Which column defines the groups?"}, "groups", False),
         ("async_note", "run_r_cell", "Run the cell and explain the result when complete", {"code": "mean(c(1, 2, 3))"}, {"status": "ok", "execution": {"id": "execution-2", "status": "queued"}}, "execution-2", True),
@@ -401,26 +369,17 @@ class _NativeEvalExecutor:
     def final_event(self, message):
         return {"type": "final", "message": message}
 
-    def max_steps_events(self):
-        return [{"type": "final", "message": self.max_steps_message}]
-
     def tool_completed_event(self, tool_name, tool_call_id, arguments, status, summary, step):
         return {"type": "tool_completed", "tool": tool_name, "status": status}
 
     def summary_for(self, tool_name, observation):
         return str(observation.get("status") or "ok")
 
-    def use_fast_path(self, message):
-        return False
-
     def parallel_eligible(self, tool_name):
         return False
 
     def tool_spec(self, tool_name):
         return TOOL_REGISTRY.get(tool_name, lens=self.lens) or TOOL_REGISTRY.get(tool_name)
-
-    async def legacy_llm_step(self, messages, *, step):
-        return None
 
     async def execute_tool(self, tool_name, arguments, **kwargs):
         self.tool_calls.append(tool_name)
@@ -441,26 +400,85 @@ class _NativeEvalExecutor:
         return ToolCallResult(observation=observation)
 
 
+async def _scripted_loop_turn(executor: _NativeEvalExecutor, message: str, case: dict[str, Any]):
+    initial, handled = executor.initial_events(message)
+    for event in initial:
+        yield event
+    if handled:
+        return
+
+    messages = executor.build_messages(message)
+    for step, script in enumerate(case["scripts"], start=1):
+        executor.provider_rounds += 1
+        executor.provider_messages.append(list(messages))
+        calls = []
+        text = []
+        for event in script:
+            if event.get("type") == "text_delta":
+                token = str(event.get("content") or "")
+                text.append(token)
+                yield {"type": "token", "token": token}
+            elif event.get("type") == "tool_call":
+                calls.append(event)
+
+        if not calls:
+            yield executor.final_event("".join(text).strip() or executor.default_final_message)
+            return
+
+        for call in calls:
+            name = str(call.get("name") or "")
+            arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+            call_id = str(call.get("id") or f"fixture-{step}")
+            result = await executor.execute_tool(
+                name,
+                arguments,
+                step=step,
+                tool_call_id=call_id,
+                persisted_arguments=arguments,
+                step_text="".join(text),
+            )
+            for emitted in result.events:
+                yield emitted
+            if result.emit_completed:
+                status = str((result.observation or {}).get("status") or "ok")
+                yield executor.tool_completed_event(
+                    name,
+                    call_id,
+                    arguments,
+                    status,
+                    str(result.summary or status),
+                    step,
+                )
+            if result.wait_for:
+                yield {"type": "wait", "dependency": result.wait_for, "step": step}
+                if result.final_event is not None:
+                    yield result.final_event
+                return
+            if result.end_turn:
+                if result.final_event is not None:
+                    yield result.final_event
+                return
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": str(result.observation)})
+
+    yield executor.final_event(executor.default_final_message)
+
+
 def _run_native_eval_case(case: dict[str, Any]) -> dict[str, Any]:
     executor = _NativeEvalExecutor(case)
 
-    async def fake_stream(**kwargs):
-        index = executor.provider_rounds
-        executor.provider_rounds += 1
-        executor.provider_messages.append(kwargs.get("messages") or [])
-        for event in case["scripts"][index]:
+    async def fake_loop(runtime_executor, message, *, cancel_check=None):
+        async for event in _scripted_loop_turn(runtime_executor, message, case):
             yield event
-        yield {"type": "done"}
 
     async def collect():
-        return [event async for event in agent_core.run_agent_loop(executor, case["message"])]
+        return [event async for event in agent_loop.stream_agent_turn(executor, case["message"])]
 
-    original_stream = agent_core.stream_llm_with_tools
-    agent_core.stream_llm_with_tools = fake_stream
+    original_runtime = agent_loop.run_native_agent
+    agent_loop.run_native_agent = fake_loop
     try:
         events = asyncio.run(collect())
     finally:
-        agent_core.stream_llm_with_tools = original_stream
+        agent_loop.run_native_agent = original_runtime
     expected_tools = list(case.get("expected_tools") or [])
     wait_events = [event for event in events if event.get("type") == "wait"]
     final_events = [event for event in events if event.get("type") == "final"]
@@ -525,7 +543,7 @@ def run_native_eval() -> dict[str, Any]:
     goal_retained = "compare the methods" in prompt and "resume_from_checkpoint" in prompt
     passed = sum(1 for case in cases if case["success"])
     return {
-        "production_loop": "app.services.agent_core.run_agent_loop",
+        "production_loop": "app.services.agent_loop.stream_agent_turn",
         "provider_independent": True,
         "database_free": True,
         "network_free": True,
@@ -554,17 +572,8 @@ async def _run_live_eval_case(case: dict[str, Any]) -> dict[str, Any]:
         lens=executor.lens,
         capabilities={"acquisition", "report_execution", "legacy_recipe"} if executor.lens == "workspace" else set(),
     )
-    original_stream = agent_core.stream_llm_with_tools
-
-    async def counting_stream(**kwargs):
-        executor.provider_rounds += 1
-        executor.provider_messages.append(kwargs.get("messages") or [])
-        async for event in original_stream(**kwargs):
-            yield event
-
-    agent_core.stream_llm_with_tools = counting_stream
     try:
-        events = [event async for event in agent_core.run_agent_loop(executor, case["message"])]
+        events = [event async for event in agent_loop.stream_agent_turn(executor, case["message"])]
     except Exception as exc:
         return {
             "name": case["name"],
@@ -574,9 +583,6 @@ async def _run_live_eval_case(case: dict[str, Any]) -> dict[str, Any]:
             "actual_tools": executor.tool_calls,
             "llm_calls": executor.provider_rounds,
         }
-    finally:
-        agent_core.stream_llm_with_tools = original_stream
-
     expected_tools = list(case.get("expected_tools") or [])
     wait_events = [event for event in events if event.get("type") == "wait"]
     final_events = [event for event in events if event.get("type") == "final"]

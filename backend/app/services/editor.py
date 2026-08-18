@@ -54,7 +54,6 @@ async def edit_generated_project(
         prompt_context["analysis_plan"] = analysis_plan
     if study_manifest is not None:
         prompt_context["study_manifest"] = study_manifest
-    prompt_context["report_pack"] = contract_context.get("metadata") or {}
     prompt_context["protected_paths"] = sorted(protected_paths)
     if not source_files:
         return {"status": "failed", "reason": "No generated source files found in project to edit."}
@@ -79,15 +78,14 @@ Rules:
 7. Do not include shell commands, absolute paths, or edits outside the supplied source files.
 8. A file marked truncated may only receive a targeted SEARCH/REPLACE or patch hunk; never reconstruct it from the excerpt.
 9. The server prepares every edit before committing the batch; a failed edit aborts the whole batch.
-10. Treat the approved plan, study manifest, ReportPack roles, and base hashes as authoritative context.
-11. Never edit protected contract or validator paths; the server will reject such operations.
+10. Treat the approved plan and study manifest as authoritative context.
+11. Never edit protected validator or contract paths; the server will reject such operations.
 """
 
     user_prompt = _build_edit_prompt(
         source_files,
         instruction,
         project_context=prompt_context,
-        report_pack_context=contract_context.get("metadata") or {},
         protected_paths=protected_paths,
     )
     apply_results: list[ApplyResult] = []
@@ -121,7 +119,6 @@ Rules:
                 source_files,
                 instruction,
                 project_context=prompt_context,
-                report_pack_context=contract_context.get("metadata") or {},
                 protected_paths=protected_paths,
             )
             + "\n\n## Previous apply failures — fix only these SEARCH/REPLACE blocks\n"
@@ -369,7 +366,6 @@ def _collect_source_files(
     protected_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     files = []
-    roles = file_roles or {}
     protected = protected_paths or set()
     for path in sorted(base.rglob("*")):
         if not path.is_file() or path.suffix not in TEXT_EXTENSIONS:
@@ -379,14 +375,11 @@ def _collect_source_files(
             continue
         raw = path.read_bytes()
         content = raw.decode("utf-8", errors="replace")
-        classification = roles.get(relative) or {}
         files.append({
             "path": relative,
             "content": content[:MAX_FILE_CHARS],
             "complete": len(content) <= MAX_FILE_CHARS,
             "sha256": sha256_bytes(raw) or "",
-            "role": classification.get("role", "unknown"),
-            "adaptation": classification.get("adaptation", "inspect"),
             "protected": relative in protected,
         })
     return files
@@ -397,7 +390,6 @@ def _build_edit_prompt(
     instruction: str,
     *,
     project_context: dict[str, Any] | None = None,
-    report_pack_context: dict[str, Any] | None = None,
     protected_paths: set[str] | None = None,
 ) -> str:
     context_parts = []
@@ -405,12 +397,9 @@ def _build_edit_prompt(
     for source_file in source_files:
         digest = source_file.get("sha256", "unknown")
         completeness = "complete" if source_file.get("complete", False) else "truncated; targeted edits only"
-        role = source_file.get("role") or "unknown"
-        adaptation = source_file.get("adaptation") or "inspect"
         protection = "PROTECTED" if source_file.get("protected") else "editable"
         block = (
-            f"### {source_file['path']} (role: {role}; adaptation: {adaptation}; "
-            f"{protection}; sha256: {digest}; {completeness})\n```\n"
+            f"### {source_file['path']} ({protection}; sha256: {digest}; {completeness})\n```\n"
             f"{source_file['content']}\n```"
         )
         if total_chars + len(block) > MAX_CONTEXT_CHARS:
@@ -420,7 +409,6 @@ def _build_edit_prompt(
 
     source_context = "\n\n".join(context_parts)
     context = project_context or {}
-    pack_context = report_pack_context or {}
     protected = sorted(protected_paths or set())
     return f"""User Request:
 "{instruction}"
@@ -428,13 +416,7 @@ def _build_edit_prompt(
 ## Approved project context
 
 ```json
-{bounded_json(context, 14000, priority_keys=("project", "analysis_plan", "study_manifest", "report_pack", "protected_paths"))}
-```
-
-## Materialized ReportPack contract
-
-```json
-{bounded_json(pack_context, 8000, priority_keys=("id", "version", "domain", "execution", "capabilities", "prompt_references"))}
+{bounded_json(context, 14000, priority_keys=("project", "analysis_plan", "study_manifest", "protected_paths"))}
 ```
 
 ## Protected paths

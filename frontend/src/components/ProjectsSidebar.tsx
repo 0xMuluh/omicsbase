@@ -8,6 +8,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Archive,
   BookOpen,
+  ChevronRight,
   FlaskConical,
   Loader2,
   MoreHorizontal,
@@ -428,9 +429,9 @@ export function ProjectsSidebar({
   notesScope?: string | "recent";
 }) {
   return (
-    <AnimatePresence>
-      {open ? (
-        <>
+    <>
+      <AnimatePresence>
+        {open ? (
           <motion.button
             type="button"
             aria-label="Close projects sidebar"
@@ -440,18 +441,26 @@ export function ProjectsSidebar({
             exit={{ opacity: 0 }}
             onClick={onClose}
           />
-          <motion.aside
-            initial={{ x: -24, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: -24, opacity: 0 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            className="fixed inset-y-0 left-0 z-50 flex w-[min(20rem,88vw)] flex-col shadow-[20px_0_60px_rgba(15,23,42,0.12)] backdrop-blur-xl dark:shadow-[20px_0_60px_rgba(0,0,0,0.35)]"
-          >
-            <ProjectsSidebarContent onClose={onClose} notesScope={notesScope} />
-          </motion.aside>
-        </>
-      ) : null}
-    </AnimatePresence>
+        ) : null}
+      </AnimatePresence>
+      <motion.aside
+        initial={false}
+        animate={{
+          width: open ? 320 : 0,
+          opacity: open ? 1 : 0,
+          x: open ? 0 : -24,
+          borderRightWidth: open ? "1px" : "0px",
+        }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        className={`fixed inset-y-0 left-0 z-50 flex h-full flex-col overflow-hidden bg-sidebar shadow-[20px_0_60px_rgba(15,23,42,0.12)] backdrop-blur-xl dark:shadow-[20px_0_60px_rgba(0,0,0,0.35)] md:static md:z-auto md:h-screen md:shrink-0 md:shadow-none md:backdrop-blur-none ${
+          open ? "" : "pointer-events-none"
+        }`}
+        inert={!open}
+        aria-hidden={!open}
+      >
+        <ProjectsSidebarContent onClose={onClose} notesScope={notesScope} />
+      </motion.aside>
+    </>
   );
 }
 
@@ -469,7 +478,6 @@ function SidebarProjectItem({ project }: { project: Project }) {
 
   const openProjectNotes = async () => {
     if (notesCloseTimerRef.current) clearTimeout(notesCloseTimerRef.current);
-    setMenuOpen(false);
     setNotesOpen(true);
     if (projectThreads === null) {
       try {
@@ -572,14 +580,18 @@ function SidebarProjectItem({ project }: { project: Project }) {
                 <div className="absolute right-0 top-full z-30 mt-1 w-40 rounded-xl border border-border bg-popover p-1 text-xs shadow-xl">
                   <button
                     type="button"
-                    onMouseEnter={() => void openProjectNotes()}
                     onClick={() => {
-                      setMenuOpen(false);
-                      router.push(`/projects/${project.id}/notes`);
+                      void openProjectNotes();
+                    }}
+                    onMouseEnter={() => {
+                      // Only expand an already-open flyout; never open on a
+                      // passing pointer aiming for the rows below.
+                      if (notesOpen) void openProjectNotes();
                     }}
                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-foreground transition hover:bg-muted"
                   >
                     <BookOpen className="h-3.5 w-3.5" /> Notes
+                    <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
                   </button>
                   <button
                     type="button"
@@ -631,7 +643,7 @@ function SidebarProjectItem({ project }: { project: Project }) {
           <div
             onMouseEnter={openProjectNotes}
             onMouseLeave={scheduleCloseNotes}
-            className="absolute right-0 top-full z-40 mt-1 w-72 max-h-80 overflow-y-auto rounded-2xl border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-2xl"
+            className="absolute right-full top-0 z-40 mr-1 w-64 max-h-80 overflow-y-auto rounded-2xl border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-2xl"
           >
             <p className="px-2.5 py-1.5 font-medium text-muted-foreground">Notes</p>
             {projectThreads === null ? (

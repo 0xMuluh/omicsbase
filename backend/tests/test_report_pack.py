@@ -12,7 +12,12 @@ from app.services.capability_contract import (
     resolve_plan_capabilities,
     validate_capability_bindings,
 )
-from app.services.report_pack import ReportPackError, load_report_pack
+from app.services.report_pack import (
+    ReportPackError,
+    load_report_pack,
+    report_pack_source_files,
+    validate_source_closure,
+)
 from app.services.spawner import EXEMPLAR_ROOTS, exemplar_project_files
 
 
@@ -121,6 +126,22 @@ def test_metabolomics_exemplar_artifact_paths_are_consistent():
     all_source = "\n".join([loader, analysis, validator, *qmd_sources])
     for legacy_name in ("MAE2", "data_v2", "targeted_v2", "study2_results_v2"):
         assert legacy_name not in all_source
+
+
+def test_source_closure_ignores_internal_edit_journal(tmp_path: Path):
+    (tmp_path / "code").mkdir()
+    (tmp_path / "code" / "funct.R").write_text("identity <- function(x) x\n")
+    (tmp_path / "code" / "main.R").write_text("source(\"funct.R\")\n")
+
+    journal_code = tmp_path / ".omicsbase" / "edits" / "journal" / "after" / "code"
+    journal_code.mkdir(parents=True)
+    (journal_code / "snapshot.qmd").write_text(
+        "---\ntitle: snapshot\n---\n\nsource(\"../funct.R\")\n"
+    )
+
+    inventory = report_pack_source_files(tmp_path)
+    assert all(".omicsbase" not in path.parts for path in inventory)
+    validate_source_closure(tmp_path, execution_working_directory="code")
 
 
 def test_builtin_packs_have_executable_capability_contracts():
@@ -284,13 +305,6 @@ def test_resolved_inventory_records_rule_and_pack_hash():
     ]
 
 
-def test_declared_prompt_references_exist_under_skills_root():
-    skills_root = Path(__file__).resolve().parents[2] / "skills"
-    for domain, root in EXEMPLAR_ROOTS.items():
-        pack = load_report_pack(root, domain=domain)
-        assert pack.prompt_references
-        for reference in pack.prompt_references:
-            assert (skills_root / reference).is_file(), reference
 
 
 def test_source_tree_digest_changes_with_source_bytes(tmp_path: Path):

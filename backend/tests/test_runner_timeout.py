@@ -1,4 +1,4 @@
-"""Tests for runner timeout handling and repair skip logic."""
+"""Tests for runner timeout handling."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import sys
 import pytest
 
 from app.services import runner
-from app.tasks.analysis import _is_timeout_failure
 
 
 def test_timeout_for_heavy_association_page_is_extended():
@@ -16,22 +15,7 @@ def test_timeout_for_heavy_association_page_is_extended():
     assert runner._timeout_for_page("descriptive_analysis.qmd") == 1800
 
 
-def test_is_timeout_failure_detects_timed_out_render():
-    assert _is_timeout_failure(
-        {
-            "errors": [
-                {
-                    "step": "qmd",
-                    "page": "primary_association_models.qmd",
-                    "error": "primary_association_models.qmd failed: Process timed out",
-                    "timeout": True,
-                }
-            ]
-        }
-    )
-    assert not _is_timeout_failure(
-        {"errors": [{"step": "qmd", "error": "object 'x' not found"}]}
-    )
+
 
 
 @pytest.mark.asyncio
@@ -109,6 +93,8 @@ async def test_parallel_leaf_rendering(tmp_path, monkeypatch):
     # index.qmd must be rendered LAST after leaf pages complete
     assert rendered_pages[-1] == "index.qmd"
     assert set(rendered_pages[:2]) == {"01_alpha.qmd", "02_beta.qmd"}
+    assert (output_dir / "index.html").read_text() == "<html>Done</html>"
+    assert "<iframe" not in (output_dir / "index.html").read_text()
 
 
 @pytest.mark.asyncio
@@ -124,3 +110,36 @@ async def test_run_command_caps_accumulated_output(tmp_path, monkeypatch):
 
     assert success is False
     assert runner.SUBPROCESS_TRUNCATION_MARKER in output
+
+
+@pytest.mark.asyncio
+async def test_failed_leaf_pages_are_collected_without_publishing_report(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    code_dir = project_dir / "code"
+    output_dir = project_dir / "output"
+    code_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    (output_dir / "index.html").write_text("stale report")
+
+    (code_dir / "01_bad.qmd").write_text("# Bad one")
+    (code_dir / "02_bad.qmd").write_text("# Bad two")
+    (code_dir / "index.qmd").write_text("# Index")
+    rendered_pages = []
+
+    async def fake_run_command(cmd, cwd, progress_callback=None, timeout=1800, sandbox_root=None):
+        page = cmd[2]
+        rendered_pages.append(page)
+        if page != "index.qmd":
+            return False, f"{page} failed: missing object"
+        (output_dir / "index.html").write_text("partial assembly")
+        return True, "rendered"
+
+    monkeypatch.setattr(runner, "_run_command", fake_run_command)
+
+    result = await runner.run_project(str(project_dir))
+
+    assert result["status"] == "failed"
+    assert set(result["failed_pages"]) == {"01_bad.qmd", "02_bad.qmd"}
+    assert len(result["errors"]) == 2
+    assert rendered_pages[-1] == "index.qmd"
+    assert not (output_dir / "index.html").exists()

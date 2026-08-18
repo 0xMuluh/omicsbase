@@ -820,6 +820,18 @@ def _safe_replace(whole: bytes, search: str, replace: str, *, allow_multiple: bo
     elided = _replace_elision(text, search, replace)
     if elided is not None:
         return elided.encode("utf-8"), "elision_anchor", None
+    try:
+        from app.services.fuzzy_replace import _replace_closest_edit_distance
+        fuzzy = _replace_closest_edit_distance(
+            text.splitlines(keepends=True),
+            search,
+            search.splitlines(),
+            replace.splitlines(keepends=True),
+        )
+        if fuzzy is not None:
+            return fuzzy.encode("utf-8"), "fuzzy_closest", None
+    except Exception:
+        pass
     return None, "none", "SEARCH block failed to match exactly one location."
 
 

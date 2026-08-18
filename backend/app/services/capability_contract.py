@@ -85,24 +85,74 @@ def _plan_mapping(plan: Any) -> dict[str, Any]:
     model_dump = getattr(plan, "model_dump", None)
     if callable(model_dump):
         value = model_dump()
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        fields_set = getattr(plan, "model_fields_set", None)
+        if fields_set is None:
+            fields_set = getattr(plan, "__fields_set__", set())
+        # Pydantic fills omitted list fields with []; retain the distinction
+        # between an explicitly empty selection and an omitted selection.
+        if "capabilities" not in fields_set and not value.get("capabilities"):
+            value = dict(value)
+            value.pop("capabilities", None)
+        return value
     return {}
 
 
-def resolve_plan_capabilities(pack: ReportPack, plan: Any = None) -> CapabilityContract:
-    """Resolve explicit plan capability ids, defaulting to the full pack.
+def _scoped_capability(
+    capability: ReportPackCapability,
+    *,
+    excluded_paths: set[str],
+    active_execution_steps: set[str] | None,
+) -> ReportPackCapability:
+    return ReportPackCapability(
+        capability_id=capability.capability_id,
+        sources=tuple(path for path in capability.sources if path not in excluded_paths),
+        execution_steps=tuple(
+            step_id
+            for step_id in capability.execution_steps
+            if active_execution_steps is None or step_id in active_execution_steps
+        ),
+        parameters=dict(capability.parameters),
+        outputs=tuple(capability.outputs),
+        validators=tuple(capability.validators),
+    )
 
-    A plan may use either ``capabilities: [id, ...]`` or the singular
-    ``capability_id`` while older plans remain valid and receive all declared
-    pack capabilities.
+
+def resolve_plan_capabilities(
+    pack: ReportPack,
+    plan: Any = None,
+    *,
+    excluded_paths: Iterable[str] = (),
+    active_execution_steps: Iterable[str] | None = None,
+) -> CapabilityContract:
+    """Resolve the capabilities explicitly selected by one analysis plan.
+
+    A plan may use ``capabilities: [id, ...]`` or the singular
+    ``capability_id``. A declared pack with no capability selection is
+    incomplete; it must be clarified or migrated instead of silently selecting
+    every capability.
     """
     declared = {item.capability_id: item for item in pack.capabilities}
+    excluded = {
+        _safe_relative(path, label="Excluded capability path")
+        for path in excluded_paths
+    }
+    active = (
+        {str(step_id).strip() for step_id in active_execution_steps}
+        if active_execution_steps is not None
+        else None
+    )
     mapping = _plan_mapping(plan)
     requested_raw = mapping.get("capabilities")
     if requested_raw is None and mapping.get("capability_id") is not None:
         requested_raw = [mapping.get("capability_id")]
     if requested_raw is None:
-        requested = list(declared)
+        if declared:
+            raise CapabilityContractError(
+                f"Analysis plan must explicitly select capabilities for ReportPack {pack.pack_id!r}"
+            )
+        requested = []
         explicit = False
     elif isinstance(requested_raw, list):
         requested = [str(item).strip().lower() for item in requested_raw if str(item).strip()]
@@ -117,7 +167,14 @@ def resolve_plan_capabilities(pack: ReportPack, plan: Any = None) -> CapabilityC
             f"Analysis plan requested unavailable capability(ies): {', '.join(unknown)}"
         )
     selected = tuple(
-        ResolvedCapability(declared[item], requested_by_plan=explicit)
+        ResolvedCapability(
+            _scoped_capability(
+                declared[item],
+                excluded_paths=excluded,
+                active_execution_steps=active,
+            ),
+            requested_by_plan=explicit,
+        )
         for item in requested
     )
     return CapabilityContract(
@@ -186,12 +243,20 @@ def write_capability_contract(
     project_root: str | Path,
     pack: ReportPack,
     plan: Any = None,
+    *,
+    excluded_paths: Iterable[str] = (),
+    active_execution_steps: Iterable[str] | None = None,
 ) -> Path:
     """Write and immediately validate the resolved runtime capability map."""
     root = Path(project_root).resolve()
     target = root / CAPABILITY_CONTRACT_RELATIVE
     target.parent.mkdir(parents=True, exist_ok=True)
-    contract = resolve_plan_capabilities(pack, plan)
+    contract = resolve_plan_capabilities(
+        pack,
+        plan,
+        excluded_paths=excluded_paths,
+        active_execution_steps=active_execution_steps,
+    )
     target.write_text(json.dumps(contract.as_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     load_capability_contract(root)
     return target
@@ -288,13 +353,46 @@ def validate_capability_bindings(
     return result
 
 
+def bind_plan_recipes(plan: Any) -> Any:
+    """Validate explicit recipe bindings and fill deterministic aliases."""
+    from app.services.recipe_registry import get_recipe, load_recipe_registry, resolve_recipe
+    from app.services.spawner import resolve_report_pack
+
+    for step in plan.workflow:
+        recipe = get_recipe(step.recipe_id) if step.recipe_id else None
+        if recipe and recipe.get("domain") != plan.domain:
+            recipe = None
+        recipe = recipe or resolve_recipe(step.id, plan.domain)
+        step.recipe_id = recipe.get("id") if recipe else None
+    plan.recipe_registry_version = load_recipe_registry().get("version")
+    # Null means from-scratch: do not inject a domain default pack.
+    if not str(plan.report_pack_id or "").strip():
+        plan.report_pack_id = None
+        return plan
+    try:
+        pack = resolve_report_pack(plan.report_pack_id, domain=plan.domain)
+    except Exception as exc:
+        raise CapabilityContractError(
+            f"Selected ReportPack {plan.report_pack_id!r} could not be resolved: {exc}"
+        ) from exc
+    if pack is None:
+        plan.report_pack_id = None
+        return plan
+    plan.report_pack_id = pack.pack_id
+    resolve_plan_capabilities(pack, plan)
+    validate_plan_parameter_bindings(pack, plan)
+    return plan
+
+
 __all__ = [
     "CAPABILITY_CONTRACT_RELATIVE",
     "CapabilityContract",
     "CapabilityContractError",
+    "bind_plan_recipes",
     "load_capability_contract",
     "validate_capability_bindings",
     "validate_plan_parameter_bindings",
     "resolve_plan_capabilities",
     "write_capability_contract",
 ]
+

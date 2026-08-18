@@ -1,7 +1,8 @@
-"""Configurable LLM client supporting Anthropic, OpenAI, Qwen, Gemini, OpenRouter, Groq, and xAI Grok."""
+"""Configurable LLM client supporting Anthropic, OpenAI, Qwen, Gemini, OpenRouter, OrcaRouter, Groq, and xAI Grok."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.services.providers import api_key_for, base_url_for, default_model_for
+from app.services.providers import api_key_for, base_url_for, default_model_for, is_openai_compat
 from app.services.provider_errors import raise_classified_provider_exception
 from app.services.sanitizer import sanitize_text
 from app.services.prompt_rules import inspect_prompt, inspect_system_prompt, prompt_fingerprint
@@ -33,7 +34,7 @@ _gemini_client: Any = None
 _gemini_client_key: str | None = None
 
 # Stable fallback when the configured model isn't a Gemini model name.
-_GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+_GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 _NON_GEMINI_HINTS = ("claude", "gpt-", "deepseek", "llama", "qwen", "grok", "o1-", "o3-", "o4-", "grok-")
 
 
@@ -60,7 +61,7 @@ def _get_anthropic_client(api_key: str):
     import anthropic
 
     if _anthropic_client is None or _anthropic_key != api_key:
-        _anthropic_client = anthropic.Anthropic(api_key=api_key)
+        _anthropic_client = anthropic.Anthropic(api_key=api_key, timeout=_request_timeout_seconds())
         _anthropic_key = api_key
     return _anthropic_client
 
@@ -70,9 +71,17 @@ def _get_async_anthropic_client(api_key: str):
     import anthropic
 
     if _async_anthropic_client is None or _async_anthropic_key != api_key:
-        _async_anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
+        _async_anthropic_client = anthropic.AsyncAnthropic(api_key=api_key, timeout=_request_timeout_seconds())
         _async_anthropic_key = api_key
     return _async_anthropic_client
+
+
+def _request_timeout_seconds() -> float:
+    """Cap any single provider request so stalls fail fast, not after 10+ minutes."""
+    try:
+        return float(max(120, int(settings.agent_run_stale_after_seconds or 300)))
+    except (TypeError, ValueError):
+        return 300.0
 
 
 def _get_openai_client(api_key: str, base_url: str | None):
@@ -80,9 +89,11 @@ def _get_openai_client(api_key: str, base_url: str | None):
 
     key = (api_key, base_url)
     if key not in _openai_clients:
-        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": _request_timeout_seconds()}
         if base_url:
             client_kwargs["base_url"] = base_url
+            if "dashscope" in base_url.lower() or "aliyun" in base_url.lower():
+                client_kwargs["default_headers"] = {"x-dashscope-session-cache": "enable"}
         _openai_clients[key] = OpenAI(**client_kwargs)
     return _openai_clients[key]
 
@@ -92,9 +103,11 @@ def _get_async_openai_client(api_key: str, base_url: str | None):
 
     key = (api_key, base_url)
     if key not in _async_openai_clients:
-        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": _request_timeout_seconds()}
         if base_url:
             client_kwargs["base_url"] = base_url
+            if "dashscope" in base_url.lower() or "aliyun" in base_url.lower():
+                client_kwargs["default_headers"] = {"x-dashscope-session-cache": "enable"}
         _async_openai_clients[key] = AsyncOpenAI(**client_kwargs)
     return _async_openai_clients[key]
 
@@ -144,7 +157,7 @@ async def call_llm(
             )
         if provider == "anthropic":
             return await _call_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override)
-        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+        if is_openai_compat(provider):
             return await _call_openai(
                 system_prompt, user_prompt, response_format, max_tokens,
                 provider=provider, model_override=model_override, reasoning_effort=reasoning_effort,
@@ -175,7 +188,7 @@ async def stream_llm_text(
             async for chunk in _stream_anthropic(system_prompt, user_prompt, max_tokens, model_override=model_override):
                 yield chunk
             return
-        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+        if is_openai_compat(provider):
             async for chunk in _stream_openai(
                 system_prompt, user_prompt, max_tokens, provider=provider, model_override=model_override,
             ):
@@ -224,7 +237,7 @@ async def stream_llm_with_tools(
             ):
                 yield event
             return
-        if provider in {"openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama"}:
+        if is_openai_compat(provider):
             async for event in _stream_openai_with_tools(
                 system_prompt,
                 messages,
@@ -313,6 +326,34 @@ def _gemini_config(
     return config
 
 
+def _clean_schema_for_gemini(schema: Any) -> Any:
+    """Recursively adapt standard JSON Schema to Gemini's schema dialect.
+
+    Gemini rejects unknown fields: additionalProperties/$schema/title are
+    dropped, ``oneOf`` becomes the supported ``anyOf``, and ``const`` becomes
+    a single-value ``enum``.
+    """
+    if isinstance(schema, dict):
+        cleaned: dict[str, Any] = {}
+        for k, v in schema.items():
+            if k in ("additionalProperties", "additional_properties", "$schema", "title"):
+                continue
+            if k == "const":
+                cleaned["enum"] = [v]
+                continue
+            if k == "oneOf":
+                k = "anyOf"
+            value = _clean_schema_for_gemini(v)
+            if k == "anyOf" and isinstance(cleaned.get("anyOf"), list):
+                cleaned["anyOf"] = cleaned["anyOf"] + value
+            else:
+                cleaned[k] = value
+        return cleaned
+    if isinstance(schema, list):
+        return [_clean_schema_for_gemini(x) for x in schema]
+    return schema
+
+
 def _gemini_tools(tools: list[dict[str, Any]]) -> list[Any] | None:
     """Convert OpenAI-format tool definitions to Gemini FunctionDeclarations."""
     from google.genai import types
@@ -326,7 +367,7 @@ def _gemini_tools(tools: list[dict[str, Any]]) -> list[Any] | None:
             types.FunctionDeclaration(
                 name=func.get("name", ""),
                 description=func.get("description", ""),
-                parameters=func.get("parameters", {"type": "object", "properties": {}}),
+                parameters=_clean_schema_for_gemini(func.get("parameters", {"type": "object", "properties": {}})),
             )
         )
     return [types.Tool(function_declarations=declarations)]
@@ -363,11 +404,19 @@ def _openai_to_gemini_contents(
                         arguments = json.loads(arguments)
                     except json.JSONDecodeError:
                         arguments = {}
-                parts.append(
-                    types.Part(
-                        function_call=types.FunctionCall(id=call_id, name=name, args=arguments)
-                    )
+                part = types.Part(
+                    function_call=types.FunctionCall(id=call_id, name=name, args=arguments)
                 )
+                # Gemini 3 validates that functionCall parts echo back the
+                # thought_signature they were generated with; without it the
+                # API rejects the whole request (400 INVALID_ARGUMENT).
+                signature = tc.get("thought_signature")
+                if signature:
+                    try:
+                        part.thought_signature = base64.b64decode(signature)
+                    except (ValueError, TypeError):
+                        pass
+                parts.append(part)
             contents.append(types.Content(role="model", parts=parts))
         elif role == "tool":
             name = tool_id_to_name.get(msg.get("tool_call_id") or "", "unknown")
@@ -418,12 +467,16 @@ async def _stream_gemini(
     model_override: str | None = None,
 ):
     """Stream text from the Gemini native API."""
+    import inspect
+
     model = _resolve_gemini_model(model_override)
     client = _get_gemini_client(settings.gemini_api_key or settings.openai_api_key or "dummy-key")
     config = _gemini_config(system_prompt, None, max_tokens)
-    async for chunk in client.aio.models.generate_content_stream(
+    stream_or_coro = client.aio.models.generate_content_stream(
         model=model, contents=user_prompt, config=config
-    ):
+    )
+    stream = await stream_or_coro if inspect.isawaitable(stream_or_coro) else stream_or_coro
+    async for chunk in stream:
         if chunk and chunk.text:
             yield chunk.text
 
@@ -442,6 +495,8 @@ async def _stream_gemini_with_tools(
     text_delta, tool_call, usage, done. Function call arguments may arrive
     split across chunks, so they are accumulated before emitting.
     """
+    import inspect
+
     model = _resolve_gemini_model(model_override)
     client = _get_gemini_client(settings.gemini_api_key or settings.openai_api_key or "dummy-key")
     contents, _ = _openai_to_gemini_contents(messages)
@@ -451,7 +506,7 @@ async def _stream_gemini_with_tools(
     tool_call_order: list[str] = []
     usage_payload: dict[str, int] | None = None
 
-    async def _consume_chunk(chunk: Any) -> None:
+    def _consume_chunk(chunk: Any):
         nonlocal usage_payload
         if chunk is None:
             return
@@ -461,12 +516,21 @@ async def _stream_gemini_with_tools(
                 "input_tokens": int(getattr(metadata, "prompt_token_count", 0) or 0),
                 "output_tokens": int(getattr(metadata, "candidates_token_count", 0) or 0),
             }
-        function_calls = getattr(chunk, "function_calls", None) or []
-        if not function_calls:
+        # Walk the raw parts (not chunk.function_calls) so each function
+        # call's thought_signature can be captured for history round-trips.
+        parts: list[Any] = []
+        candidates = getattr(chunk, "candidates", None) or []
+        if candidates:
+            content = getattr(candidates[0], "content", None)
+            parts = list(getattr(content, "parts", None) or [])
+        if not any(getattr(p, "function_call", None) is not None for p in parts):
             if chunk.text:
                 yield {"type": "text_delta", "content": chunk.text}
             return
-        for call in function_calls:
+        for part in parts:
+            call = getattr(part, "function_call", None)
+            if call is None:
+                continue
             call_id = call.id or f"call_{len(tool_call_order)}"
             if call_id not in tool_calls_acc:
                 tool_calls_acc[call_id] = {"id": call_id, "name": "", "args": {}}
@@ -476,18 +540,30 @@ async def _stream_gemini_with_tools(
                 acc["name"] = call.name
             if call.args:
                 acc["args"].update(call.args)
+            signature = getattr(part, "thought_signature", None)
+            if signature:
+                acc["thought_signature"] = (
+                    base64.b64encode(signature).decode("ascii")
+                    if isinstance(signature, (bytes, bytearray))
+                    else str(signature)
+                )
 
     def _emit_tool_calls():
         for call_id in tool_call_order:
             tc = tool_calls_acc[call_id]
-            yield {"type": "tool_call", "id": tc["id"], "name": tc["name"], "arguments": tc["args"]}
+            event = {"type": "tool_call", "id": tc["id"], "name": tc["name"], "arguments": tc["args"]}
+            if tc.get("thought_signature"):
+                event["thought_signature"] = tc["thought_signature"]
+            yield event
 
     for attempt in range(2):
         try:
-            async for chunk in client.aio.models.generate_content_stream(
+            stream_or_coro = client.aio.models.generate_content_stream(
                 model=model, contents=contents, config=config
-            ):
-                async for event in _consume_chunk(chunk):
+            )
+            stream = await stream_or_coro if inspect.isawaitable(stream_or_coro) else stream_or_coro
+            async for chunk in stream:
+                for event in _consume_chunk(chunk):
                     yield event
             break
         except Exception as exc:
@@ -602,6 +678,9 @@ def _normalise_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str,
             copied_tool_calls: list[dict[str, Any]] = []
             for tool_call in tool_calls:
                 copied_tool_call = dict(tool_call)
+                # Gemini-only bookkeeping; strict OpenAI-compat APIs reject
+                # unknown tool_call fields.
+                copied_tool_call.pop("thought_signature", None)
                 function = copied_tool_call.get("function")
                 if isinstance(function, dict):
                     copied_function = dict(function)
@@ -677,8 +756,13 @@ async def _stream_openai_with_tools(
     }
     if tools:
         kwargs["tools"] = tools
-    if provider == "openai":
+    if provider != "ollama":
+        # Every OpenAI-compatible endpoint we route honours stream_options;
+        # without it Qwen/DashScope turns report zero usage and cost
+        # accounting falls back to output-character estimates.
         kwargs["stream_options"] = {"include_usage": True}
+    if provider == "qwen" or "dashscope" in (base_url or "").lower():
+        kwargs["extra_headers"] = {"x-dashscope-session-cache": "enable"}
     if tools and _supports_reasoning_effort(provider, model_name):
         # gpt-5.x on /v1/chat/completions rejects function tools unless
         # reasoning_effort is explicitly "none" (the API's own guidance);
@@ -736,16 +820,20 @@ async def _stream_openai_with_tools(
 
         yield {"type": "done"}
 
-    # Groq intermittently hard-fails on a malformed tool-call JSON sample
-    # ("Failed to call a function"); the next sample is usually valid.
+    # One retry whenever the stream dies before producing any output: a
+    # stalled connection, a Groq tool-call JSON failure, or a transient 5xx
+    # all recover on the second attempt, and no partial output is lost
+    # because nothing was yielded yet.
     for attempt in range(2):
+        yielded = False
         try:
             async for event in _run_stream():
+                yielded = True
                 yield event
             return
         except Exception as exc:
-            if attempt == 0 and "failed to call a function" in str(exc).lower():
-                logger.warning("Provider tool-call error, retrying once: %s", exc)
+            if attempt == 0 and not yielded:
+                logger.warning("Provider stream failed before any output, retrying once: %s", exc)
                 continue
             raise
 

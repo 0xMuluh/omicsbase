@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from app.services.provider_errors import LLMProviderError
+from app.services.provider_errors import (
+    LLMAuthenticationError,
+    LLMProviderError,
+    LLMQuotaError,
+)
 
 
 _MEMORY_KEY = "provider_blocks"
@@ -25,6 +29,21 @@ def active_provider_block(project: Any, provider: str | None) -> dict[str, Any] 
     if not isinstance(block, dict) or block.get("retryable", True):
         return None
     return dict(block)
+
+
+def provider_error_from_block(block: dict[str, Any]) -> LLMProviderError:
+    """Rehydrate a persisted non-retryable provider failure for task control flow."""
+    category = str(block.get("category") or "provider_error")
+    error_type = {
+        "quota_exhausted": LLMQuotaError,
+        "authentication": LLMAuthenticationError,
+    }.get(category, LLMProviderError)
+    return error_type(
+        str(block.get("provider") or "configured"),
+        str(block.get("message") or "The configured language-model provider is blocked."),
+        code=str(block.get("code")) if block.get("code") is not None else None,
+        status_code=int(block["status_code"]) if block.get("status_code") is not None else None,
+    )
 
 
 def record_provider_block(project: Any, failure: LLMProviderError) -> bool:

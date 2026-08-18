@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from app.schemas.schemas import AnalysisPlan, WorkflowStep
-from app.services import generator
+from app.services.spawner import spawn_exemplar_project
 from app.services.recipe_execution import run_recipe_target
 
 
@@ -116,18 +116,7 @@ def test_microbiome_ingestion_recipe_executes(tmp_path: Path, monkeypatch: pytes
         ]
     )
     manifest = _manifest("microbiome", counts.name, metadata.name, ["taxon", "S1", "S2"], ["sample_id", "condition"])
-    asyncio.run(
-        generator.generate_project(
-            str(project),
-            plan,
-            file_summaries=[],
-            study_manifest=manifest,
-            uploaded_file_paths={
-                "feature_table": [str(counts)],
-                "metadata": [str(metadata)],
-            },
-        )
-    )
+    spawn_exemplar_project(str(project), plan)
 
     if _template_dependencies_available():
         subprocess.run(["Rscript", "data.R"], cwd=project / "code", check=True)
@@ -208,10 +197,15 @@ def test_metabolomics_ingestion_recipe_executes(tmp_path: Path, monkeypatch: pyt
         assert (project / "output" / "results" / "metabolite_lmm.csv").exists()
 
 
-def _plan(domain: str, step_id: str, recipe_id: str) -> AnalysisPlan:
+def _plan(domain: str, step_id: str, recipe_id: str, *, report_pack_id: str | None = None) -> AnalysisPlan:
+    defaults = {
+        "microbiome": "microbiome-diversity",
+        "metabolomics": "prenatal-metabolomics",
+    }
     return AnalysisPlan(
         project_name="R smoke test",
         domain=domain,
+        report_pack_id=report_pack_id if report_pack_id is not None else defaults.get(domain),
         study_type="two_group_comparison",
         question="Compare conditions",
         grouping_variable="condition",

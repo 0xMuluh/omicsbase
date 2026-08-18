@@ -32,6 +32,7 @@ _PLACEHOLDER_PREFIXES = (
     "aiza...",
     "gsk_...",
     "sk-proj-...",
+    "sk-orca-...",
 )
 
 _PROVIDERS: dict[str, ProviderSpec] = {
@@ -60,8 +61,8 @@ _PROVIDERS: dict[str, ProviderSpec] = {
         key_fields=("gemini_api_key", "openai_api_key"),
         base_url_field="openai_base_url",
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        default_model="gemini-3.1-pro-preview",
-        fast_model="gemini-3.6-flash",
+        default_model="gemini-3.5-flash-lite",
+        fast_model="gemini-3.5-flash-lite",
     ),
     "openrouter": ProviderSpec(
         key_fields=("openrouter_api_key", "openai_api_key"),
@@ -69,6 +70,13 @@ _PROVIDERS: dict[str, ProviderSpec] = {
         default_base_url="https://openrouter.ai/api/v1",
         default_model="anthropic/claude-3.5-sonnet",
         fast_model="anthropic/claude-3.5-haiku",
+    ),
+    "orcarouter": ProviderSpec(
+        key_fields=("orcarouter_api_key", "openai_api_key"),
+        base_url_field="openai_base_url",
+        default_base_url="https://api.orcarouter.ai/v1",
+        default_model="orcarouter/free",
+        fast_model="orcarouter/free",
     ),
     "deepseek": ProviderSpec(
         key_fields=("openai_api_key",),
@@ -108,7 +116,7 @@ _PROVIDERS: dict[str, ProviderSpec] = {
 }
 
 _OPENAI_COMPAT_PROVIDERS = {
-    "openai", "qwen", "gemini", "openrouter", "deepseek", "groq", "grok", "xai", "ollama",
+    "openai", "qwen", "gemini", "openrouter", "orcarouter", "deepseek", "groq", "grok", "xai", "ollama",
 }
 
 

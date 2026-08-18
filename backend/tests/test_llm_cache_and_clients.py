@@ -238,3 +238,100 @@ async def test_openai_tool_stream_reports_provider_usage(monkeypatch):
         {"type": "usage", "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19}},
         {"type": "done"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_qwen_stream_requests_usage_and_retries_stall(monkeypatch):
+    """Qwen streams must ask for usage and survive a pre-output stall once."""
+    import json as _json
+
+    captured_kwargs: list[dict] = []
+    attempts = {"count": 0}
+
+    class _Delta:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+
+    class _Choice:
+        def __init__(self, delta):
+            self.delta = delta
+
+    class _Chunk:
+        def __init__(self, delta=None, usage=None):
+            self.choices = [_Choice(delta)] if delta else []
+            self.usage = usage
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured_kwargs.append(kwargs)
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise TimeoutError("connection timed out before any output")
+
+            async def stream():
+                yield _Chunk(_Delta(content="recovered"))
+                yield _Chunk(usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12})
+
+            return stream()
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    monkeypatch.setattr(llm, "_get_async_openai_client", lambda api_key, base_url: _Client())
+    events = [event async for event in llm._stream_openai_with_tools(
+        "system", [{"role": "user", "content": "hi"}], [], 100, provider="qwen",
+    )]
+    assert attempts["count"] == 2, "pre-output stall must retry exactly once"
+    assert captured_kwargs[0]["stream_options"] == {"include_usage": True}
+    assert any(e["type"] == "text_delta" and e["content"] == "recovered" for e in events)
+    assert any(e["type"] == "usage" and e["usage"]["total_tokens"] == 12 for e in events)
+
+
+@pytest.mark.asyncio
+async def test_midstream_failure_is_not_retried(monkeypatch):
+    """Output already yielded means a retry would duplicate content: raise instead."""
+    attempts = {"count": 0}
+
+    class _Delta:
+        def __init__(self, content=None):
+            self.content = content
+            self.tool_calls = None
+
+    class _Choice:
+        def __init__(self, delta):
+            self.delta = delta
+
+    class _Chunk:
+        def __init__(self, delta):
+            self.choices = [_Choice(delta)]
+
+    class _Completions:
+        async def create(self, **kwargs):
+            attempts["count"] += 1
+
+            async def stream():
+                yield _Chunk(_Delta(content="partial"))
+                raise RuntimeError("died mid-stream")
+
+            return stream()
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    monkeypatch.setattr(llm, "_get_async_openai_client", lambda api_key, base_url: _Client())
+    collected: list[dict] = []
+    with pytest.raises(RuntimeError):
+        async for event in llm._stream_openai_with_tools(
+            "system", [{"role": "user", "content": "hi"}], [], 100, provider="qwen",
+        ):
+            collected.append(event)
+    assert attempts["count"] == 1
+    assert collected and collected[0]["content"] == "partial"
+
+
+def test_openai_clients_carry_request_timeout():
+    client = llm._get_openai_client("timeout-key-1", "https://example.com/")
+    assert client.timeout == llm._request_timeout_seconds()

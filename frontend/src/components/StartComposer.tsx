@@ -32,20 +32,6 @@ interface AttachedFile {
   role: string;
 }
 
-function inferRole(file: File): string {
-  const lower = file.name.toLowerCase();
-  if (
-    lower.includes("plan")
-    || lower.includes("protocol")
-    || lower.includes("workflow")
-    || lower.endsWith(".md")
-    || lower.endsWith(".docx")
-    || lower.endsWith(".txt")
-  ) {
-    return "analysis_plan";
-  }
-  return "auto";
-}
 
 
 
@@ -147,7 +133,7 @@ export function StartComposer({
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const next = Array.from(incoming).map((file) => ({
       file,
-      role: inferRole(file),
+      role: "auto",
     }));
     setFiles((prev) => [...prev, ...next]);
   }, []);
@@ -228,7 +214,7 @@ export function StartComposer({
       ) : null}
 
       <div
-        className={`relative rounded-[28px] border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)] ${
+        className={`relative rounded-[25px] border bg-[var(--composer-surface)] p-1 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)] ${
           dragOver ? "border-teal-500/50" : "border-border"
         }`}
         onDragOver={(event) => {
@@ -276,7 +262,7 @@ export function StartComposer({
           />
         ) : null}
 
-        <div className="flex items-end gap-1.5">
+        <div className="flex items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"
@@ -311,13 +297,13 @@ export function StartComposer({
             />
           </div>
 
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1">
             <div ref={modeMenuRef} className="relative">
               <button
                 type="button"
                 onClick={() => setModeOpen((open) => !open)}
                 disabled={createMutation.isPending}
-                className="inline-flex h-10 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+                className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 text-sm font-medium text-foreground transition hover:bg-muted"
               >
                 {mode === "notes" ? "Notes" : mode === "build" ? "Build" : "Plan"}
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -366,10 +352,10 @@ export function StartComposer({
               size="sm"
               variant="ghost"
               disabled
-              className="h-10 w-10 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground opacity-50"
+              className="h-9 w-9 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground opacity-50"
               title="Voice input coming soon"
             >
-              <Mic className="h-4 w-4" />
+              <Mic className="h-3.5 w-3.5" />
             </Button>
 
             <Button
@@ -377,13 +363,13 @@ export function StartComposer({
               size="sm"
               disabled={!canSubmit}
               onClick={() => createMutation.mutate()}
-              className="h-10 w-10 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
+              className="h-9 w-9 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
               title="Send"
             >
               {createMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <ArrowUp className="h-4 w-4" />
+                <ArrowUp className="h-3.5 w-3.5" />
               )}
             </Button>
           </div>
@@ -461,7 +447,7 @@ const ComposerTextarea = forwardRef<
           onSubmit();
         }
       }}
-      className="max-h-52 min-h-[40px] w-full resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
+      className="max-h-52 min-h-[36px] w-full resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60"
     />
   );
 });

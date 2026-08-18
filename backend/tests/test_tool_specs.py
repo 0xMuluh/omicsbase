@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-
-from app.services import agent_core
-from app.services.agent_core import ToolCallResult, TurnBudget
+from app.services.agent_core import TurnBudget
 from app.services.note_agent import NOTE_AGENT_SYSTEM_PROMPT, NoteAgentExecutor
 from app.services.context_budget import bounded_json
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
 from app.services.workspace_agent import WorkspaceAgentExecutor, _read_results
 
 
-def test_registry_has_strict_edit_schema_and_hidden_render_alias():
+def test_registry_has_strict_edit_schema_and_inline_render():
     edit = TOOL_REGISTRY.require("edit_project", lens="workspace")
     assert edit.parameters["additionalProperties"] is False
     assert set(edit.parameters["properties"]) == {"mode", "path", "search", "replace", "content", "patch", "edits", "allow_multiple", "reason", "expected_sha256", "approval"}
@@ -18,7 +15,8 @@ def test_registry_has_strict_edit_schema_and_hidden_render_alias():
     assert {branch["properties"]["mode"]["const"] for branch in edit.parameters["oneOf"]} == {"search_replace", "content", "patch", "batch"}
     assert all(branch["additionalProperties"] is False for branch in edit.parameters["oneOf"])
     assert "instruction" not in str(edit.parameters)
-    assert TOOL_REGISTRY.require("repair_report", lens="workspace").advertised is False
+    render = TOOL_REGISTRY.require("render_report", lens="workspace")
+    assert render.kind == "inline" and render.risk == "execute"
     assert "render_report" in {item.name for item in TOOL_REGISTRY.advertised(lens="workspace", capabilities={"report_execution"})}
     assert "repair_report" not in {item.name for item in TOOL_REGISTRY.advertised(lens="workspace", capabilities={"report_execution"})}
 
@@ -26,8 +24,8 @@ def test_registry_has_strict_edit_schema_and_hidden_render_alias():
 def test_registry_exposes_explicit_result_resume_and_undo_contracts():
     read_results = TOOL_REGISTRY.require("read_results", lens="workspace")
     assert read_results.parameters["required"] == ["path"]
-    run_analysis = TOOL_REGISTRY.require("run_analysis", lens="workspace")
-    assert run_analysis.parameters["properties"]["resume_from_checkpoint"]["default"] is True
+    render = TOOL_REGISTRY.require("render_report", lens="workspace")
+    assert render.kind == "inline" and render.risk == "execute"
     undo = TOOL_REGISTRY.require("undo_project_edit", lens="workspace")
     assert undo.parameters["required"] == ["transaction_id"]
     assert undo.idempotency == "non_idempotent"
@@ -43,11 +41,9 @@ def test_registry_tracks_note_lens_and_capability_metadata():
 
 
 def test_registry_is_runtime_policy_source_for_lenses():
-    plan = TOOL_REGISTRY.require("plan_analysis", lens="workspace")
-    run = TOOL_REGISTRY.require("run_analysis", lens="workspace")
-    assert plan.intent == "pipeline"
-    assert run.intent == "pipeline"
-    assert run.effective_budget == 4
+    stage = TOOL_REGISTRY.require("stage_report_pack", lens="workspace")
+    assert stage.kind == "inline" and stage.capability == "report_execution"
+    assert TOOL_REGISTRY.require("render_report", lens="workspace").effective_budget == 4
     assert TOOL_REGISTRY.require("inspect_project", lens="workspace").parallel is False
     assert TOOL_REGISTRY.require("search_workspace", lens="workspace").parallel is True
 
@@ -78,65 +74,11 @@ def test_note_contract_does_not_prescribe_notebook_choreography():
     assert "For each logical analysis step" not in NOTE_AGENT_SYSTEM_PROMPT
     assert "Do not impose a fixed" in NOTE_AGENT_SYSTEM_PROMPT
     assert "Never claim a computed value" in NOTE_AGENT_SYSTEM_PROMPT
-    assert "consequential study-design ambiguity" in NOTE_AGENT_SYSTEM_PROMPT
-    assert "call `list_skills` first" not in NOTE_AGENT_SYSTEM_PROMPT
-    assert "Use `list_skills` and `load_skill` only when" in NOTE_AGENT_SYSTEM_PROMPT
-    assert "code" not in TOOL_REGISTRY.require("add_note", lens="note").description.lower()
+    assert "search_bioc_books" in NOTE_AGENT_SYSTEM_PROMPT
     assert "queued or running execution is not a result" in TOOL_REGISTRY.require("run_r_cell", lens="note").description
     assert "2-4 sentences" not in TOOL_REGISTRY.require("add_note", lens="note").parameters["properties"]["text"]["description"]
 
 
-class _DuplicateExecutor:
-    max_steps = 2
-    max_tokens = 100
-    max_tool_chars = 1000
-    system_prompt = ""
-    tools = []
-    use_retry_guard = False
-    llm_provider_override = None
-    llm_model_override = None
-    cancelled_message = "cancelled"
-    default_final_message = "done"
-    max_steps_message = "max"
-
-    def __init__(self):
-        self.calls = 0
-
-    def initial_events(self, message): return [], False
-    def build_messages(self, message): return [{"role": "user", "content": message}]
-    def build_live_context(self): return ""
-    def fallback_events(self, exc): return [{"type": "final", "message": str(exc)}]
-    def final_event(self, message): return {"type": "final", "message": message}
-    def max_steps_events(self): return [{"type": "final", "message": "max"}]
-    def tool_completed_event(self, *args, **kwargs): return {"type": "tool_completed"}
-    def summary_for(self, name, observation): return str(observation.get("status"))
-    def use_fast_path(self, message): return False
-    async def legacy_llm_step(self, messages, *, step): return None
-    def parallel_eligible(self, name): return False
-    def tool_idempotency(self, name): return "non_idempotent" if name == "run_r_cell" else "read_only"
-    async def execute_tool(self, name, arguments, **kwargs):
-        self.calls += 1
-        return ToolCallResult(observation={"status": "queued"})
-
-
-def test_duplicate_non_idempotent_call_is_suppressed(monkeypatch):
-    executor = _DuplicateExecutor()
-
-    async def fake_stream(**kwargs):
-        yield {"type": "tool_call", "id": "one", "name": "run_r_cell", "arguments": {"code": "1+1"}}
-        yield {"type": "tool_call", "id": "two", "name": "run_r_cell", "arguments": {"code": "1+1"}}
-        yield {"type": "done"}
-
-    monkeypatch.setattr(agent_core, "stream_llm_with_tools", fake_stream)
-    events = asyncio.run(_collect(executor))
-    assert executor.calls == 1
-    # The duplicate is observable in the tool-started telemetry and the tool
-    # result fed back to the model.
-    assert any("Duplicate call suppressed" in str(event) for event in events)
-
-
-async def _collect(executor):
-    return [event async for event in agent_core.run_agent_loop(executor, "run a cell")]
 
 
 def test_turn_budget_enforces_units_calls_and_mutations():
@@ -157,9 +99,14 @@ def test_turn_budget_enforces_units_calls_and_mutations():
         "max_llm_calls": 8,
         "max_generated_tokens": 20000,
         "max_retrieved_chars": 80000,
+        "max_input_tokens": 80000,
+        "max_total_tokens": 100000,
         "llm_calls": 0,
         "generated_tokens": 0,
         "retrieved_chars": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
     }
 
 

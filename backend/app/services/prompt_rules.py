@@ -5,11 +5,11 @@ from __future__ import annotations
 from hashlib import sha256
 
 REQUIRED_RULES = (
-    "The active ReportPack defines",
+    "Team report templates",
     "NEVER fabricate statistics",
     "NEVER silently resolve a contested choice",
     "Include proper error handling for package availability",
-    "Respect the active pack working directory",
+    "Respect the project working directory",
     "Generated R and Quarto source is checked by the QA gate",
 )
 

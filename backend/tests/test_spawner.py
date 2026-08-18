@@ -1,4 +1,4 @@
-"""Tests for the exemplar-project spawner (template IS the report)."""
+"""Tests for optional ReportPack staging (explicit id only; null = from-scratch)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import pytest
 
 from app.config import settings
 from app.schemas.schemas import AnalysisPlan, WorkflowStep
-from app.services import generator
+
 from app.services.spawner import (
+    DEFAULT_PACK_IDS,
     EXEMPLAR_ROOTS,
     exemplar_project_files,
     exemplar_report_pack,
@@ -21,10 +22,11 @@ from app.services.spawner import (
 from app.services.report_pack import ReportPackError
 
 
-def _plan(domain: str) -> AnalysisPlan:
+def _plan(domain: str, *, report_pack_id: str | None = None) -> AnalysisPlan:
     return AnalysisPlan(
         project_name="Spawn Test",
         domain=domain,
+        report_pack_id=report_pack_id,
         study_type="two_group_comparison",
         question="Compare groups",
         grouping_variable="condition",
@@ -42,6 +44,18 @@ def test_exemplar_report_packs_are_declared():
     assert exemplar_report_pack("microbiome").pack_id == "microbiome-diversity"
     assert exemplar_report_pack("metabolomics").pack_id == "prenatal-metabolomics"
     assert exemplar_report_pack("unknown") is None
+
+
+def test_resolve_report_pack_null_means_no_pack():
+    assert resolve_report_pack(None, domain="microbiome") is None
+    assert resolve_report_pack("", domain="microbiome") is None
+    assert resolve_report_pack("  ", domain="metabolomics") is None
+
+
+def test_resolve_report_pack_explicit_id_still_works():
+    pack = resolve_report_pack(DEFAULT_PACK_IDS["microbiome"], domain="microbiome")
+    assert pack is not None
+    assert pack.pack_id == "microbiome-diversity"
 
 
 def test_exemplar_project_files_cover_the_full_tree():
@@ -66,7 +80,10 @@ def test_exemplar_project_files_cover_the_full_tree():
 
 
 def test_spawn_copies_verbatim(tmp_path: Path):
-    spawned = spawn_exemplar_project(str(tmp_path), _plan("microbiome"))
+    spawned = spawn_exemplar_project(
+        str(tmp_path),
+        _plan("microbiome", report_pack_id="microbiome-diversity"),
+    )
     root = EXEMPLAR_ROOTS["microbiome"]
     for relative, content in spawned.items():
         exemplar = root / relative  # relative already includes code/
@@ -78,7 +95,10 @@ def test_spawn_copies_verbatim(tmp_path: Path):
 
 
 def test_spawn_includes_data_construction_machinery(tmp_path: Path):
-    spawned = spawn_exemplar_project(str(tmp_path), _plan("microbiome"))
+    spawned = spawn_exemplar_project(
+        str(tmp_path),
+        _plan("microbiome", report_pack_id="microbiome-diversity"),
+    )
     assert "importMetaPhlAn" in spawned["code/data.R"]
     assert "assign_timepoint" in spawned["code/funct.R"] or "assign_meal" in spawned["code/funct.R"]
     assert "code/main.R" in spawned
@@ -89,8 +109,17 @@ def test_spawn_overwrites_scaffold_placeholders(tmp_path: Path):
     target = tmp_path / "code/alpha/alpha.qmd"
     target.parent.mkdir(parents=True)
     target.write_text("scaffold placeholder")
-    spawned = spawn_exemplar_project(str(tmp_path), _plan("microbiome"))
+    spawned = spawn_exemplar_project(
+        str(tmp_path),
+        _plan("microbiome", report_pack_id="microbiome-diversity"),
+    )
     assert spawned["code/alpha/alpha.qmd"] != "scaffold placeholder"
+
+
+def test_null_report_pack_spawns_nothing(tmp_path: Path):
+    plan = _plan("microbiome", report_pack_id=None)
+    assert spawn_exemplar_project(str(tmp_path), plan) == {}
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_unknown_domain_spawns_nothing(tmp_path: Path):
@@ -160,9 +189,3 @@ def test_catalog_selection_rejects_raw_paths_and_cross_domain_ids(tmp_path: Path
         resolve_report_pack(str(tmp_path), domain="microbiome")
     with pytest.raises(ReportPackError, match="not 'microbiome'"):
         resolve_report_pack("prenatal-metabolomics", domain="microbiome")
-
-
-def test_nav_labels_cover_template_layout():
-    for path in ["alpha/alpha.qmd", "beta/beta.qmd", "ratio/ratio.qmd", "daa/daa_interest.qmd", "corr/corr.qmd"]:
-        generator._qmd_sort_key(path)
-        assert generator._navigation_page_label(path).strip() != ""

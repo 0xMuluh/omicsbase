@@ -115,6 +115,40 @@ def test_contract_round_trip_preserves_order_roles_and_artifacts(tmp_path: Path)
     assert contract.artifacts == ("output/index.html",)
 
 
+def test_contract_excludes_explicitly_deleted_execution_source(tmp_path: Path):
+    project = _project_with_contract(tmp_path)
+    pack = ReportPack(
+        root=project,
+        pack_id="test-pack",
+        version="1.2.3",
+        domain="test",
+        name="Test pack",
+        entrypoint="code/main.R",
+        source="declared",
+        manifest_sha256="a" * 64,
+        source_tree_sha256="b" * 64,
+        execution=ReportPackExecution(
+            working_directory="code",
+            render="entrypoint",
+            steps=(
+                ReportPackExecutionStep("preprocess", "preprocessing/pre.R", "data_loader"),
+                ReportPackExecutionStep("load-data", "code/data.R", "data_loader"),
+                ReportPackExecutionStep("analyze", "code/analysis.R", "analysis"),
+                ReportPackExecutionStep("validate", "code/validate.R", "validator"),
+            ),
+            artifacts=("output/index.html",),
+        ),
+    )
+    write_execution_contract(project, pack, excluded_paths=("code/analysis.R",))
+    contract = load_execution_contract(project)
+    assert contract is not None
+    assert [step.step_id for step in contract.steps] == [
+        "preprocess",
+        "load-data",
+        "validate",
+    ]
+
+
 def test_missing_required_contract_does_not_fall_back_to_legacy(tmp_path: Path):
     (tmp_path / "report_pack.yaml").write_text(
         "schema_version: '1.0'\nexecution:\n  working_directory: code\n"

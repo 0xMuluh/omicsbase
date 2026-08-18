@@ -27,6 +27,28 @@ EDITABLE_EXTENSIONS = {".r", ".qmd", ".yml", ".yaml", ".md", ".txt", ".csv", ".t
 MAX_EDIT_BYTES = 2_000_000
 CHUNK_TIMEOUT_SECONDS = 180
 PREVIEW_MAX_ROWS = 100
+PROJECT_READ_ONLY_FILES = frozenset({
+    "adaptation_manifest.json",
+    "execution_contract.json",
+    "omicsbase-pack.yaml",
+    "report_pack.yaml",
+})
+PROJECT_READ_ONLY_DIRS = ("data/", "output/", ".omicsbase/")
+
+
+def _is_read_only_project_path(relative_path: str) -> bool:
+    normalized = str(relative_path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    return normalized in PROJECT_READ_ONLY_FILES or any(
+        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+        for prefix in PROJECT_READ_ONLY_DIRS
+    )
+
+
+def _is_editable_project_path(relative_path: str, path: Path) -> bool:
+    return not _is_read_only_project_path(relative_path) and path.suffix.lower() in EDITABLE_EXTENSIONS
 
 
 class FileContentUpdate(BaseModel):
@@ -125,6 +147,16 @@ def update_file_content(
     full_path = _resolve_project_file(project, file_path)
     if not full_path.exists() or not full_path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    relative_path = full_path.relative_to(Path(project.project_dir).resolve()).as_posix()
+    if _is_read_only_project_path(relative_path):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "protected_project_file",
+                "message": "Project inputs, outputs, and execution contracts are read-only.",
+                "path": relative_path,
+            },
+        )
     if full_path.suffix.lower() not in EDITABLE_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"File type is not editable: {full_path.suffix}")
 
@@ -156,7 +188,6 @@ def update_file_content(
             },
         )
 
-    relative_path = full_path.relative_to(Path(project.project_dir).resolve()).as_posix()
     try:
         result = apply_transaction(
             project.project_dir,
@@ -438,6 +469,7 @@ def _build_tree(root: Path, prefix: str = "") -> list[dict]:
                 "type": "file",
                 "size": item.stat().st_size,
                 "extension": item.suffix,
+                "editable": _is_editable_project_path(relative_path, item),
             })
 
     return items

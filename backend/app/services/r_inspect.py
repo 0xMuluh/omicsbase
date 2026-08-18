@@ -60,6 +60,41 @@ def guard_r_code(code: str) -> str | None:
     return None
 
 
+# Workspace scripts may write files inside the project, so the write-family
+# blocks above are dropped; everything that escapes the workspace sandbox
+# (network, package installation, shell, process spawning) stays blocked.
+_SCRIPT_BLOCKED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bdownload\.file\b", re.I), "download.file is not allowed"),
+    (re.compile(r"\burl\s*\(", re.I), "url() is not allowed"),
+    (re.compile(r"\bcurl\b", re.I), "curl is not allowed"),
+    (re.compile(r"\bhttr\b", re.I), "httr is not allowed"),
+    (re.compile(r"\bhttr2\b", re.I), "httr2 is not allowed"),
+    (re.compile(r"\brvest\b", re.I), "rvest is not allowed"),
+    (re.compile(r"\bsystem2?\s*\(", re.I), "system/system2 is not allowed"),
+    (re.compile(r"\binstall\.packages\b", re.I), "install.packages is not allowed"),
+    (re.compile(r"\bbiocmanager::install\b", re.I), "package installation is not allowed"),
+    (re.compile(r"\bdevtools::", re.I), "devtools is not allowed"),
+    (re.compile(r"\bremotes::", re.I), "remotes is not allowed"),
+    (re.compile(r"\bpak::", re.I), "pak is not allowed"),
+    (re.compile(r"\bsys\.exec\b", re.I), "process execution is not allowed"),
+    (re.compile(r"\bprocessx::", re.I), "processx is not allowed"),
+    (re.compile(r"\bparallel::", re.I), "parallel is not allowed"),
+    (re.compile(r"\bfuture::", re.I), "future is not allowed"),
+    (re.compile(r"\bsetwd\s*\(", re.I), "setwd is not allowed; scripts already run with the project directory as the working directory"),
+]
+
+
+def guard_r_script(code: str) -> str | None:
+    """Guard a workspace-scoped R script: writes allowed, escapes blocked."""
+    text = code.strip()
+    if not text:
+        return "R script is empty"
+    for pattern, message in _SCRIPT_BLOCKED_PATTERNS:
+        if pattern.search(text):
+            return message
+    return None
+
+
 def run_r_inspect(
     code: str,
     *,

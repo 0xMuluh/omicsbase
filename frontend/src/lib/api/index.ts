@@ -8,6 +8,8 @@ import { eventsApi } from "./events";
 import { executionsApi } from "./executions";
 import { editsApi } from "./edits";
 
+const encodeFilePath = (filePath: string) => filePath.split("/").map(encodeURIComponent).join("/");
+
 // --- API Functions ---
 
 export const api = {
@@ -85,13 +87,13 @@ export const api = {
   getFileTree: (projectId: string) => request<FileTreeNode[]>(`/projects/${projectId}/files/tree`),
   getFileContent: (projectId: string, filePath: string) =>
     request<{ content: string; path: string; type: string; sha256?: string }>(
-      `/projects/${projectId}/files/content/${filePath}`
+      `/projects/${projectId}/files/content/${encodeFilePath(filePath)}`
     ),
   getFilePreview: (projectId: string, filePath: string) =>
-    request<FilePreview>(`/projects/${projectId}/files/preview/${filePath}`),
+    request<FilePreview>(`/projects/${projectId}/files/preview/${encodeFilePath(filePath)}`),
   saveFileContent: (projectId: string, filePath: string, content: string, baseSha256: string) =>
     request<{ content: string; path: string; type: string; saved: boolean; sha256?: string; transaction_id?: string }>(
-      `/projects/${projectId}/files/content/${filePath}`,
+      `/projects/${projectId}/files/content/${encodeFilePath(filePath)}`,
       {
         method: "PATCH",
         headers: { "If-Match": `"${baseSha256}"` },
@@ -107,7 +109,7 @@ export const api = {
   getReportUrl: (projectId: string, path: string = "index.html") =>
     `${API_BASE}/projects/${projectId}/files/report/${path}`,
   getRawFileUrl: (projectId: string, filePath: string) =>
-    `${API_BASE}/projects/${projectId}/files/content/${filePath.split("/").map(encodeURIComponent).join("/")}`,
+    `${API_BASE}/projects/${projectId}/files/content/${encodeFilePath(filePath)}`,
   getDownloadUrl: (projectId: string) =>
     `${API_BASE}/projects/${projectId}/files/download`,
 

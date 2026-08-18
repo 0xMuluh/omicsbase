@@ -5,7 +5,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -131,10 +143,47 @@ class BiocKnowledgeChunk(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
 
     document = relationship("BiocBookDocument", back_populates="chunks")
+    embeddings = relationship(
+        "BiocKnowledgeEmbedding",
+        back_populates="chunk",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("document_id", "ordinal", name="uq_bioc_chunk_ordinal"),
         Index("ix_bioc_chunks_document_ordinal", "document_id", "ordinal"),
+    )
+
+
+class BiocKnowledgeEmbedding(Base):
+    """Versioned local embedding for one immutable book chunk.
+
+    Vectors are stored as normalized float32 bytes rather than requiring a
+    database-specific vector extension. The corpus is intentionally small and
+    curated, so bounded in-process cosine scoring is sufficient and keeps the
+    deployment free of another database service.
+    """
+
+    __tablename__ = "bioc_knowledge_embeddings"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    chunk_id = Column(
+        String(36),
+        ForeignKey("bioc_knowledge_chunks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    model_name = Column(String(255), nullable=False)
+    dimension = Column(Integer, nullable=False)
+    vector = Column(LargeBinary, nullable=False)
+    content_sha256 = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    chunk = relationship("BiocKnowledgeChunk", back_populates="embeddings")
+
+    __table_args__ = (
+        UniqueConstraint("chunk_id", "model_name", name="uq_bioc_embedding_chunk_model"),
+        Index("ix_bioc_embeddings_model_chunk", "model_name", "chunk_id"),
     )
 
 

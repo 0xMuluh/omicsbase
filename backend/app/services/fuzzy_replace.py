@@ -180,7 +180,7 @@ def _try_dotdotdots(whole: str, part: str, replace: str) -> str | None:
 def _replace_closest_edit_distance(
     whole_lines: list[str], part_norm: str, part_lines: list[str], replace_lines: list[str]
 ) -> str | None:
-    similarity_thresh = 0.95
+    similarity_thresh = 0.90
     max_similarity = 0.0
     best_start = -1
     best_end = -1

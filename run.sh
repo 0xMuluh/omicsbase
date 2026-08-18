@@ -61,7 +61,7 @@ fi
 # --- 3. Configuration -------------------------------------------------------
 if [ ! -f "$ENV_FILE" ]; then
   say "First run: let's configure your LLM provider."
-  printf 'LLM provider [anthropic|openai|gemini|groq|openrouter|ollama] (default: anthropic): '
+  printf 'LLM provider [anthropic|openai|gemini|groq|openrouter|orcarouter|ollama] (default: anthropic): '
   read -r PROVIDER
   PROVIDER="${PROVIDER:-anthropic}"
   case "$PROVIDER" in
@@ -69,7 +69,7 @@ if [ ! -f "$ENV_FILE" ]; then
       API_KEY="not-needed"
       ;;
     *)
-      if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GROQ_API_KEY:-}" ] || [ -n "${OPENROUTER_API_KEY:-}" ]; then
+      if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GROQ_API_KEY:-}" ] || [ -n "${OPENROUTER_API_KEY:-}" ] || [ -n "${ORCAROUTER_API_KEY:-}" ]; then
         warn "An LLM API key is already exported in this shell; reusing it."
       fi
       printf 'Paste your %s API key (input is hidden): ' "$PROVIDER"
@@ -86,6 +86,7 @@ if [ ! -f "$ENV_FILE" ]; then
     gemini)    KEY_LINE="GEMINI_API_KEY=$API_KEY" ;;
     groq)      KEY_LINE="GROQ_API_KEY=$API_KEY" ;;
     openrouter) KEY_LINE="OPENROUTER_API_KEY=$API_KEY" ;;
+    orcarouter) KEY_LINE="ORCAROUTER_API_KEY=$API_KEY" ;;
     ollama)    KEY_LINE="OLLAMA_API_KEY=$API_KEY" ;;
     *)         die "Unsupported provider '$PROVIDER'." ;;
   esac

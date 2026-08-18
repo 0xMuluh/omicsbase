@@ -1,13 +1,11 @@
 """Tests for typed deterministic recipe materialization."""
 
-import json
 from pathlib import Path
 
 import pytest
 import yaml
 
 from app.schemas.schemas import AnalysisPlan, WorkflowStep
-from app.services import generator, qa_gate
 from app.services.recipe_engine import materialize_recipe_project
 from app.services.recipe_registry import load_recipe_registry, resolve_recipe
 
@@ -138,123 +136,6 @@ def test_materializes_metabolomics_vertical_slice(tmp_path: Path):
     assert config["paths"]["metadata"] == "../data/metabolites.xlsx"
 
 
-@pytest.mark.asyncio
-async def test_supported_recipe_generation_only_uses_llm_for_pack_adaptation(
-    tmp_path: Path,
-    monkeypatch,
-):
-    adapted_targets: list[str] = []
-
-    async def record_adapt_call(**kwargs):
-        user_prompt = kwargs.get("user_prompt", "")
-        target_marker = "The current file `"
-        target = user_prompt.split(target_marker, 1)[1].split("`", 1)[0]
-        adapted_targets.append(target)
-        # Adapt requests are targeted SEARCH/REPLACE edits, not file rewrites.
-        assert "SEARCH/REPLACE edits" in user_prompt
-        if target == "code/data.R":
-            return json.dumps(
-                [
-                    {
-                        "search": (
-                            'metaphlan.file <- '
-                            '"../data/metaphlan/latest_metaphlan_db_meta4_combined_reports.txt"'
-                        ),
-                        "replace": 'metaphlan.file <- "../data/counts.csv"',
-                    }
-                ]
-            )
-        if target.startswith("preprocessing/"):
-            return json.dumps(
-                [
-                    {
-                        "search": (
-                            '"../data/metaphlan/'
-                            'metaphlan_db_meta4_combined_reports.txt"'
-                        ),
-                        "replace": '"../data/counts.csv"',
-                    }
-                ]
-            )
-        return json.dumps(
-            {
-                "decision": "no_change",
-                "reason": "Inspection found no study-specific fields requiring adaptation.",
-                "evidence": [
-                    "The inspected source contains no copied cohort labels, paths, or study columns."
-                ],
-            }
-        )
-
-    monkeypatch.setattr(generator, "call_llm", record_adapt_call)
-    monkeypatch.setattr(qa_gate, "run_qa", lambda **_kwargs: qa_gate.QaResult())
-    plan = _plan(
-        "microbiome",
-        WorkflowStep(
-            id="alpha_diversity",
-            name="Alpha diversity",
-            classification="standard",
-            recipe_id="microbiome.alpha_diversity",
-        ),
-    )
-    manifest = {
-        "version": "1.0",
-        "domain": "microbiome",
-        "files": [
-            {"name": "counts.csv", "role": "feature_table", "columns": ["taxon", "S1", "S2"]},
-            {"name": "metadata.csv", "role": "metadata", "columns": ["sample_id", "condition"]},
-        ],
-        "identifier_candidates": [
-            {"file": "metadata.csv", "column": "sample_id", "role": "metadata"}
-        ],
-    }
-
-    generated = await generator.generate_project(
-        str(tmp_path),
-        plan,
-        file_summaries=[],
-        uploaded_file_paths={
-            "feature_table": ["/uploads/counts.csv"],
-            "metadata": ["/uploads/metadata.csv"],
-        },
-        study_manifest=manifest,
-    )
-
-    generated_names = {Path(path).relative_to(tmp_path).as_posix() for path in generated}
-    # The exemplar project is the report: data machinery + template sections.
-    for page in (
-        "code/data.R",
-        "code/funct.R",
-        "code/main.R",
-        "code/_quarto.yml",
-        "code/alpha/alpha.qmd",
-        "code/beta/beta.qmd",
-        "code/ratio/ratio.qmd",
-        "code/daa/daa_interest.qmd",
-        "code/design/study_overview.qmd",
-        "code/index.qmd",
-    ):
-        assert page in generated_names
-    # The invented engine layer is gone: no config-driven data contract.
-    assert "code/study_config.yml" not in generated_names
-    assert "code/recipe_runtime.R" not in generated_names
-    # The required loader changed surgically; study-independent machinery is
-    # preserved and never sent to the provider.
-    assert "importMetaPhlAn" in (tmp_path / "code" / "data.R").read_text()
-    assert 'metaphlan.file <- "../data/counts.csv"' in (tmp_path / "code" / "data.R").read_text()
-    assert "assign_meal" in (tmp_path / "code" / "funct.R").read_text()
-    # The LLM was used only for the adapt (edit) stage.
-    assert len(adapted_targets) >= 8
-    assert "code/funct.R" not in adapted_targets
-    assert "code/main.R" in adapted_targets
-    assert "README.md" not in adapted_targets
-    adaptation = json.loads((tmp_path / "adaptation_manifest.json").read_text())
-    by_path = {item["path"]: item for item in adaptation["files"]}
-    assert by_path["code/data.R"]["status"] == "adapted"
-    assert by_path["code/funct.R"]["status"] == "inspected_no_change"
-    assert by_path["code/main.R"]["status"] == "inspected_no_change"
-    assert by_path["README.md"]["status"] == "copied"
-
 
 def test_identifier_overlap_beats_id_name_heuristic(tmp_path: Path):
     """A metadata 'id' column that re-encodes sample IDs must lose to a
@@ -302,27 +183,3 @@ def test_identifier_overlap_beats_id_name_heuristic(tmp_path: Path):
     assert config["identifiers"]["subject_id"] == "sample"
 
 
-def test_apply_edits_bounded_and_material_change_gate():
-    from app.services import generator as gen
-
-    template = "\n".join(f"machinery line {i}" for i in range(50))
-    whole = template
-    # Tiny search + giant replace must be rejected (replace > 60% of file).
-    giant = "x" * int(len(template) * 0.9)
-    updated = gen._apply_edits_to_file(whole, [{"search": "machinery line 0", "replace": giant}], "data.R")
-    assert updated == whole  # rejected: template verbatim
-
-    # A bounded edit applies.
-    updated = gen._apply_edits_to_file(
-        whole,
-        [{"search": "machinery line 5", "replace": "machinery line five"}],
-        "data.R",
-    )
-    assert updated != whole
-    assert "machinery line five" in updated
-    assert "machinery line 5" not in updated
-
-    # Adaptation no longer rejects a valid targeted change merely because its
-    # byte-level similarity to the template is low. Rewrite-sized edit blocks
-    # remain bounded and required files use the material-change gate.
-    assert updated != template

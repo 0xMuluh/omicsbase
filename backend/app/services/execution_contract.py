@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -140,11 +140,22 @@ class ExecutionContract:
 def execution_contract_for_pack(
     project_root: str | Path,
     report_pack: ReportPack,
+    *,
+    excluded_paths: Iterable[str] = (),
 ) -> ExecutionContract | None:
-    """Resolve an authored ReportPack execution declaration in a generated tree."""
+    """Resolve the adapted ReportPack execution declaration in a generated tree.
+
+    ``excluded_paths`` contains source files that the project agent explicitly
+    deleted as out of scope. The authored pack remains immutable; the generated
+    contract represents the adapted repository that will actually run.
+    """
     if report_pack.execution is None:
         return None
     root = Path(project_root).resolve()
+    excluded = {
+        _normalise_relative(path, label="Excluded execution path")
+        for path in excluded_paths
+    }
     metadata = {
         "id": report_pack.pack_id,
         "version": report_pack.version,
@@ -161,6 +172,7 @@ def execution_contract_for_pack(
         steps=tuple(
             ExecutionStep(step.step_id, step.path, step.role)
             for step in report_pack.execution.steps
+            if step.path not in excluded
         ),
         artifacts=report_pack.execution.artifacts,
     )
@@ -171,9 +183,15 @@ def execution_contract_for_pack(
 def write_execution_contract(
     project_root: str | Path,
     report_pack: ReportPack,
+    *,
+    excluded_paths: Iterable[str] = (),
 ) -> Path | None:
     """Write and re-parse the runtime contract for a generated project."""
-    contract = execution_contract_for_pack(project_root, report_pack)
+    contract = execution_contract_for_pack(
+        project_root,
+        report_pack,
+        excluded_paths=excluded_paths,
+    )
     if contract is None:
         return None
     target = contract.project_root / CONTRACT_NAME

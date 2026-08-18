@@ -64,6 +64,305 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
+# Instructions for headless pipeline jobs. Each one starts one agent-loop turn;
+# the model plans, builds, edits, renders, and repairs with the same inline
+# tools the interactive workspace chat uses.
+def plan_instruction() -> str:
+    """The planning turn instruction."""
+    return (
+        "Plan this analysis. First inspect the uploaded study inputs "
+        "(inspect_project, inspect_table, check_design_matrix as needed). "
+        "If the study design is genuinely ambiguous, ask_user with concrete options. "
+        "Otherwise call set_plan with the complete analysis plan for this research question. "
+        "The project is always written from scratch — never use, copy, or reference "
+        "any ReportPack template."
+    )
+
+
+PLAN_INSTRUCTION = plan_instruction()
+
+BUILD_INSTRUCTION = (
+    "Build the report now from the approved plan. First check what already exists: "
+    "inspect_project and the workspace file list are durable, and earlier edits are "
+    "journaled — if files were already adapted or scripts already ran, continue from "
+    "that state instead of re-reading and redoing everything. "
+    "Write the Quarto project from scratch (_quarto.yml and analysis pages) and "
+    "ground methods with search_bioc_books when useful. "
+    "Run the data and analysis R steps (run_r_script) to verify they work, then "
+    "render_report. If the render fails, read the errors, fix the source, and render "
+    "again. Finish with validate_report and fix the findings that matter."
+)
+
+
+
+
+def edit_instruction(instruction: str) -> str:
+    return (
+        f"Apply this edit to the project: {instruction.strip()} "
+        "Then render_report and verify the change landed."
+    )
+
+
+@task_decorator
+def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat_mode: str = "build", **kwargs):
+    """Run one headless agent-loop turn for a pipeline job.
+
+    This is the single execution path for plan/generate/render/edit jobs: the
+    same native loop and inline tools as the workspace chat, driven by an
+    instruction instead of a chat message.
+    """
+    project_id, job_id = _parse_task_args(args)
+    if not str(instruction or "").strip():
+        raise ValueError("run_agent_job requires a non-empty instruction")
+
+    db = _get_db_session()
+    try:
+        from app.models.project import Job, Project, ProjectMessage, UploadedFile
+        from app.schemas.schemas import WorkspaceAgentRequest
+        from app.services.agent_runtime import record_agent_action, record_project_message, set_agent_state
+        from app.services.llm import resolve_target
+        from app.services.provider_guard import active_provider_block, provider_error_from_block
+        from app.services.workspace_agent import stream_workspace_agent
+        from app.services.workspace_handlers import (
+            make_inline_action_handler,
+            make_knowledge_search_handler,
+            make_plan_handler,
+            make_render_handler,
+        )
+
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise ValueError(f"Project {project_id} not found")
+
+        agent_provider, _ = resolve_target("agent")
+        provider_block = active_provider_block(project, agent_provider or settings.llm_provider)
+        if provider_block is not None:
+            raise provider_error_from_block(provider_block)
+
+        # The loop's typed tools resolve relative paths against the project
+        # directory, so stage the workspace before the turn starts. Idempotent:
+        # already-staged files are kept, and edits stay untouched.
+        project_dir = Path(settings.projects_dir) / str(project.id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        if not project.project_dir:
+            project.project_dir = str(project_dir)
+        _stage_uploaded_files(project_dir, db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all())
+        db.commit()
+
+        job = db.query(Job).filter(Job.id == job_id).first()
+        _update_job(db, job_id, status="running", progress=[{"step": "agent", "status": "running"}])
+
+        agent_memory = dict(project.agent_memory or {})
+        pending_guidance = [str(item.get("content") or "") for item in agent_memory.pop("pending_guidance", None) or [] if isinstance(item, dict)]
+        if pending_guidance:
+            agent_memory["pending_guidance"] = []
+            project.agent_memory = agent_memory
+            instruction = instruction + "\n\nQueued guidance from while the workspace was busy:\n- " + "\n- ".join(g for g in pending_guidance if g.strip())
+        stored_answers = [item for item in agent_memory.get("clarifications") or [] if isinstance(item, dict)]
+        if stored_answers:
+            agent_memory.pop("clarifications", None)
+            project.agent_memory = agent_memory
+            instruction = (
+                instruction
+                + "\n\nThe user already answered these clarification questions:\n"
+                + json.dumps(stored_answers, default=str)
+            )
+
+        user_message = record_project_message(
+            db,
+            project,
+            "user",
+            instruction,
+            metadata={"job_id": job_id, "kind": job_kind},
+        )
+        history = (
+            db.query(ProjectMessage)
+            .filter(ProjectMessage.project_id == project_id, ProjectMessage.id != str(user_message.id))
+            .order_by(ProjectMessage.created_at.asc())
+            .all()
+        )
+        db.commit()
+
+        request = WorkspaceAgentRequest(message=instruction, chat_mode=chat_mode)
+        progress_log: list[dict] = []
+
+        def _job_cancelled() -> bool:
+            try:
+                db.refresh(job)
+                return job.status == "cancelled"
+            except Exception:
+                return False
+
+        final_text = ""
+        final_metadata: dict = {}
+
+        async def drive() -> None:
+            nonlocal final_text, final_metadata
+            if settings.agent_backend == "opencode":
+                from app.services.opencode_client import stream_opencode
+
+                collected_tokens = []
+                last_error = ""
+                async for event in stream_opencode(
+                    project_dir=project_dir,
+                    instruction=instruction,
+                    provider=agent_provider or settings.llm_provider,
+                    model=settings.llm_model,
+                ):
+                    event_type = str(event.get("type") or "")
+                    if event_type in {"tool_started", "action_event"}:
+                        entry = {
+                            "step": str(event.get("tool") or event.get("reason") or "action"),
+                            "status": "running" if event_type == "tool_started" else "completed",
+                            "detail": str(event.get("reason") or (event.get("event") or {}).get("summary") or "")[:200],
+                        }
+                        progress_log.append(entry)
+                        _update_job(db, job_id, progress=progress_log)
+                    elif event_type == "token":
+                        collected_tokens.append(str(event.get("token") or ""))
+                    elif event_type == "error":
+                        last_error = str(event.get("error") or "")
+                        entry = {"step": "error", "status": "failed", "detail": last_error[:200]}
+                        progress_log.append(entry)
+                        _update_job(db, job_id, progress=progress_log)
+                final_text = "".join(collected_tokens).strip() or last_error
+            else:
+                async for event in stream_workspace_agent(
+                    project,
+                    request,
+                    history,
+                    inline_action_handler=make_inline_action_handler(db, project),
+                    knowledge_search_handler=make_knowledge_search_handler(db),
+                    render_handler=make_render_handler(db, project),
+                    plan_handler=make_plan_handler(db, project),
+                    cancel_check=_job_cancelled,
+                ):
+                    event_type = str(event.get("type") or "")
+                    if event_type in {"tool_started", "tool_completed", "action_event", "question", "wait"}:
+                        entry = {
+                            "step": str(event.get("tool") or event.get("title") or event_type),
+                            "status": "running" if event_type == "tool_started" else "completed",
+                            "detail": str(event.get("summary") or event.get("reason") or "")[:200],
+                        }
+                        progress_log.append(entry)
+                        _update_job(db, job_id, progress=progress_log)
+                    elif event_type == "final":
+                        final_text = str(event.get("message") or "")
+                        final_metadata = {
+                            key: value
+                            for key, value in (event.items() if isinstance(event, dict) else [])
+                            if key in {"awaiting_answer", "budget"}
+                        }
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(drive())
+        except Exception as exc:
+            logger.exception("Agent job failed for project %s", project_id)
+            _update_job(db, job_id, status="failed", error=str(exc))
+            try:
+                project.status = "failed"
+                db.commit()
+                set_agent_state(db, project, "failed", "Agent job failed")
+                record_agent_action(db, project, job_kind, "failed", str(exc), job_id=job_id)
+            except Exception:
+                pass
+            raise
+        finally:
+            loop.close()
+
+        cancelled = _job_cancelled()
+
+        if not cancelled:
+            record_project_message(
+                db,
+                project,
+                "assistant",
+                final_text or "The run finished without a summary.",
+                metadata={"job_id": job_id, "kind": job_kind, **(final_metadata or {})},
+            )
+            question = (final_metadata or {}).get("awaiting_answer")
+            if isinstance(question, dict) and question.get("question"):
+                # Bridge ask_user to the clarifications contract the Plan UI reads.
+                memory = dict(project.agent_memory or {})
+                memory["pending_clarifications"] = {
+                    "message": "The agent needs a decision before continuing.",
+                    "questions": [
+                        {
+                            "id": str(question.get("id") or "question-1"),
+                            "prompt": str(question.get("question")),
+                            "options": [str(o) for o in (question.get("options") or [])],
+                            "multiple": bool(question.get("multiple")),
+                            "allow_custom": True,
+                        }
+                    ],
+                }
+                project.agent_memory = memory
+                if validate_status_transition(project.status, "needs_clarification"):
+                    project.status = "needs_clarification"
+        _update_job(
+            db,
+            job_id,
+            status="cancelled" if cancelled else "completed",
+            progress=progress_log + [{"step": "agent", "status": "completed"}],
+        )
+
+        # A successful planning turn advances the pipeline: mark the plan as
+        # ready and, for auto-build projects, chain straight into the build so
+        # "Build" mode really runs through without user intervention.
+        if (
+            not cancelled
+            and job_kind == "plan"
+            and project.analysis_plan
+            and not isinstance((final_metadata or {}).get("awaiting_answer"), dict)
+            and validate_status_transition(project.status, "planned")
+        ):
+            project.status = "planned"
+            db.commit()
+            if project.auto_build:
+                build_job = Job(project_id=str(project.id), job_type="generate", status="pending")
+                db.add(build_job)
+                project.status = "generating"
+                db.commit()
+                db.refresh(build_job)
+                set_agent_state(db, project, "generating", "Building the report with the agent loop")
+                record_agent_action(
+                    db,
+                    project,
+                    "generate",
+                    "started",
+                    "Auto-build: building the report from the plan",
+                    job_id=str(build_job.id),
+                )
+                db.commit()
+                if settings.task_backend.lower() == "celery":
+                    run_agent_job.delay(
+                        str(project.id), str(build_job.id),
+                        instruction=BUILD_INSTRUCTION, job_kind="generate",
+                    )
+                else:
+                    # Background backend already runs off the request thread,
+                    # so the build can run inline in this same worker.
+                    run_agent_job(
+                        str(project.id), str(build_job.id),
+                        instruction=BUILD_INSTRUCTION, job_kind="generate",
+                    )
+            else:
+                set_agent_state(db, project, "idle", "Plan ready for review")
+
+        from app.services.provider_guard import clear_provider_block
+
+        clear_provider_block(project, settings.llm_provider)
+        db.commit()
+        return {
+            "status": "cancelled" if cancelled else "completed",
+            "job_id": job_id,
+            "final": final_text,
+        }
+    finally:
+        db.close()
+
+
 def validate_status_transition(current: str | None, target: str) -> bool:
     """Validate whether a project status transition is permitted."""
     if not current or current == target:
@@ -122,6 +421,44 @@ def _update_job(db, job_id: str | None, **kwargs):
         )
 
 
+def _stage_uploaded_files(project_dir: str | Path, files) -> list[str]:
+    """Expose protected upload copies under the agent's project-local data/ tree.
+
+    OpenHands is intentionally confined to ``project_dir``. File summaries alone
+    are not enough: inspection tools need the corresponding bytes inside that
+    boundary before planning begins. Staging is idempotent so generation can
+    call the same helper without recopying unchanged inputs.
+    """
+    base = Path(project_dir).resolve()
+    data_dir = base / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    staged: list[str] = []
+    for file_record in files:
+        raw_source = getattr(file_record, "file_path", None)
+        if not raw_source:
+            continue
+        source = Path(str(raw_source))
+        display_name = str(getattr(file_record, "original_name", None) or source.name)
+        filename = Path(display_name.replace("\\", "/")).name
+        if not filename or filename in {".", ".."}:
+            filename = source.name
+        if not source.is_file() or source.is_symlink():
+            raise FileNotFoundError(f"Uploaded input is unavailable: {filename}")
+        destination = data_dir / filename
+        unchanged = False
+        if destination.is_file() and not destination.is_symlink():
+            source_stat = source.stat()
+            destination_stat = destination.stat()
+            unchanged = (
+                source_stat.st_size == destination_stat.st_size
+                and source_stat.st_mtime_ns == destination_stat.st_mtime_ns
+            )
+        if not unchanged:
+            shutil.copy2(source, destination)
+        staged.append(destination.relative_to(base).as_posix())
+    return staged
+
+
 def _parse_task_args(args):
     """Extract project_id and job_id cleanly whether called as (self, proj_id, job_id) or (proj_id, job_id)."""
     if len(args) >= 3:
@@ -151,716 +488,12 @@ def resume_agent_continuation(*args):
 
 
 
-def _repair_skip_result(result: dict) -> dict:
-    from app.services.agent_failures import diagnose_repair_failure
 
-    diagnosis = diagnose_repair_failure(result)
-    return {
-        "status": "skipped",
-        "reason": diagnosis.reason,
-        "diagnosis": diagnosis.to_dict(),
-        "apply_results": [],
-    }
 
 
-def _repair_is_allowed(result: dict) -> bool:
-    from app.services.agent_failures import diagnose_repair_failure
 
-    return diagnose_repair_failure(result).repairable
 
 
-def _is_timeout_failure(result: dict) -> bool:
-    """Return True when the runner failed because a command exceeded its wall-clock budget."""
-    for error in result.get("errors") or []:
-        if not isinstance(error, dict):
-            continue
-        if error.get("timeout"):
-            return True
-        text = str(error.get("error") or "").lower()
-        if "process timed out" in text or "timed out" in text:
-            return True
-    return False
-
-
-def _schedule_pending_guidance_followup(db, project, project_id: str) -> str | None:
-    """Consume queued guidance and dispatch an automatic follow-up job."""
-    from app.models.project import Job
-    from app.services.agent_runtime import (
-        consume_pending_guidance,
-        record_agent_action,
-        record_project_message,
-        set_agent_state,
-    )
-
-    pending = consume_pending_guidance(db, project)
-    if not pending:
-        return None
-
-    instruction = "\n".join(
-        item.get("content", "").strip()
-        for item in pending
-        if item.get("content")
-    ).strip()
-    if not instruction:
-        return None
-
-    job = Job(
-        project_id=project_id,
-        job_type="guidance",
-        status="pending",
-        progress=[{"step": "guidance", "status": "pending", "detail": instruction[:300]}],
-    )
-    db.add(job)
-    project.status = "rendering"
-    db.commit()
-    db.refresh(job)
-    set_agent_state(db, project, "editing", "Applying queued mid-job guidance")
-    record_agent_action(
-        db,
-        project,
-        "guidance",
-        "started",
-        "Applying queued mid-job guidance",
-        {"instruction": instruction},
-        job_id=str(job.id),
-    )
-    record_project_message(
-        db,
-        project,
-        "assistant",
-        f"Applying your queued guidance now: {instruction}",
-        metadata={"job_id": str(job.id), "action": "apply_guidance"},
-    )
-
-    if settings.task_backend.lower() == "celery":
-        run_guidance_followup.delay(str(project_id), str(job.id), instruction=instruction)
-    elif settings.task_backend.lower() == "background":
-        run_guidance_followup(str(project_id), str(job.id), instruction=instruction)
-    else:
-        raise ValueError(f"Unsupported task backend: {settings.task_backend}")
-    return str(job.id)
-
-
-@task_decorator
-def run_planning(*args, **kwargs):
-    """Generate an analysis plan via LLM."""
-    project_id, job_id = _parse_task_args(args)
-    allow_auto_build = kwargs.get("allow_auto_build", True) is not False
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project, UploadedFile
-        from app.services.agent_runtime import (
-            record_agent_action,
-            refresh_project_memory,
-            set_agent_state,
-        )
-        from app.services.planner import generate_plan
-
-        _update_job(db, job_id, status="running", progress=[{"step": "planning", "status": "running"}])
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise ValueError(f"Project {project_id} not found")
-
-        files = db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
-        file_summaries = [f.file_summary for f in files if f.file_summary]
-
-        # Run the async planner in a sync context
-        from app.schemas.schemas import ClarificationAnswer, ClarificationRequest
-
-        stored_clarifications = (project.agent_memory or {}).get("clarifications") or []
-        clarifications = [
-            ClarificationAnswer(**item)
-            for item in stored_clarifications
-            if isinstance(item, dict)
-        ]
-
-        loop = asyncio.new_event_loop()
-        try:
-            # Agentic classification: identify plan documents vs data, extract
-            # plan text (size-capped), and reclassify mislabeled uploads.
-            from app.services.document_classify import agentic_plan_sources
-
-            plan_sources = loop.run_until_complete(agentic_plan_sources(files))
-            if any(f.file_role == "analysis_plan" for f in files):
-                db.commit()
-
-            # Combine first-class pasted guidance with any plan documents.
-            custom_plan_parts = []
-            if project.custom_plan_text and project.custom_plan_text.strip():
-                custom_plan_parts.append(project.custom_plan_text.strip())
-            custom_plan_parts.extend(plan_sources)
-            custom_plan_text = "\n\n".join(part for part in custom_plan_parts if part.strip()) or None
-
-            plan = loop.run_until_complete(generate_plan(
-                question=project.question or "",
-                file_summaries=file_summaries,
-                notes=project.notes,
-                custom_plan_text=custom_plan_text,
-                study_manifest=project.study_manifest,
-                clarifications=clarifications,
-            ))
-        finally:
-            loop.close()
-
-        if isinstance(plan, ClarificationRequest):
-            agent_memory = dict(project.agent_memory or {})
-            agent_memory["pending_clarifications"] = plan.model_dump()
-            project.agent_memory = agent_memory
-            project.status = "needs_clarification"
-            project.analysis_plan = None
-            db.commit()
-            set_agent_state(db, project, "needs_user", plan.message)
-            record_agent_action(db, project, "plan", "clarification_needed", plan.message, job_id=job_id)
-            _update_job(db, job_id, status="completed", progress=[{"step": "planning", "status": "clarification_needed"}])
-            return {"status": "clarification_needed", "clarification": plan.model_dump()}
-
-        # Save plan to project
-        project.analysis_plan = plan.model_dump()
-        from app.services.provider_guard import (
-            active_provider_block,
-            clear_provider_block,
-        )
-        from app.services.providers import is_configured
-        from app.services.llm import resolve_target
-
-        planner_provider, _ = resolve_target("planner")
-        planner_provider = planner_provider or settings.llm_provider
-        # A real successful planner call is evidence that this provider is
-        # available again. Deterministic offline fallback is not.
-        if is_configured(planner_provider):
-            clear_provider_block(project, planner_provider)
-        manifest_ready = (project.study_manifest or {}).get("status") == "ready"
-        manifest_domain = (project.study_manifest or {}).get("domain")
-        auto_build = bool(
-            allow_auto_build
-            and project.auto_build
-            and active_provider_block(project, settings.llm_provider) is None
-            and manifest_ready
-            and manifest_domain in {"microbiome", "metabolomics"}
-            and plan.domain == manifest_domain
-            and plan.grouping_variable
-            and any(step.enabled for step in plan.workflow)
-        )
-        project.status = "approved" if auto_build else "planned"
-        db.commit()
-
-        jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-        refresh_project_memory(db, project, files=files, jobs=jobs)
-        _update_job(db, job_id, status="completed", progress=[{"step": "planning", "status": "completed"}])
-
-        if not auto_build:
-            set_agent_state(db, project, "needs_user", "Analysis plan ready for review")
-            record_agent_action(db, project, "plan", "completed", "Analysis plan ready for review", job_id=job_id)
-            return {"status": "completed", "plan": plan.model_dump(), "auto_build": False}
-
-        record_agent_action(
-            db,
-            project,
-            "plan",
-            "approved",
-            f"Validated inputs; automatically approved plan using {plan.grouping_variable}",
-            {"grouping_variable": plan.grouping_variable, "group_levels": plan.group_levels},
-            job_id=job_id,
-        )
-        generation_job = Job(project_id=project_id, job_type="generate", status="pending")
-        db.add(generation_job)
-        project.status = "generating"
-        db.commit()
-        db.refresh(generation_job)
-        set_agent_state(db, project, "generating", "Generating validated analysis report")
-        record_agent_action(
-            db,
-            project,
-            "generate",
-            "started",
-            "Generating validated analysis report",
-            job_id=str(generation_job.id),
-        )
-
-        try:
-            if settings.task_backend.lower() == "celery":
-                run_generation.delay(str(project_id), str(generation_job.id))
-            elif settings.task_backend.lower() == "background":
-                run_generation(str(project_id), str(generation_job.id))
-            else:
-                raise ValueError(f"Unsupported task backend: {settings.task_backend}")
-        except Exception as exc:
-            generation_job.status = "failed"
-            generation_job.error = f"Failed to enqueue generation: {exc}"
-            project.status = "failed"
-            db.commit()
-            set_agent_state(db, project, "failed", "Generation dispatch failed")
-            record_agent_action(
-                db,
-                project,
-                "generate",
-                "failed",
-                generation_job.error,
-                job_id=str(generation_job.id),
-            )
-            raise
-
-        return {
-            "status": "completed",
-            "plan": plan.model_dump(),
-            "auto_build": True,
-            "generation_job_id": str(generation_job.id),
-        }
-
-    except Exception as e:
-        logger.exception("Planning failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(e))
-        try:
-            p = db.query(Project).filter(Project.id == project_id).first()
-            if p:
-                from app.services.agent_runtime import record_agent_action, set_agent_state
-                from app.services.provider_errors import LLMProviderError
-                from app.services.provider_guard import record_provider_block
-                if isinstance(e, LLMProviderError):
-                    record_provider_block(p, e)
-                p.status = "failed"
-                db.commit()
-                set_agent_state(
-                    db,
-                    p,
-                    "failed",
-                    (
-                        "Planning blocked by the language-model provider"
-                        if isinstance(e, LLMProviderError)
-                        else "Planning failed"
-                    ),
-                    {"provider_failure": e.as_dict()} if isinstance(e, LLMProviderError) else None,
-                )
-                record_agent_action(db, p, "plan", "failed", str(e), job_id=job_id)
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
-
-
-@task_decorator
-def run_generation(*args, **kwargs):
-    """Generate the Quarto project via LLM."""
-    project_id, job_id = _parse_task_args(args)
-    target_recipe_id = kwargs.get("target_recipe_id")
-    resume_from_checkpoint = bool(kwargs.get("resume_from_checkpoint", True))
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project, UploadedFile
-        from app.schemas.schemas import AnalysisPlan
-        from app.services.agent_runtime import record_agent_action, refresh_project_memory, set_agent_state
-        from app.services.generator import generate_project
-
-        _update_job(
-            db,
-            job_id,
-            status="running",
-            progress=[{
-                "step": "generation",
-                "status": "running",
-                "resume_from_checkpoint": resume_from_checkpoint,
-            }],
-        )
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project or not project.analysis_plan:
-            raise ValueError(f"Project {project_id} has no approved plan")
-
-        plan = AnalysisPlan(**project.analysis_plan)
-
-        files = db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
-        file_summaries = [f.file_summary for f in files if f.file_summary]
-        uploaded_paths: dict[str, list[str]] = {}
-        for file_record in files:
-            if file_record.file_role and file_record.file_path:
-                uploaded_paths.setdefault(file_record.file_role, []).append(file_record.file_path)
-
-        # Create project directory
-        project_dir = Path(settings.projects_dir) / str(project.id)
-        project_dir.mkdir(parents=True, exist_ok=True)
-        project.project_dir = str(project_dir)
-        db.commit()
-        refresh_project_memory(db, project, files=files)
-
-        # Copy uploaded files to project/data/
-        data_dir = project_dir / "data"
-        data_dir.mkdir(exist_ok=True)
-        for file_record in files:
-            if file_record.file_path:
-                src = Path(file_record.file_path)
-                dst = data_dir / src.name
-                if src.exists() and not dst.exists():
-                    shutil.copy2(str(src), str(dst))
-
-        # Track progress
-        progress_log = []
-
-        def progress_callback(step_id: str, status: str, metadata: dict | None = None):
-            entry = {"step": step_id, "status": status, "time": datetime.now(timezone.utc).isoformat()}
-            if metadata:
-                entry.update(metadata)
-
-            existing = next((item for item in reversed(progress_log) if item["step"] == step_id), None)
-            if existing:
-                existing.update(entry)
-            else:
-                progress_log.append(entry)
-
-            _update_job(db, job_id, progress=progress_log)
-
-        # Run the generator
-        loop = asyncio.new_event_loop()
-        generated = loop.run_until_complete(generate_project(
-            project_dir=str(project_dir),
-            plan=plan,
-            file_summaries=file_summaries,
-            uploaded_file_paths=uploaded_paths,
-            study_manifest=project.study_manifest,
-            progress_callback=progress_callback,
-            resume_from_checkpoint=resume_from_checkpoint,
-        ))
-        loop.close()
-
-        project.status = "generated"
-        from app.services.provider_guard import clear_provider_block
-        clear_provider_block(project, settings.llm_provider)
-        db.commit()
-
-        generated_relative_paths = [str(Path(path).resolve().relative_to(project_dir.resolve())) for path in generated if Path(path).exists()]
-        refresh_project_memory(db, project, files=files)
-        record_agent_action(
-            db,
-            project,
-            "generate",
-            "completed",
-            f"Generated {len(generated_relative_paths)} project files",
-            files=generated_relative_paths,
-            job_id=job_id,
-        )
-
-        _update_job(db, job_id, status="completed", progress=progress_log)
-
-        render_job = Job(
-            project_id=project_id,
-            job_type="recipe" if target_recipe_id else "render",
-            status="pending",
-            progress=[{"target_recipe_id": target_recipe_id}] if target_recipe_id else None,
-        )
-        db.add(render_job)
-        project.status = "rendering"
-        db.commit()
-        db.refresh(render_job)
-        set_agent_state(db, project, "rendering", "Rendering report")
-        record_agent_action(db, project, "render", "started", "Rendering report", job_id=str(render_job.id))
-
-        try:
-            next_task = run_recipe_execution if target_recipe_id else run_rendering
-            if settings.task_backend.lower() == "celery":
-                if target_recipe_id:
-                    next_task.delay(
-                        str(project_id),
-                        str(render_job.id),
-                        recipe_id=target_recipe_id,
-                    )
-                else:
-                    next_task.delay(str(project_id), str(render_job.id))
-            elif settings.task_backend.lower() == "background":
-                if target_recipe_id:
-                    next_task(
-                        str(project_id),
-                        str(render_job.id),
-                        recipe_id=target_recipe_id,
-                    )
-                else:
-                    next_task(str(project_id), str(render_job.id))
-            else:
-                raise ValueError(f"Unsupported task backend: {settings.task_backend}")
-        except Exception as exc:
-            logger.exception("Failed to enqueue render task for project %s", project_id)
-            render_job.status = "failed"
-            render_job.error = f"Failed to enqueue render task: {exc}"
-            project.status = "failed"
-            db.commit()
-            set_agent_state(db, project, "failed", "Render dispatch failed")
-            record_agent_action(db, project, "render", "failed", f"Failed to enqueue render task: {exc}", job_id=str(render_job.id))
-            return {
-                "status": "completed",
-                "files": generated,
-                "render_job_id": str(render_job.id),
-                "render_status": "failed",
-            }
-
-        return {"status": "completed", "files": generated, "render_job_id": str(render_job.id)}
-
-    except Exception as e:
-        logger.exception("Generation failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(e))
-        try:
-            p = db.query(Project).filter(Project.id == project_id).first()
-            if p:
-                from app.services.agent_runtime import record_agent_action, set_agent_state
-                from app.services.provider_errors import LLMProviderError
-                from app.services.provider_guard import record_provider_block
-                if isinstance(e, LLMProviderError):
-                    record_provider_block(p, e)
-                p.status = "failed"
-                db.commit()
-                set_agent_state(
-                    db,
-                    p,
-                    "failed",
-                    (
-                        "Generation blocked by the language-model provider"
-                        if isinstance(e, LLMProviderError)
-                        else "Generation failed"
-                    ),
-                    {"provider_failure": e.as_dict()} if isinstance(e, LLMProviderError) else None,
-                )
-                record_agent_action(db, p, "generate", "failed", str(e), job_id=job_id)
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
-
-
-@task_decorator
-def run_rendering(*args, **kwargs):
-    """Execute quarto render on the generated project."""
-    project_id, job_id = _parse_task_args(args)
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project
-        from app.services.agent_runtime import (
-            record_agent_action,
-            record_project_message,
-            refresh_project_memory,
-            set_agent_state,
-        )
-        from app.services.repair import repair_generated_project
-        from app.services.reviewer import review_render_output
-        from app.services.runner import repairs_require_analysis_rerun, run_project
-
-        _update_job(db, job_id, status="running", progress=[{"step": "rendering", "status": "running"}])
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project or not project.project_dir:
-            raise ValueError(f"Project {project_id} has no generated project directory")
-
-        set_agent_state(db, project, "rendering", "Rendering report")
-
-        # Track progress
-        progress_log = []
-        render_logs = []
-
-        def progress_callback(step_id: str, status: str, line: str):
-            if line:
-                render_logs.append(line)
-
-            entry = {"step": step_id, "status": status, "time": datetime.now(timezone.utc).isoformat()}
-            if status in {"completed", "failed", "warning"} and line:
-                entry["detail"] = line.splitlines()[0]
-
-            existing = next((item for item in reversed(progress_log) if item["step"] == step_id), None)
-            if existing:
-                existing.update(entry)
-                if status == "running":
-                    existing.pop("detail", None)
-            else:
-                progress_log.append(entry)
-
-            _update_job(db, job_id, progress=progress_log, logs="\n".join(render_logs[-200:]))
-
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(run_project(
-                project_dir=project.project_dir,
-                progress_callback=progress_callback,
-            ))
-
-            MAX_REPAIR_ATTEMPTS = 3
-            repair_history = []
-            repair_pass = 0
-
-            while result["status"] != "completed" and repair_pass < MAX_REPAIR_ATTEMPTS:
-                if not _repair_is_allowed(result):
-                    if not _is_timeout_failure(result):
-                        result["repair"] = _repair_skip_result(result)
-                        break
-                if _is_timeout_failure(result):
-                    timeout_message = (
-                        "Rendering stopped because a page exceeded its time budget while computing. "
-                        "This is usually a long model fit, not a broken source file, so AI repair was skipped."
-                    )
-                    record_agent_action(
-                        db,
-                        project,
-                        "repair",
-                        "skipped",
-                        timeout_message,
-                        {"errors": result.get("errors"), "failed_page": result.get("failed_page")},
-                        job_id=job_id,
-                    )
-                    progress_callback("repair", "failed", timeout_message)
-                    record_project_message(
-                        db,
-                        project,
-                        "assistant",
-                        timeout_message,
-                        metadata={
-                            "job_id": job_id,
-                            "status": "failed",
-                            "failed_page": result.get("failed_page"),
-                            "reason": "timeout",
-                        },
-                    )
-                    break
-
-                repair_pass += 1
-                record_agent_action(db, project, "render", "failed", f"Render failed before repair pass #{repair_pass}", {"errors": result.get("errors")}, job_id=job_id)
-                set_agent_state(db, project, "repairing", f"Repairing generated source after render failure (pass #{repair_pass})")
-                progress_callback("repair", "running", f"Render failed. Starting AI repair pass #{repair_pass} of {MAX_REPAIR_ATTEMPTS}...")
-
-                repair_result = loop.run_until_complete(repair_generated_project(
-                    project.project_dir,
-                    result,
-                    repair_history=repair_history,
-                ))
-                repair_history.append({"pass": repair_pass, "failure": result.get("errors"), "repair": repair_result})
-                result["repair"] = repair_result
-
-                if repair_result.get("status") == "repaired":
-                    repaired_paths = ", ".join(item["path"] for item in repair_result.get("repairs", []))
-                    record_agent_action(
-                        db,
-                        project,
-                        "repair",
-                        "completed",
-                        f"Applied repair pass #{repair_pass} to: {repaired_paths}",
-                        files=[item["path"] for item in repair_result.get("repairs", [])],
-                        job_id=job_id,
-                    )
-                    set_agent_state(db, project, "rendering", f"Rerendering after repair pass #{repair_pass}")
-                    progress_callback("repair", "completed", f"Applied repair pass #{repair_pass} to: {repaired_paths}")
-                    progress_callback("rerender", "running", f"Rerendering after repair pass #{repair_pass}...")
-                    repaired_files = [item.get("path", "") for item in repair_result.get("repairs", [])]
-                    rerun_data = repairs_require_analysis_rerun(
-                        project.project_dir,
-                        repaired_files,
-                    )
-                    result = loop.run_until_complete(run_project(
-                        project_dir=project.project_dir,
-                        progress_callback=progress_callback,
-                        start_page=result.get("failed_page"),
-                        run_data=rerun_data,
-                    ))
-                    result["repair"] = repair_result
-                    progress_callback(
-                        "rerender",
-                        "completed" if result["status"] == "completed" else "failed",
-                        f"Rerender pass #{repair_pass} completed" if result["status"] == "completed" else f"Rerender failed after repair pass #{repair_pass}",
-                    )
-                else:
-                    repair_reason = repair_result.get("reason", "AI repair did not produce safe edits")
-                    record_agent_action(db, project, "repair", "failed", repair_reason, job_id=job_id)
-                    progress_callback("repair", "failed", repair_reason)
-                    break
-        finally:
-            loop.close()
-
-        if result["status"] == "completed":
-            set_agent_state(db, project, "reviewing", "Reviewing rendered report")
-            review_result = review_render_output(project.project_dir)
-            result["review"] = review_result
-            record_agent_action(
-                db,
-                project,
-                "review",
-                review_result["status"],
-                review_result["summary"],
-                {"checks": review_result.get("checks", [])},
-                job_id=job_id,
-            )
-            if review_result["status"] == "failed":
-                result["status"] = "failed"
-                project.status = "failed"
-                db.commit()
-                jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-                refresh_project_memory(db, project, jobs=jobs)
-                set_agent_state(db, project, "failed", review_result["summary"])
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    f"The report rendered, but final validation failed: {review_result['summary']}",
-                    metadata={"job_id": job_id, "status": "failed"},
-                )
-            else:
-                project.status = "completed"
-                db.commit()
-                jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-                refresh_project_memory(db, project, jobs=jobs)
-                set_agent_state(db, project, "completed", "Report rendered and reviewed successfully")
-                record_agent_action(db, project, "render", "completed", "Report rendered successfully", job_id=job_id)
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    f"The configured analysis finished successfully. {review_result['summary']}.",
-                    metadata={
-                        "job_id": job_id,
-                        "status": "completed",
-                        "review_status": review_result["status"],
-                    },
-                )
-                _schedule_pending_guidance_followup(db, project, project_id)
-        else:
-            project.status = "failed"
-            db.commit()
-            jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-            refresh_project_memory(db, project, jobs=jobs)
-            set_agent_state(db, project, "failed", "Render failed after repair attempt")
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                "The analysis did not render successfully after the repair attempts. I preserved the failure details for inspection.",
-                metadata={"job_id": job_id, "status": "failed"},
-            )
-
-        db.commit()
-
-        final_status = "completed" if result["status"] == "completed" else "failed"
-        _update_job(
-            db, job_id,
-            status=final_status,
-            progress=progress_log,
-            logs="\n".join(render_logs),
-            error=json.dumps(result.get("errors")) if result.get("errors") else None,
-        )
-        return result
-
-    except Exception as e:
-        logger.exception("Rendering failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(e))
-        try:
-            p = db.query(Project).filter(Project.id == project_id).first()
-            if p:
-                from app.services.agent_runtime import record_agent_action, set_agent_state
-                p.status = "failed"
-                db.commit()
-                set_agent_state(db, p, "failed", "Rendering failed")
-                record_agent_action(db, p, "render", "failed", str(e), job_id=job_id)
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
 
 
 @task_decorator
@@ -879,7 +512,6 @@ def run_recipe_execution(*args, **kwargs):
             set_agent_state,
         )
         from app.services.recipe_execution import invalidate_recipe_cache, run_recipe_target
-        from app.services.repair import repair_generated_project
         from app.services.reviewer import review_render_output
 
         project = db.query(Project).filter(Project.id == project_id).first()
@@ -936,50 +568,6 @@ def run_recipe_execution(*args, **kwargs):
                 progress_callback=progress_callback,
             )
         )
-        repair_history = []
-        repair_pass = 0
-        while result["status"] != "completed" and repair_pass < 3:
-            if not _repair_is_allowed(result):
-                if not _is_timeout_failure(result):
-                    result["repair"] = _repair_skip_result(result)
-                    break
-            if _is_timeout_failure(result):
-                progress_callback(
-                    "repair",
-                    "failed",
-                    "Skipped AI repair because the recipe hit a computation timeout.",
-                )
-                break
-            repair_pass += 1
-            set_agent_state(
-                db,
-                project,
-                "repairing",
-                f"Repairing targeted recipe {recipe_id} (pass #{repair_pass})",
-            )
-            repair_result = loop.run_until_complete(
-                repair_generated_project(
-                    project.project_dir,
-                    result,
-                    repair_history=repair_history,
-                )
-            )
-            repair_history.append(
-                {
-                    "pass": repair_pass,
-                    "failure": result.get("errors"),
-                    "repair": repair_result,
-                }
-            )
-            if repair_result.get("status") != "repaired":
-                break
-            result = loop.run_until_complete(
-                run_recipe_target(
-                    project.project_dir,
-                    recipe_id,
-                    progress_callback=progress_callback,
-                )
-            )
         loop.close()
 
         if result["status"] == "completed":
@@ -1023,7 +611,6 @@ def run_recipe_execution(*args, **kwargs):
                         "cache_hits": cache_hits,
                     },
                 )
-                _schedule_pending_guidance_followup(db, project, project_id)
         else:
             error = json.dumps(result.get("errors") or [])
 
@@ -1044,7 +631,7 @@ def run_recipe_execution(*args, **kwargs):
                 db,
                 project,
                 "assistant",
-                f"The targeted {recipe_id} run failed after repair attempts. Failure details are available in the job log.",
+                f"The targeted {recipe_id} run failed. Failure details are available in the job log; ask the workspace agent to repair it.",
                 metadata={"job_id": job_id, "recipe_id": recipe_id, "status": "failed"},
             )
 
@@ -1065,446 +652,7 @@ def run_recipe_execution(*args, **kwargs):
         _update_job(db, job_id, status="failed", error=str(exc))
         raise
     finally:
-        db.close()
-
-
-@task_decorator
-def run_editing(*args, **kwargs):
-    """Execute OmicsBase editing on project source code followed by re-rendering."""
-    project_id, job_id = _parse_task_args(args)
-    instruction = kwargs.get("instruction") or ""
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project
-        from app.services.agent_runtime import (
-            record_agent_action,
-            record_project_message,
-            refresh_project_memory,
-            set_agent_state,
-        )
-        from app.services.editor import edit_generated_project
-        from app.services.repair import repair_generated_project
-        from app.services.reviewer import review_render_output
-        from app.services.runner import repairs_require_analysis_rerun, run_project
-
-        _update_job(db, job_id, status="running", progress=[{"step": "editing", "status": "running", "detail": instruction}])
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project or not project.project_dir:
-            raise ValueError(f"Project {project_id} has no project directory")
-
-        set_agent_state(db, project, "editing", "Editing generated source", {"instruction": instruction})
-
-        loop = asyncio.new_event_loop()
-        edit_result = loop.run_until_complete(edit_generated_project(
-            project.project_dir,
-            instruction,
-            project_context={
-                "project": {
-                    "name": project.name,
-                    "question": project.question,
-                    "status": project.status,
-                    "agent_state": project.agent_state,
-                },
-                "agent_memory": project.agent_memory or {},
-            },
-            analysis_plan=project.analysis_plan,
-            study_manifest=project.study_manifest,
-        ))
-
-        if edit_result.get("status") != "completed":
-            reason = edit_result.get("reason", "OmicsBase editing failed to modify files.")
-            _update_job(db, job_id, status="failed", error=reason)
-            project.status = "failed"
-            db.commit()
-            set_agent_state(db, project, "failed", "OmicsBase edit failed")
-            record_agent_action(db, project, "edit", "failed", reason, {"instruction": instruction}, job_id=job_id)
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                f"I could not apply the requested edit safely: {reason}",
-                metadata={"job_id": job_id, "status": "failed"},
-            )
-            return edit_result
-
-        modified_files = edit_result.get("modified_files") or []
-        record_agent_action(
-            db,
-            project,
-            "edit",
-            "completed",
-            edit_result.get("summary", "Updated generated source"),
-            {
-                "instruction": instruction,
-                "apply_results": edit_result.get("apply_results") or [],
-            },
-            files=modified_files,
-            job_id=job_id,
-        )
-        refresh_project_memory(db, project)
-        set_agent_state(db, project, "rendering", "Rendering after edit")
-
-        # Re-render after editing
-        _update_job(db, job_id, status="running", progress=[
-            {"step": "editing", "status": "completed", "detail": edit_result.get("summary", "Updated code"), "path": ", ".join(modified_files)},
-            {"step": "rendering", "status": "running", "detail": "Re-rendering Quarto site..."}
-        ])
-
-        render_result = loop.run_until_complete(run_project(project.project_dir))
-        repair_history = []
-        repair_pass = 0
-        max_repair_attempts = 3
-        while render_result["status"] != "completed" and repair_pass < max_repair_attempts:
-            if not _repair_is_allowed(render_result):
-                if not _is_timeout_failure(render_result):
-                    render_result["repair"] = _repair_skip_result(render_result)
-                    break
-            if _is_timeout_failure(render_result):
-                timeout_message = (
-                    "The edited report hit a computation time budget. "
-                    "AI repair was skipped because this is a runtime timeout, not a source syntax error."
-                )
-                record_agent_action(
-                    db,
-                    project,
-                    "repair",
-                    "skipped",
-                    timeout_message,
-                    {"errors": render_result.get("errors")},
-                    job_id=job_id,
-                )
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    timeout_message,
-                    metadata={"job_id": job_id, "status": "failed", "reason": "timeout"},
-                )
-                break
-            repair_pass += 1
-            set_agent_state(
-                db,
-                project,
-                "repairing",
-                f"Repairing the requested edit (pass #{repair_pass})",
-            )
-            repair_result = loop.run_until_complete(
-                repair_generated_project(
-                    project.project_dir,
-                    render_result,
-                    repair_history=repair_history,
-                )
-            )
-            repair_history.append(
-                {
-                    "pass": repair_pass,
-                    "failure": render_result.get("errors"),
-                    "repair": repair_result,
-                }
-            )
-            if repair_result.get("status") != "repaired":
-                break
-            repaired_files = [item.get("path", "") for item in repair_result.get("repairs", [])]
-            record_agent_action(
-                db,
-                project,
-                "repair",
-                "completed",
-                f"Repaired the requested edit on pass #{repair_pass}",
-                files=repaired_files,
-                job_id=job_id,
-            )
-            set_agent_state(db, project, "rendering", f"Verifying edit repair pass #{repair_pass}")
-            render_result = loop.run_until_complete(
-                run_project(
-                    project.project_dir,
-                    start_page=render_result.get("failed_page"),
-                    run_data=repairs_require_analysis_rerun(
-                        project.project_dir,
-                        repaired_files,
-                    ),
-                )
-            )
-        loop.close()
-
-        if render_result["status"] == "completed":
-            set_agent_state(db, project, "reviewing", "Reviewing rerendered report")
-            review_result = review_render_output(project.project_dir)
-            render_result["review"] = review_result
-            record_agent_action(
-                db,
-                project,
-                "review",
-                review_result["status"],
-                review_result["summary"],
-                {"checks": review_result.get("checks", [])},
-                job_id=job_id,
-            )
-            if review_result["status"] == "failed":
-                project.status = "failed"
-                db.commit()
-                set_agent_state(db, project, "failed", review_result["summary"])
-                _update_job(db, job_id, status="failed", error=review_result["summary"])
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    f"I applied the requested edit and rendered the report, but final review failed: {review_result['summary']}",
-                    metadata={"job_id": job_id, "status": "failed"},
-                )
-            else:
-                project.status = "completed"
-                db.commit()
-                jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-                refresh_project_memory(db, project, jobs=jobs)
-                set_agent_state(db, project, "completed", "Edit applied and report reviewed")
-                record_agent_action(db, project, "render", "completed", "Report rerendered after edit", job_id=job_id)
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    (
-                        f"Done — {edit_result.get('summary', 'the requested workspace change was applied')}. "
-                        f"The report rerendered successfully and the review finished with status: {review_result['status']}."
-                    ),
-                    metadata={
-                        "job_id": job_id,
-                        "modified_files": modified_files,
-                        "review_status": review_result["status"],
-                    },
-                )
-                _schedule_pending_guidance_followup(db, project, project_id)
-                _update_job(db, job_id, status="completed", progress=[
-                    {"step": "editing", "status": "completed", "detail": edit_result.get("summary")},
-                    {"step": "rendering", "status": "completed", "detail": "Quarto re-render succeeded"},
-                    {"step": "review", "status": review_result["status"], "detail": review_result["summary"]}
-                ])
-        else:
-            project.status = "failed"
-            db.commit()
-            set_agent_state(db, project, "failed", "Rerender failed after edit")
-            record_agent_action(db, project, "render", "failed", "Re-rendering failed after applying edits.", {"errors": render_result.get("errors")}, job_id=job_id)
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                "I applied the requested edit, but the report still failed after the repair attempts. Review the latest job error before continuing.",
-                metadata={"job_id": job_id, "status": "failed"},
-            )
-            _update_job(db, job_id, status="failed", error="Re-rendering failed after applying edits.")
-
-        db.commit()
-        return render_result
-
-    except Exception as e:
-        logger.exception("Editing task failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(e))
-        try:
-            p = db.query(Project).filter(Project.id == project_id).first()
-            if p:
-                from app.services.agent_runtime import record_agent_action, set_agent_state
-                p.status = "failed"
-                db.commit()
-                set_agent_state(db, p, "failed", "Editing task failed")
-                record_agent_action(db, p, "edit", "failed", str(e), {"instruction": instruction}, job_id=job_id)
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
-
-
-
-@task_decorator
-def run_guidance_followup(*args, **kwargs):
-    """Interpret and apply queued mid-job guidance after a successful run."""
-    project_id, job_id = _parse_task_args(args)
-    instruction = str(kwargs.get("instruction") or "").strip()
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project
-        from app.services.agent_runtime import (
-            record_agent_action,
-            record_project_message,
-            refresh_project_memory,
-            set_agent_state,
-        )
-        from app.services.analysis_configuration import apply_analysis_configuration
-        from app.services.guidance_followup import decide_guidance_action
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise ValueError(f"Project {project_id} not found")
-        if not instruction:
-            raise ValueError("Guidance follow-up requires an instruction")
-
-        _update_job(
-            db,
-            job_id,
-            status="running",
-            progress=[{"step": "guidance", "status": "running", "detail": instruction[:300]}],
-        )
-        set_agent_state(db, project, "editing", "Interpreting queued guidance")
-
-        loop = asyncio.new_event_loop()
-        decision = loop.run_until_complete(decide_guidance_action(project, instruction))
-        loop.close()
-
-        action = decision.get("action") if decision.get("type") == "action" else None
-        arguments = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
-        message = str(decision.get("message") or "Applying queued guidance.")
-
-        if action in {
-            "set_recipe_enabled",
-            "update_recipe_parameters",
-            "set_analysis_variables",
-            "rollback_analysis_configuration",
-        }:
-            mutation = apply_analysis_configuration(project, action, arguments)
-            project.analysis_plan = mutation["plan"]
-            db.commit()
-            refresh_project_memory(db, project)
-            record_agent_action(
-                db,
-                project,
-                "analysis_config",
-                "completed",
-                mutation["summary"],
-                {"operation": action, "arguments": arguments, "source": "queued_guidance"},
-                job_id=job_id,
-            )
-            target_recipe_id = None
-            if action == "update_recipe_parameters" and arguments.get("recipe_id"):
-                target_recipe_id = str(arguments["recipe_id"])
-            elif action == "set_recipe_enabled" and arguments.get("enabled") is True and arguments.get("recipe_id"):
-                target_recipe_id = str(arguments["recipe_id"])
-
-            follow_job = Job(
-                project_id=project_id,
-                job_type="recipe" if target_recipe_id else "generate",
-                status="pending",
-                progress=[{"target_recipe_id": target_recipe_id}] if target_recipe_id else None,
-            )
-            db.add(follow_job)
-            project.status = "generating"
-            db.commit()
-            db.refresh(follow_job)
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                f"{mutation['summary']}. Rebuilding from your queued guidance now.",
-                metadata={"job_id": str(follow_job.id), "source": "queued_guidance"},
-            )
-            if target_recipe_id:
-                if settings.task_backend.lower() == "celery":
-                    run_generation.delay(str(project_id), str(follow_job.id), target_recipe_id=target_recipe_id)
-                else:
-                    run_generation(str(project_id), str(follow_job.id), target_recipe_id=target_recipe_id)
-            else:
-                if settings.task_backend.lower() == "celery":
-                    run_generation.delay(str(project_id), str(follow_job.id))
-                else:
-                    run_generation(str(project_id), str(follow_job.id))
-            _update_job(db, job_id, status="completed", progress=[
-                {"step": "guidance", "status": "completed", "detail": mutation["summary"]}
-            ])
-            return {"status": "completed", "delegated": "generate", "summary": mutation["summary"]}
-
-        if action == "run_recipe":
-            recipe_id = str(arguments.get("recipe_id") or "")
-            if not recipe_id:
-                raise ValueError("run_recipe guidance requires recipe_id")
-            follow_job = Job(
-                project_id=project_id,
-                job_type="recipe",
-                status="pending",
-                progress=[{"target_recipe_id": recipe_id}],
-            )
-            db.add(follow_job)
-            project.status = "rendering"
-            db.commit()
-            db.refresh(follow_job)
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                f"Running {recipe_id} from your queued guidance.",
-                metadata={"job_id": str(follow_job.id), "recipe_id": recipe_id},
-            )
-            if settings.task_backend.lower() == "celery":
-                run_recipe_execution.delay(str(project_id), str(follow_job.id), recipe_id=recipe_id)
-            else:
-                run_recipe_execution(str(project_id), str(follow_job.id), recipe_id=recipe_id)
-            _update_job(db, job_id, status="completed", progress=[
-                {"step": "guidance", "status": "completed", "detail": f"Delegated {recipe_id}"}
-            ])
-            return {"status": "completed", "delegated": "recipe", "recipe_id": recipe_id}
-
-        if action == "edit_project" or decision.get("type") == "action":
-            edit_instruction = str(decision.get("instruction") or instruction).strip()
-            follow_job = Job(project_id=project_id, job_type="edit", status="pending")
-            db.add(follow_job)
-            project.status = "rendering"
-            db.commit()
-            db.refresh(follow_job)
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                message or "Applying your queued guidance as a verified workspace edit.",
-                metadata={"job_id": str(follow_job.id), "source": "queued_guidance"},
-            )
-            if settings.task_backend.lower() == "celery":
-                run_editing.delay(str(project_id), str(follow_job.id), instruction=edit_instruction)
-            else:
-                run_editing(str(project_id), str(follow_job.id), instruction=edit_instruction)
-            _update_job(db, job_id, status="completed", progress=[
-                {"step": "guidance", "status": "completed", "detail": "Delegated edit"}
-            ])
-            return {"status": "completed", "delegated": "edit"}
-
-        project.status = "completed"
-        db.commit()
-        set_agent_state(db, project, "completed", "Queued guidance did not require changes")
-        record_project_message(
-            db,
-            project,
-            "assistant",
-            str(decision.get("message") or "Queued guidance did not require further changes."),
-            metadata={"job_id": job_id, "source": "queued_guidance"},
-        )
-        _update_job(db, job_id, status="completed", progress=[
-            {"step": "guidance", "status": "completed", "detail": "No-op"}
-        ])
-        return {"status": "completed", "delegated": None}
-    except Exception as exc:
-        logger.exception("Guidance follow-up failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(exc))
-        try:
-            project = db.query(Project).filter(Project.id == project_id).first()
-            if project:
-                from app.services.agent_runtime import record_agent_action, record_project_message, set_agent_state
-
-                project.status = "failed"
-                db.commit()
-                set_agent_state(db, project, "failed", "Queued guidance failed")
-                record_agent_action(db, project, "guidance", "failed", str(exc), job_id=job_id)
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    f"I could not apply the queued guidance automatically: {exc}",
-                    metadata={"job_id": job_id, "status": "failed"},
-                )
-        except Exception:
-            pass
-        raise
-    finally:
-        db.close()
+        db.close()@task_decorator
 
 
 
@@ -1527,3 +675,7 @@ def sync_bioc_knowledge(*args):
         )
     finally:
         db.close()
+
+
+
+

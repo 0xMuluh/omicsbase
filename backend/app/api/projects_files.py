@@ -102,59 +102,6 @@ def list_note_results(
     ]
 
 
-@router.get("/{project_id}/files/tree")
-def list_project_tree(
-    project_id: str,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_current_tenant),
-):
-    """Live listing of the generated project's code tree.
-
-    Reads the project directory directly so files stream in while generation
-    is still running (the memory refresh only happens at completion).
-    Returns a nested tree of {name, path, type, size, extension, children}.
-    """
-    project = get_project_for_tenant(db, project_id, tenant_id)
-    if not project.project_dir:
-        return []
-    base = Path(project.project_dir) / "code"
-    if not base.exists():
-        return []
-
-    root: dict[str, dict] = {}
-
-    def node_for(name: str, path: str, is_dir: bool) -> dict:
-        return {
-            "name": name,
-            "path": path,
-            "type": "directory" if is_dir else "file",
-            "extension": Path(name).suffix.lstrip(".") if not is_dir and Path(name).suffix else None,
-            "children": {} if is_dir else None,
-        }
-
-    for path in sorted(base.rglob("*")):
-        relative_parts = path.relative_to(Path(project.project_dir)).parts  # includes "code"
-        cursor = root
-        for index, part in enumerate(relative_parts):
-            is_last = index == len(relative_parts) - 1
-            relative_path = "/".join(relative_parts[: index + 1])
-            if is_last and path.is_file():
-                cursor.setdefault(part, node_for(part, relative_path, False))
-                cursor[part]["size"] = path.stat().st_size
-            else:
-                cursor.setdefault(part, node_for(part, relative_path, True))
-                cursor = cursor[part]["children"]
-
-    def to_list(nodes: dict[str, dict]) -> list[dict]:
-        entries = list(nodes.values())
-        for entry in entries:
-            if entry["children"] is not None:
-                entry["children"] = to_list(entry["children"])
-        return entries
-
-    return to_list(root)
-
-
 @router.get("/{project_id}/locks")
 def get_project_locks(
     project_id: str,

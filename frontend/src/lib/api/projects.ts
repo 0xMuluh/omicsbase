@@ -35,7 +35,7 @@ export const projectsApi = {
       method: "POST",
       body: JSON.stringify({ answers }),
     }),
-  approvePlan: (projectId: string, plan: AnalysisPlan) =>
+  updatePlan: (projectId: string, plan: AnalysisPlan) =>
     request<{ status: string }>(`/projects/${projectId}/approve`, {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, plan }),

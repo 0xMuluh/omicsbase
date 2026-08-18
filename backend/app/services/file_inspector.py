@@ -12,6 +12,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+EXCEL_MAX_ROWS = 1_048_576
+EXCEL_MAX_COLUMNS = 16_384
+
 
 def inspect_file(file_path: str) -> dict[str, Any]:
     """Inspect a file and return a structured summary.
@@ -31,6 +34,8 @@ def inspect_file(file_path: str) -> dict[str, Any]:
             return _inspect_biom(path)
         elif suffix in (".csv", ".tsv", ".txt"):
             return _inspect_tabular(path, suffix)
+        elif suffix == ".docx":
+            return _inspect_docx(path)
         elif suffix in (".xlsx", ".xls"):
             return _inspect_excel(path)
         elif suffix == ".rds":
@@ -181,6 +186,56 @@ def _inspect_biom(path: Path) -> dict[str, Any]:
     return result
 
 
+def _inspect_docx(path: Path) -> dict[str, Any]:
+    """Return bounded readable text from a DOCX without extracting attachments."""
+    from xml.etree import ElementTree
+
+    result: dict[str, Any] = {
+        "format": "docx",
+        "name": path.name,
+        "size_bytes": path.stat().st_size,
+    }
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(path, "r") as archive:
+        document = ElementTree.fromstring(archive.read("word/document.xml"))
+
+    paragraphs: list[str] = []
+    total_characters = 0
+    for paragraph in document.iter(namespace + "p"):
+        text = "".join(
+            node.text or ""
+            for node in paragraph.iter(namespace + "t")
+        ).strip()
+        if not text:
+            continue
+        paragraphs.append(text)
+        total_characters += len(text)
+
+    preview = "\n\n".join(paragraphs)
+    result.update({
+        "paragraphs": len(paragraphs),
+        "characters": total_characters,
+        "preview_text": preview[:8000],
+        "preview_truncated": len(preview) > 8000,
+    })
+    return result
+
+
+def _excel_dimensions(worksheet: Any) -> tuple[int, int]:
+    """Return actual XLSX dimensions when a producer declares the whole sheet."""
+    rows = int(worksheet.max_row or 0)
+    columns = int(worksheet.max_column or 0)
+    if rows >= EXCEL_MAX_ROWS or columns >= EXCEL_MAX_COLUMNS:
+        # Some spreadsheet tools save ``A1:G1048576`` even when only a small
+        # table has values. Read-only openpyxl trusts that declaration unless
+        # its cached dimensions are reset and recalculated from worksheet XML.
+        worksheet.reset_dimensions()
+        worksheet.calculate_dimension(force=True)
+        rows = int(worksheet.max_row or 0)
+        columns = int(worksheet.max_column or 0)
+    return rows, columns
+
+
 def _inspect_excel(path: Path) -> dict[str, Any]:
     """Inspect Excel files."""
     result: dict[str, Any] = {"format": "excel", "name": path.name, "size_bytes": path.stat().st_size}
@@ -194,6 +249,7 @@ def _inspect_excel(path: Path) -> dict[str, Any]:
 
         for sheet_name in wb.sheetnames[:3]:
             ws = wb[sheet_name]
+            sheet_rows, sheet_columns = _excel_dimensions(ws)
             rows = []
             for i, row in enumerate(ws.iter_rows(values_only=True)):
                 rows.append([str(c) if c is not None else "" for c in row])
@@ -202,11 +258,12 @@ def _inspect_excel(path: Path) -> dict[str, Any]:
 
             if rows:
                 result[f"sheet_{sheet_name}"] = {
-                    "dimensions": {"rows": ws.max_row, "columns": ws.max_column},
+                    "dimensions": {"rows": sheet_rows, "columns": sheet_columns},
                     "preview_rows": rows[:6],
                 }
 
         preferred = wb[preferred_sheet]
+        preferred_rows, preferred_columns = _excel_dimensions(preferred)
         sampled_rows = []
         for index, row in enumerate(preferred.iter_rows(values_only=True)):
             sampled_rows.append(list(row))
@@ -219,7 +276,10 @@ def _inspect_excel(path: Path) -> dict[str, Any]:
             ]
             data_rows = sampled_rows[1:]
             result["selected_sheet"] = preferred_sheet
-            result["dimensions"] = {"rows": max(preferred.max_row - 1, 0), "columns": preferred.max_column}
+            result["dimensions"] = {
+                "rows": max(preferred_rows - 1, 0),
+                "columns": preferred_columns,
+            }
             result["columns"] = columns
             result["preview_rows"] = [
                 [str(value) if value is not None else "" for value in row]
@@ -569,3 +629,100 @@ def format_file_summary_for_llm(summary: dict) -> str:
         parts.append("QIIME2 metadata format detected")
 
     return "\n".join(parts)
+
+
+MAX_DOC_TEXT_CHARS = 50_000
+MAX_INSPECT_BYTES = 10 * 1024 * 1024
+
+
+def extract_document_text(path: str, max_chars: int = MAX_DOC_TEXT_CHARS) -> str:
+    """Extract readable text from any document, size-capped, with graceful fallbacks."""
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return ""
+    if size <= 0 or size > MAX_INSPECT_BYTES:
+        return ""
+
+    suffix = Path(path).suffix.lower()
+    text = ""
+    if suffix == ".docx":
+        text = _extract_docx_text(path)
+    elif suffix == ".pdf":
+        text = _extract_pdf_text(path)
+    elif suffix in {".txt", ".md", ".markdown", ".rtf", ".html", ".htm"}:
+        text = _read_raw_text(path, max_chars)
+    elif suffix == ".odt":
+        text = _extract_odt_text(path)
+    if not text:
+        return ""
+    return text[:max_chars]
+
+
+def _read_raw_text(path: str, max_chars: int = MAX_DOC_TEXT_CHARS) -> str:
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            return Path(path).read_text(encoding=encoding, errors="replace")[:max_chars]
+        except (UnicodeDecodeError, OSError):
+            continue
+    return ""
+
+
+def _extract_docx_text(path: str) -> str:
+    import re
+    try:
+        import docx  # type: ignore
+
+        document = docx.Document(path)
+        return "\n".join(p.text for p in document.paragraphs if p.text)
+    except Exception:
+        pass
+    try:
+        with zipfile.ZipFile(path) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8", errors="replace")
+        xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
+        xml = re.sub(r"</w:p>", "\n", xml)
+        xml = re.sub(r"<[^>]+>", "", xml)
+        return re.sub(r"\n{3,}", "\n\n", xml).strip()
+    except Exception as exc:
+        logger.debug("docx extraction failed for %s: %s", path, exc)
+        return ""
+
+
+def _extract_pdf_text(path: str) -> str:
+    try:
+        import pypdf  # type: ignore
+
+        reader = pypdf.PdfReader(path)
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:
+        pass
+    import shutil
+
+    if shutil.which("pdftotext"):
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["pdftotext", path, "-"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            return result.stdout
+        except Exception as exc:
+            logger.debug("pdftotext failed for %s: %s", path, exc)
+    return ""
+
+
+def _extract_odt_text(path: str) -> str:
+    import re
+    try:
+        with zipfile.ZipFile(path) as archive:
+            xml = archive.read("content.xml").decode("utf-8", errors="replace")
+        xml = re.sub(r"</text:p>", "\n", xml)
+        xml = re.sub(r"<[^>]+>", "", xml)
+        return re.sub(r"\n{3,}", "\n\n", xml).strip()
+    except Exception:
+        return ""

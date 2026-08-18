@@ -6,6 +6,7 @@ from app.services.provider_errors import LLMQuotaError, LLMUnavailableError
 from app.services.provider_guard import (
     active_provider_block,
     clear_provider_block,
+    provider_error_from_block,
     record_provider_block,
 )
 
@@ -23,6 +24,9 @@ def test_non_retryable_failure_blocks_only_the_failed_provider():
     assert active_provider_block(project, "qwen")["category"] == "quota_exhausted"
     assert active_provider_block(project, "openai") is None
     assert project.agent_memory["summary"] == "keep"
+    restored = provider_error_from_block(active_provider_block(project, "qwen"))
+    assert isinstance(restored, LLMQuotaError)
+    assert restored.code == "AllocationQuota.FreeTierOnly"
 
 
 def test_retryable_outage_does_not_persist_a_block():

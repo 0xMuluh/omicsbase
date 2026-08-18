@@ -55,7 +55,7 @@ export function WorkspaceComposer({
   return (
     <form
       onSubmit={submit}
-      className="relative rounded-[28px] border border-border bg-[var(--composer-surface)] p-1.5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
+      className="relative rounded-[25px] border border-border bg-[var(--composer-surface)] p-1 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur transition-colors dark:shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
     >
       {pendingQuestion ? (
         <div className="mb-2 rounded-2xl border border-teal-500/30 bg-teal-500/5 px-4 py-3">
@@ -102,7 +102,7 @@ export function WorkspaceComposer({
           }
         }}
       />
-      <div className="flex items-end gap-1.5">
+      <div className="flex items-center gap-1">
         <ComposerAddMenu
           open={addOpen}
           onToggle={() => setAddOpen((open) => !open)}
@@ -128,16 +128,16 @@ export function WorkspaceComposer({
           }}
           disabled={disabled}
           rows={1}
-          className="max-h-52 min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:opacity-60"
+          className="max-h-52 min-h-[36px] min-w-0 flex-1 resize-none border-0 bg-transparent px-2.5 py-1.5 text-[17px] leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:opacity-60"
         />
 
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1">
           <div ref={modeMenuRef} className="relative">
             <button
               type="button"
               onClick={() => setModeOpen((open) => !open)}
               disabled={disabled}
-              className="inline-flex h-10 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 text-sm font-medium text-foreground transition hover:bg-muted"
             >
               {chatMode === "build" ? "Build" : "Discuss"}
               <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -184,20 +184,20 @@ export function WorkspaceComposer({
             size="sm"
             variant="ghost"
             disabled
-            className="h-10 w-10 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground opacity-50"
+            className="h-9 w-9 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground opacity-50"
             title="Voice input coming soon"
           >
-            <Mic className="h-4 w-4" />
+            <Mic className="h-3.5 w-3.5" />
           </Button>
 
           <Button
             type="submit"
             size="sm"
             disabled={(!promptText.trim() && !stagedFiles.length) || disabled}
-            className="h-10 w-10 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
+            className="h-9 w-9 rounded-full bg-teal-600 p-0 text-white hover:bg-teal-500 disabled:bg-muted disabled:text-muted-foreground dark:bg-teal-400 dark:text-zinc-950 dark:hover:bg-teal-300 dark:disabled:bg-white/10 dark:disabled:text-zinc-500"
             title="Send"
           >
-            {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            {disabled ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>

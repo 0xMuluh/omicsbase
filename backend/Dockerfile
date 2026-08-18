@@ -54,12 +54,10 @@ COPY backend/alembic /app/alembic
 COPY backend/app /app/app
 COPY prompts /app/prompts
 COPY registry /app/registry
-COPY skills /app/skills
 COPY templates /app/templates
 
 ENV PROJECTS_DIR=/app/projects \
     PROMPTS_DIR=/app/prompts \
-    SKILLS_DIR=/app/skills \
     REGISTRY_PATH=/app/registry/decision_points.yaml
 
 EXPOSE 8000

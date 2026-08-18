@@ -20,6 +20,7 @@ backend/omicsbase.db
 
 # Knowledge sync clones (materialised from git at sync time; bioc_books.yaml is tracked)
 backend/knowledge/repositories/
+backend/knowledge/embedding-models/
 
 # Frontend dependencies and builds
 frontend/node_modules/

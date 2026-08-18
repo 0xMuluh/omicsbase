@@ -15,8 +15,10 @@ export function StartExperience() {
   const sidebar = useProjectsSidebar();
 
   return (
-    <div className="relative min-h-dvh overflow-hidden bg-[var(--start-hero-base)]">
-      <section className="start-hero relative isolate min-h-dvh overflow-hidden">
+    <div className="relative flex min-h-dvh overflow-hidden bg-[var(--start-hero-base)]">
+      <ProjectsSidebar open={sidebar.open} onClose={() => sidebar.setOpen(false)} notesScope="standalone" />
+
+      <section className="start-hero relative isolate min-h-dvh min-w-0 flex-1 overflow-hidden">
         <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
           <div className="absolute inset-0 bg-[var(--start-hero-base)]" />
           <div className="start-hero-aurora absolute inset-[-20%]" />
@@ -39,7 +41,7 @@ export function StartExperience() {
           <ThemeToggle />
         </div>
 
-        <div className="relative mx-auto flex min-h-dvh w-full max-w-3xl flex-col items-center justify-center px-6 py-20">
+        <div className="relative mx-auto flex min-h-dvh w-full max-w-3xl flex-col items-center justify-center px-4 py-20">
           <motion.div
             className="mb-8 w-full text-center sm:mb-9"
             initial={{ opacity: 0, y: 16 }}
@@ -64,8 +66,6 @@ export function StartExperience() {
           </motion.div>
         </div>
       </section>
-
-      <ProjectsSidebar open={sidebar.open} onClose={() => sidebar.setOpen(false)} notesScope="standalone" />
     </div>
   );
 }

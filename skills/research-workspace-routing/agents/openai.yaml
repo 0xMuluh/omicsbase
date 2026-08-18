@@ -1,4 +1,0 @@
-interface:
-  display_name: "Research Workspace Routing"
-  short_description: "Navigate multi-project research workspaces"
-  default_prompt: "Use $research-workspace-routing to inspect this research workspace and choose the right workflow."

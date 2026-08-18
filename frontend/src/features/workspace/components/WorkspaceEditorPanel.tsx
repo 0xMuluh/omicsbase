@@ -20,7 +20,7 @@ import { FileTypeIcon } from "./FileTypeIcon";
 import { InlineAiWidget } from "./InlineAiWidget";
 import { WorkspaceFileTree } from "./WorkspaceFileTree";
 import { useWorkspaceFiles } from "../hooks/useWorkspaceFiles";
-import { getLanguage, isEditableTabularPath, isImagePath, isTabularPath, tabLabel } from "../utils/filePaths";
+import { getLanguage, isEditableTabularPath, isImagePath, isTabularPath, isTextPath, tabLabel } from "../utils/filePaths";
 import { Button } from "@/components/ui/button";
 
 type WorkspaceFilesState = ReturnType<typeof useWorkspaceFiles>;
@@ -103,6 +103,8 @@ export function WorkspaceEditorPanel({
   isLive,
 }: WorkspaceEditorPanelProps) {
   const {
+    activeFileEditable,
+    activeFileReadOnly,
     activeTab,
     closeConflictDialog,
     contentLoading,
@@ -412,7 +414,7 @@ export function WorkspaceEditorPanel({
               variant="ghost"
               size="sm"
               onClick={() => saveMutation.mutate()}
-              disabled={!isDirty || saveMutation.isPending || isImagePath(activeTab) || (isTabularPath(activeTab) && !isEditableTabularPath(activeTab))}
+              disabled={!isDirty || saveMutation.isPending || !activeFileEditable || isImagePath(activeTab) || (isTabularPath(activeTab) && !isEditableTabularPath(activeTab))}
               className="h-7 gap-1 bg-teal-600/80 px-2 text-[11px] text-white hover:bg-teal-500 disabled:opacity-40"
             >
               {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
@@ -424,7 +426,7 @@ export function WorkspaceEditorPanel({
         <div className="min-h-0 flex-1 bg-muted/40 dark:bg-[#1e1e1e]">
           {!activeTab ? (
             <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
-              Select a file to inspect or edit the generated source.
+              Select a file to inspect or edit the project source.
             </div>
           ) : isImagePath(activeTab) ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
@@ -448,6 +450,24 @@ export function WorkspaceEditorPanel({
                 Could not preview this table.
               </div>
             )
+          ) : !isTextPath(activeTab) ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+              <FileTypeIcon name={tabLabel(activeTab)} isDir={false} />
+              <div>
+                <p className="text-sm font-medium text-foreground">Binary project file</p>
+                <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
+                  This file is visible in the project tree but cannot be rendered as text in Monaco.
+                  {activeFileReadOnly ? " It is also protected from browser edits." : " Download it to inspect the original bytes."}
+                </p>
+              </div>
+              <a
+                href={api.getRawFileUrl(projectId, activeTab)}
+                download
+                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground transition hover:bg-muted"
+              >
+                Download {tabLabel(activeTab)}
+              </a>
+            </div>
           ) : contentLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-teal-400" />
@@ -484,6 +504,7 @@ export function WorkspaceEditorPanel({
                 }}
                 options={{
                   fontSize: 13,
+                  readOnly: !activeFileEditable,
                   minimap: { enabled: false },
                   scrollBeyondLastLine: false,
                   wordWrap: "on",

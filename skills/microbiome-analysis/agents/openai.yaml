@@ -1,4 +1,0 @@
-interface:
-  display_name: "Microbiome Analysis"
-  short_description: "Generate and review microbiome workflows"
-  default_prompt: "Use $microbiome-analysis to create or update a microbiome analysis workflow from raw data and an analysis plan."

@@ -22,6 +22,32 @@ def test_builtin_packs_expose_capabilities():
     assert contract.selected[0].capability.capability_id == pack.capabilities[0].capability_id
 
 
+def test_capability_scope_tracks_deleted_sources_and_active_steps(tmp_path: Path):
+    pack = ReportPack(
+        root=tmp_path,
+        pack_id="demo",
+        version="1",
+        domain="demo",
+        name="Demo",
+        capabilities=(
+            ReportPackCapability(
+                "demo",
+                sources=("code/load.R", "code/fit.R"),
+                execution_steps=("load", "fit"),
+            ),
+        ),
+    )
+    contract = resolve_plan_capabilities(
+        pack,
+        {"capabilities": ["demo"]},
+        excluded_paths=("code/fit.R",),
+        active_execution_steps=("load",),
+    )
+    selected = contract.selected[0].capability
+    assert selected.sources == ("code/load.R",)
+    assert selected.execution_steps == ("load",)
+
+
 def test_unknown_plan_capability_is_rejected():
     pack = ReportPack(root=Path("."), pack_id="x", version="1", domain="x", name="x", capabilities=(ReportPackCapability("known"),))
     with pytest.raises(CapabilityContractError):

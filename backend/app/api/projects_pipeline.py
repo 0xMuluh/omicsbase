@@ -16,13 +16,41 @@ from app.schemas.schemas import (
     JobOut,
     PlanApproval,
 )
-from app.services.assistant import is_edit_prompt
+from app.services.agent_runtime import is_edit_prompt
 
 router = APIRouter()
 
 
 def _is_non_edit_prompt(instruction: str) -> bool:
     return not is_edit_prompt(instruction)
+
+
+def _ensure_agent_provider_available(project: Project) -> None:
+    """Reject a repeat call after a durable non-retryable provider failure."""
+    from app.services.llm import resolve_target
+    from app.services.provider_guard import active_provider_block
+
+    target_provider, _ = resolve_target("agent")
+    provider = target_provider or settings.llm_provider
+    block = active_provider_block(project, provider)
+    if block is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": block.get("message") or "The configured language-model provider is blocked.",
+            "provider_failure": block,
+        },
+    )
+
+
+def _refresh_study_manifest(db: Session, project: Project):
+    """Rebuild the manifest from the current upload rows before a pipeline step."""
+    from app.services.study_manifest import build_study_manifest
+
+    files = db.query(UploadedFile).filter(UploadedFile.project_id == project.id).all()
+    project.study_manifest = build_study_manifest(files)
+    return files, project.study_manifest
 
 
 def _dispatch_task(
@@ -76,12 +104,14 @@ def start_planning(
 ):
     """Start the planning process."""
     project = get_project_for_tenant(db, project_id, tenant_id)
+    _ensure_agent_provider_available(project)
 
-    from app.services.study_manifest import build_study_manifest, manifest_errors
+    from app.services.study_manifest import manifest_errors
 
-    files = db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
-    project.study_manifest = build_study_manifest(files)
-    blocking_errors = manifest_errors(project.study_manifest)
+    _refresh_study_manifest(db, project)
+    # Roles are still intentionally unresolved at this point. Let the LLM
+    # classify them before applying the role-dependent input contract.
+    blocking_errors = manifest_errors(project.study_manifest, include_input_contract=False)
     if blocking_errors:
         db.commit()
         raise HTTPException(
@@ -99,8 +129,11 @@ def start_planning(
     set_agent_state(db, project, "planning", "Planning analysis workflow")
     record_agent_action(db, project, "plan", "started", "Planning analysis workflow", job_id=str(job.id))
 
-    from app.tasks.analysis import run_planning
-    _dispatch_task(run_planning, project, job, db, background_tasks)
+    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
+    _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
+        "instruction": PLAN_INSTRUCTION,
+        "job_kind": "plan",
+    })
 
     return job
 
@@ -129,6 +162,7 @@ def submit_clarifications(
 ):
     """Record the user's answers and re-run planning with them."""
     project = get_project_for_tenant(db, project_id, tenant_id)
+    _ensure_agent_provider_available(project)
 
     agent_memory = dict(project.agent_memory or {})
     stored = {
@@ -155,8 +189,11 @@ def submit_clarifications(
     set_agent_state(db, project, "planning", "Re-planning with answered questions")
     record_agent_action(db, project, "plan", "restarted", "Re-planning with answered questions", job_id=str(job.id))
 
-    from app.tasks.analysis import run_planning
-    _dispatch_task(run_planning, project, job, db, background_tasks)
+    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
+    _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
+        "instruction": PLAN_INSTRUCTION,
+        "job_kind": "plan",
+    })
 
     return job
 
@@ -168,18 +205,32 @@ def approve_plan(
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Approve (and optionally modify) the analysis plan."""
+    """Update the analysis plan; retained for API compatibility."""
     project = get_project_for_tenant(db, project_id, tenant_id)
 
+    from app.services.study_manifest import manifest_errors
+
+    _refresh_study_manifest(db, project)
+    blocking_errors = manifest_errors(
+        project.study_manifest,
+        include_input_contract=not getattr(settings, "project_agent_enabled", True),
+    )
+    if blocking_errors:
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Study inputs are not valid for this plan", "errors": blocking_errors},
+        )
+
     project.analysis_plan = data.plan.model_dump()
-    project.status = "approved"
+    project.status = "planned"
     db.commit()
 
     from app.services.agent_runtime import record_agent_action, refresh_project_memory, set_agent_state
-    set_agent_state(db, project, "idle", "Analysis plan approved")
+    set_agent_state(db, project, "idle", "Analysis plan updated")
     refresh_project_memory(db, project)
-    record_agent_action(db, project, "plan", "approved", "User approved analysis plan")
-    return {"status": "approved"}
+    record_agent_action(db, project, "plan", "updated", "Analysis plan updated")
+    return {"status": "planned"}
 
 
 @router.post("/{project_id}/generate", response_model=JobOut, status_code=202)
@@ -191,26 +242,22 @@ def start_generation(
 ):
     """Start generating the Quarto project."""
     project = get_project_for_tenant(db, project_id, tenant_id)
+    _ensure_agent_provider_available(project)
     if not project.analysis_plan:
-        raise HTTPException(status_code=400, detail="No approved plan")
-    retrying_failed_generation = False
-    if project.status == "failed":
-        latest_failed_job = (
-            db.query(Job)
-            .filter(Job.project_id == project_id, Job.status == "failed")
-            .order_by(Job.created_at.desc())
-            .first()
-        )
-        retrying_failed_generation = bool(
-            latest_failed_job and latest_failed_job.job_type == "generate"
-        )
-    if project.status != "approved" and not retrying_failed_generation:
+        raise HTTPException(status_code=400, detail="No analysis plan")
+
+    from app.services.study_manifest import manifest_errors
+
+    _refresh_study_manifest(db, project)
+    blocking_errors = manifest_errors(
+        project.study_manifest,
+        include_input_contract=not getattr(settings, "project_agent_enabled", True),
+    )
+    if blocking_errors:
+        db.commit()
         raise HTTPException(
-            status_code=409,
-            detail=(
-                "Generation can start after plan approval or retry the latest failed generation; "
-                "retry the failed pipeline stage instead."
-            ),
+            status_code=422,
+            detail={"message": "Study inputs are not valid for generation", "errors": blocking_errors},
         )
 
     job = Job(project_id=project_id, job_type="generate", status="pending")
@@ -220,11 +267,14 @@ def start_generation(
     db.refresh(job)
 
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    set_agent_state(db, project, "generating", "Generating source project")
-    record_agent_action(db, project, "generate", "started", "Generating source project", job_id=str(job.id))
+    set_agent_state(db, project, "generating", "Building the report with the agent loop")
+    record_agent_action(db, project, "generate", "started", "Building the report with the agent loop", job_id=str(job.id))
 
-    from app.tasks.analysis import run_generation
-    _dispatch_task(run_generation, project, job, db, background_tasks)
+    from app.tasks.analysis import BUILD_INSTRUCTION, run_agent_job
+    _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
+        "instruction": BUILD_INSTRUCTION,
+        "job_kind": "generate",
+    })
 
     return job
 
@@ -251,8 +301,15 @@ def start_rendering(
     set_agent_state(db, project, "rendering", "Rendering report")
     record_agent_action(db, project, "render", "started", "Rendering report", job_id=str(job.id))
 
-    from app.tasks.analysis import run_rendering
-    _dispatch_task(run_rendering, project, job, db, background_tasks)
+    from app.tasks.analysis import run_agent_job
+    _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
+        "instruction": (
+            "Render the report now with render_report. If the render fails, read the "
+            "errors, repair the workspace source, and render again until it passes. "
+            "Finish with validate_report for anything structural."
+        ),
+        "job_kind": "render",
+    })
 
     return job
 
@@ -293,11 +350,11 @@ def edit_project(
         job_id=str(job.id),
     )
 
-    from app.tasks.analysis import run_editing
+    from app.tasks.analysis import edit_instruction, run_agent_job
     if settings.task_backend.lower() == "celery":
-        run_editing.delay(str(project.id), str(job.id), instruction=data.instruction)
+        run_agent_job.delay(str(project.id), str(job.id), instruction=edit_instruction(data.instruction), job_kind="edit")
     elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(run_editing, str(project.id), str(job.id), instruction=data.instruction)
+        background_tasks.add_task(run_agent_job, str(project.id), str(job.id), instruction=edit_instruction(data.instruction), job_kind="edit")
     else:
         raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
 

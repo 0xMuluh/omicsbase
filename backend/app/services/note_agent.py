@@ -12,7 +12,8 @@ from typing import Any, AsyncIterator, Callable
 
 from app.config import settings
 from app.models.notes import NoteCell, NoteCellRevision, NoteThread
-from app.services.agent_core import ToolCallResult, friendly_tool_label, persistable_tool_arguments, run_agent_loop
+from app.services.agent_core import ToolCallResult, friendly_tool_label, persistable_tool_arguments
+from app.services.agent_loop import stream_agent_turn
 from app.services.tool_specs import NOTE_TOOL_SPECS, TOOL_REGISTRY
 from app.services.context_budget import bounded_json
 from app.services.agent_runtime import normalise_cell_type
@@ -24,7 +25,7 @@ MAX_NOTE_HISTORY = 12
 MAX_NOTE_HISTORY_CHARS = 24_000
 # Absolute safety ceiling for one note turn; the configured budget defaults
 # to this and can be lowered via NOTE_AGENT_MAX_STEPS.
-MAX_NOTE_STEPS = 24
+MAX_NOTE_STEPS = 32
 
 NOTE_AGENT_SYSTEM_PROMPT = """You are the OmicsBase autonomous agent for a linear scientific Chat/Notes notebook.
 
@@ -73,8 +74,6 @@ If a cell fails, inspect the actual failure, diagnose it, and make the smallest 
 For methodological questions involving omics or Bioconductor workflows, use search_bioc_books when references would improve the answer or computation. This includes questions about methodology, assumptions, interpretation, accepted practice, and recommendations. References guide the answer or computation; they do not automatically trigger computation. A returned source containing R code is not evidence that the user requested execution. When explaining a concept or method, prefer a relevant worked example from the books, adapt it rather than inventing one, and run it only when the request calls for execution or the small computation materially improves the explanation. Treat excerpts as methodological guidance, not evidence about the user data. Preserve and cite source metadata.
 
 When the user asks to demonstrate, show, or work through a method or example, use search_bioc_books when scientific grounding would improve the demonstration, cite any returned sources, and then perform the requested work. When the demonstration requires computation, use a small seeded run_r_cell example unless the user data or workspace must be inspected.
-
-Use `list_skills` and `load_skill` only when a specialized skill pack is needed for the requested workflow or report, and load only relevant references. Do not load skills for ordinary conceptual answers; loaded skill text is guidance, not evidence about the notebook data.
 
 For stochastic procedures, set and display a reproducible seed. Avoid unexplained changes to the working directory, global options, contrasts, or other session-wide state. Preserve alignment between assays, samples, features, and metadata.
 
@@ -248,12 +247,14 @@ async def stream_note_agent(
         knowledge_search_handler=knowledge_search_handler,
         max_steps=max_steps,
     )
-    async for event in run_agent_loop(executor, message, cancel_check=cancel_check):
+    async for event in stream_agent_turn(executor, message, cancel_check=cancel_check):
         yield event
 
 
 class NoteAgentExecutor:
     """NoteThread lens: four notebook-safe tools on the shared agent core."""
+
+    budget_profile = "note"
 
     def __init__(
         self,
@@ -305,15 +306,6 @@ class NoteAgentExecutor:
     def final_event(self, message: str) -> dict:
         return {"type": "final", "message": message}
 
-    def max_steps_events(self) -> list[dict]:
-        return [{
-            "type": "final",
-            "message": (
-                "I inspected the notebook but reached the safe action limit for this turn. "
-                "The persisted cells and any queued execution remain available above."
-            ),
-        }]
-
     def tool_completed_event(
         self,
         tool_name: str,
@@ -342,57 +334,6 @@ class NoteAgentExecutor:
         spec = self.tool_spec(tool_name)
         return bool(spec and spec.parallel)
 
-    def use_fast_path(self, message: str) -> bool:
-        from app.services.intent_fastpath import is_simple_question
-        return is_simple_question(message)
-
-    def deterministic_intent(self, message: str) -> str | None:
-        from app.services.intent_fastpath import deterministic_intent
-
-        context = self.context if isinstance(self.context, dict) else {}
-        return deterministic_intent(
-            message,
-            lens="note",
-            notebook_state=bool(
-                self.cells
-                or context.get("cells")
-                or context.get("workspace_objects")
-                or context.get("data_files")
-            ),
-            pending_question=bool(context.get("pending_question")),
-        )
-
-    async def judge_intent(self, message: str) -> str:
-        from app.services.intent_fastpath import classify_intent
-
-        return await classify_intent(message)
-
-    async def fast_path_events(self, message: str, *, intent: str = "conceptual") -> AsyncIterator[dict]:
-        from app.services.intent_fastpath import stream_simple_answer
-        knowledge_context = (
-            self._knowledge_seed(message)
-            if intent == "needs_knowledge"
-            else None
-        )
-        async for event in stream_simple_answer(message, knowledge_context=knowledge_context):
-            yield event
-
-    def _knowledge_seed(self, message: str) -> str | None:
-        """Ground knowledge-seeking fast-path answers with book excerpts."""
-        if self.knowledge_search_handler is None:
-            return None
-        try:
-            observation = self.knowledge_search_handler({"query": message, "limit": 5, "channel": "stable"})
-            from app.services.intent_fastpath import format_knowledge_seed
-
-            return format_knowledge_seed((observation or {}).get("matches") or [])
-        except Exception as exc:
-            logger.warning("Fast-path knowledge seeding failed: %s", exc)
-            return None
-
-    async def legacy_llm_step(self, messages: list[dict], *, step: int) -> None:
-        return None
-
     def tool_idempotency(self, tool_name: str) -> str:
         spec = TOOL_REGISTRY.get(tool_name, lens="note")
         return spec.idempotency if spec is not None else "read_only"
@@ -415,19 +356,7 @@ class NoteAgentExecutor:
             "message": friendly_tool_label(tool_name),
         }]
         spec = TOOL_REGISTRY.get(tool_name, lens="note")
-        if tool_name == "list_skills":
-            from app.services.skills import list_skills
-
-            observation = list_skills(arguments)
-        elif tool_name == "load_skill":
-            from app.services.skills import load_skill
-
-            observation = load_skill(
-                str(arguments.get("skill") or ""),
-                arguments.get("references"),
-                arguments.get("max_chars", 12_000),
-            )
-        elif spec is None:
+        if spec is None:
             observation = {"status": "error", "error": f"Unknown NoteThread tool: {tool_name}"}
         elif self.action_handler is None:
             observation = {"status": "error", "error": "NoteThread tools are unavailable"}

@@ -32,6 +32,27 @@ def test_review_passes_minimal_project(tmp_path: Path):
     assert any(check["name"] == "qmd_pages" and check["status"] == "passed" for check in result["checks"])
 
 
+def test_review_passes_agent_built_layout_without_legacy_quartet(tmp_path: Path):
+    """OpenHands may invent numbered pages; review must not demand data.R/main.R."""
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "_quarto.yml").write_text("project:\n  type: website\n")
+    (code_dir / "01_overview.qmd").write_text(
+        "---\ntitle: Overview\n---\n\n# Overview\n\n```{r}\nsessionInfo()\n```\n"
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / "index.html").write_text(
+        "<html><body><nav>menu</nav><main>sessionInfo output</main></body></html>" * 20
+    )
+
+    result = review_render_output(str(tmp_path))
+    assert result["status"] in {"passed", "warning"}, result
+    assert not any(
+        check["status"] == "failed" and "data.R" in check.get("detail", "")
+        for check in result["checks"]
+    )
+
 
 def test_review_fails_malformed_quarto_frontmatter(tmp_path: Path):
     base = tmp_path

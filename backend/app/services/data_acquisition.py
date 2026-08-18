@@ -166,7 +166,9 @@ def import_package_dataset(
         for path in exported:
             dest = upload_dir / path.name
             dest.write_bytes(path.read_bytes())
-            file_role = role if role != "auto" else _role_from_export_name(path.name)
+            # Imported files enter the same LLM classification path as direct
+            # uploads. Export filenames are not semantic evidence.
+            file_role = role if role != "auto" else "other"
             record = _register_uploaded_file(db, project, dest, file_role=file_role)
             if record.get("status") == "error":
                 return record
@@ -326,17 +328,6 @@ def _refresh_manifest(db, project) -> dict[str, Any]:
     db.commit()
     db.refresh(project)
     return manifest
-
-
-def _role_from_export_name(name: str) -> str:
-    lower = name.lower()
-    if "metadata" in lower or "sample_data" in lower:
-        return "metadata"
-    if "tax" in lower:
-        return "taxonomy"
-    if "otu" in lower or "feature" in lower or "counts" in lower or "abundance" in lower:
-        return "feature_table"
-    return "other"
 
 
 def _package_export_script(package: str, dataset: str, out_dir: Path) -> str:

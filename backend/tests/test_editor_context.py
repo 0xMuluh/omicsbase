@@ -57,7 +57,7 @@ def _materialized_pack(tmp_path):
     return tmp_path
 
 
-def test_editor_context_contains_pack_roles_hashes_and_protected_paths(tmp_path):
+def test_editor_context_contains_hashes_and_protected_paths(tmp_path):
     project = _materialized_pack(tmp_path)
 
     contract, protected = _editor_contract_context(project)
@@ -73,18 +73,16 @@ def test_editor_context_contains_pack_roles_hashes_and_protected_paths(tmp_path)
             "analysis_plan": {"question": "Compare groups"},
             "study_manifest": {"status": "ready"},
         },
-        report_pack_context=contract["metadata"],
         protected_paths=protected,
     )
 
     analysis = next(item for item in files if item["path"] == "code/analysis.R")
-    assert analysis["role"] == "analysis"
     assert analysis["sha256"]
     assert "Compare groups" in prompt
-    assert "test-pack" in prompt
     assert "code/validate.R" in prompt
-    assert "role: analysis" in prompt
     assert "sha256:" in prompt
+    assert "Materialized ReportPack contract" not in prompt
+    assert "### code/analysis.R (role:" not in prompt
 
 
 def test_editor_rejects_reportpack_validator_edits(tmp_path):

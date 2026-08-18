@@ -49,7 +49,7 @@ def test_manifest_preserves_multiple_files_per_role():
 
     manifest = build_study_manifest(files)
 
-    assert manifest["status"] == "ready"
+    assert manifest["status"] == "needs_input"
     assert manifest["domain"] == "microbiome"
     assert manifest["roles"]["feature_table"] == ["counts-a.csv", "counts-b.csv"]
     assert manifest["grouping_candidates"][0]["column"] == "condition"
@@ -82,4 +82,18 @@ def test_manifest_detects_metabolomics_domain():
     )
 
     assert manifest["domain"] == "metabolomics"
-    assert manifest["status"] == "ready"
+    assert manifest["status"] == "invalid"
+    assert any("No feature" in message for message in manifest_errors(manifest))
+
+
+def test_manifest_can_defer_role_contract_until_after_classification():
+    manifest = build_study_manifest(
+        [_file(
+            "counts.csv",
+            "other",
+            {"format": "csv", "columns": ["feature_id", "S1", "S2"]},
+        )]
+    )
+
+    assert manifest_errors(manifest, include_input_contract=False) == []
+    assert any("No feature" in message for message in manifest_errors(manifest))

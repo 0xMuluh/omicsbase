@@ -1,9 +1,9 @@
-"""Spawn generated projects as verbatim copies of the exemplar template projects.
+"""Optional ReportPack staging for generated projects.
 
-The template IS the report: every new project is the domain exemplar's full
-project tree (data construction scripts, helper functions, orchestration,
-Quarto pages, site configuration) copied verbatim, then adapted to the study
-by the agent. Nothing is invented on top of the template.
+A ReportPack is a methodological prior — an existing R/Quarto tree that can be
+copied verbatim and adapted when the plan explicitly selects it. Plans with
+``report_pack_id=None`` build from scratch; domain catalog defaults are
+suggestions only and must never be injected silently.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 
 from app.config import settings
 from app.schemas.schemas import AnalysisPlan
-from app.services.generation_checkpoint import GenerationCheckpoint, file_sha256
+from app.services.checksums import file_sha256
 from app.services.report_pack import (
     MANIFEST_NAME,
     ReportPack,
@@ -27,11 +27,13 @@ from app.services.report_pack import (
 # host repo layout and the container layout, which differ in path depth).
 _TEMPLATE_ROOT = Path(settings.prompts_dir).resolve().parent / "templates"
 
-# Canonical exemplar project per domain.
+# Catalog exemplars per domain (for suggestion / smoke helpers only).
 EXEMPLAR_ROOTS: dict[str, Path] = {
     "microbiome": _TEMPLATE_ROOT / "microbiome" / "microbiota_diversity_pipeline",
     "metabolomics": _TEMPLATE_ROOT / "metabolomics" / "prenatal_diet_metabolomics",
 }
+# Suggested pack ids when a caller asks for a domain default explicitly.
+# Never used to rewrite a plan that set report_pack_id to null.
 DEFAULT_PACK_IDS = {
     "microbiome": "microbiome-diversity",
     "metabolomics": "prenatal-metabolomics",
@@ -96,12 +98,11 @@ def resolve_report_pack(
     *,
     domain: str,
 ) -> ReportPack | None:
-    """Resolve an explicit/catalog default pack without accepting a raw path."""
+    """Resolve an explicitly selected pack. None/empty means no pack (from-scratch)."""
     catalog = report_pack_catalog()
-    wanted = (pack_id or DEFAULT_PACK_IDS.get(domain) or "").strip()
+    wanted = (pack_id or "").strip()
     if not wanted:
-        domain_matches = [pack for pack in catalog.values() if pack.domain == domain]
-        return domain_matches[0] if len(domain_matches) == 1 else None
+        return None
     pack = catalog.get(wanted)
     if pack is None:
         raise ReportPackError(f"Unknown ReportPack id: {wanted}")
@@ -129,8 +130,14 @@ def exemplar_root(domain: str) -> Path | None:
 
 
 def exemplar_report_pack(domain: str) -> ReportPack | None:
-    """Load the declared pack, or conservative discovery, for a domain exemplar."""
-    return resolve_report_pack(None, domain=domain)
+    """Load the suggested catalog pack for a domain, if one is declared."""
+    default_id = DEFAULT_PACK_IDS.get(domain)
+    if not default_id:
+        return None
+    try:
+        return resolve_report_pack(default_id, domain=domain)
+    except ReportPackError:
+        return None
 
 
 def exemplar_project_files(domain: str) -> list[Path]:
@@ -158,14 +165,12 @@ def spawn_report_pack(
     project_dir: str,
     pack: ReportPack,
     *,
-    checkpoint: GenerationCheckpoint | None = None,
+    overwrite_edits: bool = True,
 ) -> dict[str, str]:
-    """Copy one resolved ReportPack's source tree without clobbering edits.
+    """Copy one resolved ReportPack's source tree into the workspace.
 
-    With a checkpoint, a matching completed copy is reused and files whose
-    bytes diverged from the last generator-owned hash are preserved.  The
-    checkpoint-free behavior remains a verbatim copy for compatibility with
-    callers that explicitly request a fresh spawn.
+    The template is authoritative: existing files are overwritten unless
+    ``overwrite_edits`` is disabled, which preserves already-adapted files.
     """
     root = pack.root
     base = Path(project_dir)
@@ -174,41 +179,15 @@ def spawn_report_pack(
     for exemplar in report_pack_source_files(root):
         relative_path = exemplar.relative_to(root).as_posix()
         target = base / relative_path
-        unit_id = f"spawn:{relative_path}"
-        unit_inputs = {"template_sha256": file_sha256(exemplar)}
-        if checkpoint is not None:
-            decision = checkpoint.decide(
-                unit_id,
-                [relative_path],
-                unit_inputs=unit_inputs,
-            )
-            if decision.action == "preserve":
-                checkpoint.preserve(
-                    unit_id,
-                    [relative_path],
-                    reason=decision.reason,
-                    unit_inputs=unit_inputs,
-                )
-                try:
-                    spawned[relative_path] = target.read_text(errors="replace")
-                except OSError:
-                    spawned[relative_path] = ""
-                continue
-            if decision.action == "skip":
-                try:
-                    spawned[relative_path] = target.read_text(errors="replace")
-                except OSError:
-                    spawned[relative_path] = ""
-                continue
+        if target.exists() and not overwrite_edits:
+            try:
+                spawned[relative_path] = target.read_text(errors="replace")
+            except OSError:
+                spawned[relative_path] = ""
+            continue
         # The template is authoritative: overwrite thin scaffold placeholders.
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(exemplar, target)
-        if checkpoint is not None:
-            checkpoint.complete(
-                unit_id,
-                [relative_path],
-                unit_inputs=unit_inputs,
-            )
         try:
             spawned[relative_path] = target.read_text(errors="replace")
         except OSError:

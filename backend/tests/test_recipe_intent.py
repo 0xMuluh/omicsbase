@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-
-import pytest
-
-from app.services import workspace_agent
 from app.services.recipe_intent import infer_recipe_action, prefer_recipe_over_edit
 
 
@@ -89,39 +85,3 @@ def test_prefer_recipe_overrides_mistaken_edit():
         },
     )
     assert decision["action"] == "update_recipe_parameters"
-
-
-@pytest.mark.asyncio
-async def test_agent_fallback_uses_recipe_action_not_edit(tmp_path, monkeypatch):
-    async def unavailable_llm(**kwargs):
-        raise RuntimeError("provider unavailable")
-
-    monkeypatch.setattr(workspace_agent, "call_llm", unavailable_llm)
-
-    async def judge_returns_needs_tools(message):
-        return "needs_tools"
-
-    monkeypatch.setattr("app.services.intent_fastpath.classify_intent", judge_returns_needs_tools)
-    project = _microbiome_project()
-    project.project_dir = str(tmp_path)
-    (tmp_path / "code").mkdir()
-    request = SimpleNamespace(
-        message="For alpha diversity use only Shannon",
-        selected_file=None,
-        selected_content=None,
-        selected_content_dirty=False,
-        preview_path="index.html",
-    )
-
-    events = [
-        event
-        async for event in workspace_agent.stream_workspace_agent(
-            project,
-            request,
-            persisted_messages=[],
-        )
-    ]
-
-    assert events[-1]["type"] == "action"
-    assert events[-1]["action"] == "update_recipe_parameters"
-    assert events[-1]["arguments"]["parameters"]["metrics"] == ["shannon"]

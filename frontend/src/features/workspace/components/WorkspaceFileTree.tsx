@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Loader2, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Loader2, Lock, Search } from "lucide-react";
 
 import type { FileTreeNode } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -47,6 +47,9 @@ function TreeNode({
         )}
         <FileTypeIcon name={node.name} isDir={isDir} />
         <span className="truncate">{node.name}</span>
+        {!isDir && node.editable === false ? (
+          <Lock className="ml-auto h-3 w-3 shrink-0 text-muted-foreground/70" aria-label="Read-only project file" />
+        ) : null}
       </div>
       {isDir && open && node.children ? (
         <div className="ml-2 mt-0.5 space-y-0.5 border-l border-border/40 pl-2.5">
@@ -91,7 +94,7 @@ export function WorkspaceFileTree({ files }: { files: WorkspaceFilesState }) {
               type="search"
               value={fileSearch}
               onChange={(event) => setFileSearch(event.target.value)}
-              placeholder="Search code"
+              placeholder="Search project files"
               className="h-8 w-full rounded-lg border border-border bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-teal-500/40"
             />
           </div>

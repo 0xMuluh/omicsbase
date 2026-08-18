@@ -45,6 +45,40 @@ export function isEditableTabularPath(path: string | null | undefined): boolean 
   return /.(csv|tsv)$/i.test(path);
 }
 
+const TEXT_EXTENSIONS = new Set([
+  "r", "qmd", "yml", "yaml", "md", "txt", "csv", "tsv", "json", "html", "css", "js",
+]);
+const EDITABLE_EXTENSIONS = new Set([
+  "r", "qmd", "yml", "yaml", "md", "txt", "csv", "tsv", "json",
+]);
+const READ_ONLY_ROOT_FILES = new Set([
+  "adaptation_manifest.json", "execution_contract.json", "omicsbase-pack.yaml", "report_pack.yaml",
+]);
+
+export function isTextPath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  const extension = path.split(".").pop()?.toLowerCase();
+  return Boolean(extension && TEXT_EXTENSIONS.has(extension));
+}
+
+export function isReadOnlyWorkspacePath(path: string | null | undefined): boolean {
+  if (!path) return true;
+  const normalized = path.startsWith("./") ? path.slice(2) : path;
+  return READ_ONLY_ROOT_FILES.has(normalized)
+    || normalized === "data"
+    || normalized.startsWith("data/")
+    || normalized === "output"
+    || normalized.startsWith("output/")
+    || normalized === ".omicsbase"
+    || normalized.startsWith(".omicsbase/");
+}
+
+export function isEditableWorkspacePath(path: string | null | undefined): boolean {
+  if (!path || isReadOnlyWorkspacePath(path)) return false;
+  const extension = path.split(".").pop()?.toLowerCase();
+  return Boolean(extension && EDITABLE_EXTENSIONS.has(extension));
+}
+
 export function tabLabel(path: string): string {
   return path.split("/").pop() || path;
 }
@@ -56,6 +90,18 @@ export function flattenFileTree(nodes: FileTreeNode[]): string[] {
     if (node.children?.length) paths.push(...flattenFileTree(node.children));
   }
   return paths;
+}
+
+export function findFileTreeNode(nodes: FileTreeNode[], path: string | null | undefined): FileTreeNode | null {
+  if (!path) return null;
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    if (node.children?.length) {
+      const match = findFileTreeNode(node.children, path);
+      if (match) return match;
+    }
+  }
+  return null;
 }
 
 export function collectDirPaths(nodes: FileTreeNode[]): string[] {

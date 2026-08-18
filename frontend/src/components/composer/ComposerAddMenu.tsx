@@ -32,11 +32,11 @@ export function ComposerAddMenu({
         variant="ghost"
         onClick={onToggle}
         disabled={disabled}
-        className="h-10 w-10 rounded-full border border-border bg-muted/40 p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="h-8 w-8 rounded-full p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
         title="Add files or an example dataset"
         aria-label="Add files or an example dataset"
       >
-        <Plus className="h-4 w-4" />
+        <Plus className="h-3.5 w-3.5" />
       </Button>
       <AnimatePresence>
         {open ? (
