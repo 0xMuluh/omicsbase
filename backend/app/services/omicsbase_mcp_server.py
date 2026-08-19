@@ -1,16 +1,9 @@
-"""OmicsBase contract-tools MCP server for the opencode agent backend.
+"""OmicsBase MCP for the OpenCode workspace agent.
 
-opencode (``opencode run``) only ships its native tools (bash, read, glob,
-edit). OmicsBase's contract tools live in the backend, so planning turns
-produce a plan but can never commit it. This stdio MCP server exposes those
-contract tools to the opencode agent as ordinary MCP tools, resolved against
-the project identified by ``OMICSBASE_PROJECT_DIR`` (set per invocation by
-``opencode_client.stream_opencode``; falls back to the process cwd).
-
-Implements the MCP stdio transport directly (newline-delimited JSON-RPC 2.0)
-so it runs inside the worker image without the ``mcp`` package.
-
-Run with:  python3 -m app.services.omicsbase_mcp_server
+OpenCode already has bash/read/glob/edit. This server only exposes tools that
+must touch OmicsBase app state — currently ask_user, so the Plan/workspace UI
+can pause for a clarification. It does not duplicate coding tools and does
+not require a structured analysis plan.
 """
 
 from __future__ import annotations
@@ -56,30 +49,6 @@ def _load_project(db):
 
 # --- contract tools -----------------------------------------------------
 
-def set_plan(plan: dict) -> dict:
-    """Validate and persist the authoritative analysis plan for the current project.
-
-    ``plan`` must be the complete AnalysisPlan object: project_name, domain,
-    study_type, question, and a workflow list of steps (id, name,
-    classification, enabled, recipe_id). The plan becomes the project's
-    persisted plan and later drives the build.
-    """
-    from app.database import SessionLocal
-    from app.services.workspace_handlers import make_plan_handler
-
-    db = SessionLocal()
-    try:
-        project = _load_project(db)
-        if project is None:
-            return {
-                "status": "error",
-                "error": f"No OmicsBase project found for {_project_dir()}",
-            }
-        return make_plan_handler(db, project)({"plan": plan})
-    finally:
-        db.close()
-
-
 def ask_user(question: str, options: list[str] | None = None, multiple: bool = False) -> dict:
     """Ask the user a clarifying question with concrete options.
 
@@ -110,6 +79,8 @@ def ask_user(question: str, options: list[str] | None = None, multiple: bool = F
             ],
         }
         project.agent_memory = memory
+        if str(project.status or "") in {"created", "generating", "rendering", "editing"}:
+            project.status = "needs_clarification"
         db.commit()
         return {
             "status": "ok",
@@ -120,15 +91,6 @@ def ask_user(question: str, options: list[str] | None = None, multiple: bool = F
 
 
 _TOOLS: dict[str, dict[str, Any]] = {
-    "set_plan": {
-        "description": "Validate and persist the authoritative analysis plan (AnalysisPlan object) for the current OmicsBase project.",
-        "schema": {
-            "type": "object",
-            "properties": {"plan": {"type": "object", "description": "Complete AnalysisPlan object (project_name, domain, study_type, question, workflow)."}},
-            "required": ["plan"],
-        },
-        "handler": set_plan,
-    },
     "ask_user": {
         "description": "Ask the user a clarifying question with concrete options; the turn pauses for the answer.",
         "schema": {

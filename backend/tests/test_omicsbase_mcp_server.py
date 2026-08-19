@@ -1,11 +1,10 @@
-"""Tests for the OmicsBase contract-tools MCP server used by the opencode backend."""
+"""Tests for the OmicsBase MCP tools OpenCode is allowed to call."""
 
 from __future__ import annotations
 
 import json
 import uuid
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -13,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.models.project import Project
 from app.services import omicsbase_mcp_server
-from app.services.opencode_client import opencode_mcp_config
+from app.services.opencode_client import compose_workspace_prompt, opencode_mcp_config
 
 
 def _factory():
@@ -25,7 +24,7 @@ def _factory():
     return factory
 
 
-def _seed_project(factory, project_dir):
+def _seed_project(factory, project_dir, *, status="created"):
     db = factory()
     project = Project(
         id=str(uuid.uuid4()),
@@ -33,6 +32,7 @@ def _seed_project(factory, project_dir):
         owner_id="user-a",
         tenant_id="tenant-a",
         question="Compare the groups",
+        status=status,
         project_dir=str(project_dir),
     )
     db.add(project)
@@ -54,56 +54,30 @@ def test_opencode_mcp_config_points_at_project():
     assert mcp_srv["environment"]["OMICSBASE_PROJECT_DIR"] == "/tmp/some-project"
 
 
-def test_set_plan_commits_plan(tmp_path, monkeypatch):
-    factory = _factory()
-    _apply_db(factory, monkeypatch)
-    pid = _seed_project(factory, tmp_path)
-    monkeypatch.setenv("OMICSBASE_PROJECT_DIR", str(tmp_path))
-
-    plan = {
-        "project_name": "MCP project",
-        "study_type": "case-control",
-        "question": "Compare the groups",
-        "domain": "microbiome",
-        "workflow": [
-            {"id": "alpha", "name": "Alpha diversity", "classification": "standard"},
-        ],
-    }
-    result = omicsbase_mcp_server.set_plan(plan)
-    assert result["status"] == "ok"
-
-    db = factory()
-    project = db.query(Project).filter(Project.id == pid).first()
-    assert project.analysis_plan is not None
-    assert project.analysis_plan["project_name"] == "MCP project"
-    db.close()
+def test_mcp_exposes_ask_user_only():
+    assert list(omicsbase_mcp_server._TOOLS) == ["ask_user"]
+    assert not hasattr(omicsbase_mcp_server, "set_plan")
 
 
-def test_set_plan_rejects_invalid_plan(tmp_path, monkeypatch):
-    factory = _factory()
-    _apply_db(factory, monkeypatch)
-    _seed_project(factory, tmp_path)
-    monkeypatch.setenv("OMICSBASE_PROJECT_DIR", str(tmp_path))
+def test_compose_workspace_prompt_tells_opencode_it_owns_the_directory():
+    prompt = compose_workspace_prompt("Build the report", question="Compare groups")
+    assert "data/" in prompt
+    assert "output/index.html" in prompt
+    assert "No template dependence" in prompt
+    assert "Omics-domain neutrality" in prompt
+    assert "microbiome-diversity" not in prompt
+    assert "finished analyses" not in prompt
+    assert "Compare groups" in prompt
+    assert "Build the report" in prompt
+    assert "inspect_project" not in prompt
+    assert "render_report" not in prompt
 
-    result = omicsbase_mcp_server.set_plan({"project_name": "missing fields"})
-    assert result["status"] == "error"
-    assert "Plan validation failed" in result["error"]
-
-
-def test_set_plan_unknown_project_errors(tmp_path, monkeypatch):
-    factory = _factory()
-    _apply_db(factory, monkeypatch)
-    monkeypatch.setenv("OMICSBASE_PROJECT_DIR", str(tmp_path))
-
-    result = omicsbase_mcp_server.set_plan({"project_name": "nope", "domain": "microbiome"})
-    assert result["status"] == "error"
-    assert "No OmicsBase project found" in result["error"]
 
 
 def test_ask_user_records_clarification(tmp_path, monkeypatch):
     factory = _factory()
     _apply_db(factory, monkeypatch)
-    pid = _seed_project(factory, tmp_path)
+    pid = _seed_project(factory, tmp_path, status="generating")
     monkeypatch.setenv("OMICSBASE_PROJECT_DIR", str(tmp_path))
 
     result = omicsbase_mcp_server.ask_user(
@@ -118,5 +92,15 @@ def test_ask_user_records_clarification(tmp_path, monkeypatch):
     assert pending is not None
     assert pending["questions"][0]["prompt"] == "Which grouping variable?"
     assert pending["questions"][0]["options"] == ["diet", "meal_group"]
+    assert project.status == "needs_clarification"
     db.close()
 
+
+def test_ask_user_unknown_project_errors(tmp_path, monkeypatch):
+    factory = _factory()
+    _apply_db(factory, monkeypatch)
+    monkeypatch.setenv("OMICSBASE_PROJECT_DIR", str(tmp_path))
+
+    result = omicsbase_mcp_server.ask_user("Which grouping variable?")
+    assert result["status"] == "error"
+    assert "No OmicsBase project found" in result["error"]

@@ -18,17 +18,7 @@ export default function ProjectRedirectPage() {
 
   useEffect(() => {
     if (!project) return;
-
-    const needsPlan =
-      project.status === "created"
-      || project.status === "planned"
-      || (["planning", "approved"].includes(project.status) && !project.auto_build);
-
-    if (needsPlan) {
-      router.replace(`/projects/${projectId}/plan`);
-    } else {
-      router.replace(`/projects/${projectId}/workspace`);
-    }
+    router.replace(`/projects/${projectId}/workspace`);
   }, [project, projectId, router]);
 
   return (

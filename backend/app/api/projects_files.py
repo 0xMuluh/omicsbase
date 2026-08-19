@@ -90,7 +90,7 @@ def list_note_results(
 ):
     """Result tables from the workspace and from project-attached note executions."""
     project = get_project_for_tenant(db, project_id, tenant_id)
-    from app.services.workspace_agent import list_project_result_artifacts
+    from app.services.project_artifacts import list_project_result_artifacts
 
     return [
         {

@@ -8,6 +8,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.config import settings
 
@@ -48,68 +49,62 @@ except ImportError:
 
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "created": {"planning", "planned", "failed"},
-    "planning": {"planned", "needs_user", "needs_clarification", "failed"},
-    "needs_clarification": {"planning", "failed"},
-    "planned": {"approved", "planning", "failed"},
-    "approved": {"generating", "failed"},
-    "generating": {"rendering", "repairing", "failed"},
-    "rendering": {"repairing", "reviewing", "completed", "failed"},
-    "repairing": {"rendering", "failed"},
-    "reviewing": {"completed", "failed"},
-    "editing": {"rendering", "failed", "completed"},
-    "needs_user": {"planning", "approved", "failed"},
-    "completed": {"planning", "generating", "rendering", "editing"},
-    "failed": {"planning", "approved", "generating", "rendering", "editing"},
+    "created": {"generating", "failed", "needs_clarification"},
+    "needs_clarification": {"generating", "failed"},
+    "generating": {"rendering", "completed", "failed", "needs_clarification", "editing", "created"},
+    "rendering": {"completed", "failed", "generating", "editing"},
+    "editing": {"rendering", "generating", "failed", "completed"},
+    "completed": {"generating", "rendering", "editing"},
+    "failed": {"generating", "rendering", "editing"},
 }
 
 
-# Instructions for headless pipeline jobs. Each one starts one agent-loop turn;
-# the model plans, builds, edits, renders, and repairs with the same inline
-# tools the interactive workspace chat uses.
-def plan_instruction() -> str:
-    """The planning turn instruction."""
-    return (
-        "Plan this analysis. First inspect the uploaded study inputs "
-        "(inspect_project, inspect_table, check_design_matrix as needed). "
-        "If the study design is genuinely ambiguous, ask_user with concrete options. "
-        "Otherwise call set_plan with the complete analysis plan for this research question. "
-        "The project is always written from scratch — never use, copy, or reference "
-        "any ReportPack template."
-    )
+# The agent's instruction is the user's own words (question/plan/notes).
+# The system prompt (WORKSPACE_PREAMBLE) is the standing operating manual.
+def user_instruction_for(project) -> str:
+    """Return the user's own request text for a workspace turn."""
+    for attr in ("question", "custom_plan_text", "notes"):
+        value = getattr(project, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "Build the analytical report from the study data and plan in this project directory."
 
 
-PLAN_INSTRUCTION = plan_instruction()
-
-BUILD_INSTRUCTION = (
-    "Build the report now from the approved plan. First check what already exists: "
-    "inspect_project and the workspace file list are durable, and earlier edits are "
-    "journaled — if files were already adapted or scripts already ran, continue from "
-    "that state instead of re-reading and redoing everything. "
-    "Write the Quarto project from scratch (_quarto.yml and analysis pages) and "
-    "ground methods with search_bioc_books when useful. "
-    "Run the data and analysis R steps (run_r_script) to verify they work, then "
-    "render_report. If the render fails, read the errors, fix the source, and render "
-    "again. Finish with validate_report and fix the findings that matter."
-)
-
-
+def _merge_step_usage(totals: dict[str, float], tokens: Any, cost: Any) -> None:
+    """Accumulate OpenCode step_finish usage when present."""
+    if isinstance(tokens, dict):
+        for key in ("input", "input_tokens", "prompt", "prompt_tokens"):
+            if tokens.get(key) is not None:
+                totals["input_tokens"] += float(tokens[key])
+        for key in ("output", "output_tokens", "completion", "completion_tokens"):
+            if tokens.get(key) is not None:
+                totals["output_tokens"] += float(tokens[key])
+        for key in ("total", "total_tokens"):
+            if tokens.get(key) is not None:
+                totals["total_tokens"] += float(tokens[key])
+    elif isinstance(tokens, (int, float)):
+        totals["total_tokens"] += float(tokens)
+    if cost is not None:
+        try:
+            totals["cost"] += float(cost)
+        except (TypeError, ValueError):
+            pass
 
 
 def edit_instruction(instruction: str) -> str:
     return (
         f"Apply this edit to the project: {instruction.strip()} "
-        "Then render_report and verify the change landed."
+        "Then rerun the report (Quarto/R) and verify the change landed."
     )
 
 
 @task_decorator
 def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat_mode: str = "build", **kwargs):
-    """Run one headless agent-loop turn for a pipeline job.
+    """Run one OpenCode turn for a pipeline job.
 
-    This is the single execution path for plan/generate/render/edit jobs: the
-    same native loop and inline tools as the workspace chat, driven by an
-    instruction instead of a chat message.
+    Workspace execution is OpenCode. This task stages uploads, streams the
+    coding agent, and records job/project status. The agent decides methods
+    and how to run R/Quarto.
     """
     project_id, job_id = _parse_task_args(args)
     if not str(instruction or "").strip():
@@ -117,24 +112,17 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
 
     db = _get_db_session()
     try:
-        from app.models.project import Job, Project, ProjectMessage, UploadedFile
-        from app.schemas.schemas import WorkspaceAgentRequest
+        from app.models.project import Job, Project, UploadedFile
         from app.services.agent_runtime import record_agent_action, record_project_message, set_agent_state
         from app.services.llm import resolve_target
+        from app.services.opencode_client import stream_opencode
         from app.services.provider_guard import active_provider_block, provider_error_from_block
-        from app.services.workspace_agent import stream_workspace_agent
-        from app.services.workspace_handlers import (
-            make_inline_action_handler,
-            make_knowledge_search_handler,
-            make_plan_handler,
-            make_render_handler,
-        )
 
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             raise ValueError(f"Project {project_id} not found")
 
-        agent_provider, _ = resolve_target("agent")
+        agent_provider, agent_model = resolve_target("agent")
         provider_block = active_provider_block(project, agent_provider or settings.llm_provider)
         if provider_block is not None:
             raise provider_error_from_block(provider_block)
@@ -146,11 +134,15 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
         project_dir.mkdir(parents=True, exist_ok=True)
         if not project.project_dir:
             project.project_dir = str(project_dir)
-        _stage_uploaded_files(project_dir, db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all())
+        uploaded = db.query(UploadedFile).filter(UploadedFile.project_id == project_id).all()
+        _stage_uploaded_files(project_dir, uploaded)
         db.commit()
 
         job = db.query(Job).filter(Job.id == job_id).first()
         _update_job(db, job_id, status="running", progress=[{"step": "agent", "status": "running"}])
+        if validate_status_transition(project.status, "generating"):
+            project.status = "generating"
+            db.commit()
 
         agent_memory = dict(project.agent_memory or {})
         pending_guidance = [str(item.get("content") or "") for item in agent_memory.pop("pending_guidance", None) or [] if isinstance(item, dict)]
@@ -175,15 +167,8 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
             instruction,
             metadata={"job_id": job_id, "kind": job_kind},
         )
-        history = (
-            db.query(ProjectMessage)
-            .filter(ProjectMessage.project_id == project_id, ProjectMessage.id != str(user_message.id))
-            .order_by(ProjectMessage.created_at.asc())
-            .all()
-        )
         db.commit()
 
-        request = WorkspaceAgentRequest(message=instruction, chat_mode=chat_mode)
         progress_log: list[dict] = []
 
         def _job_cancelled() -> bool:
@@ -195,64 +180,85 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
 
         final_text = ""
         final_metadata: dict = {}
+        usage_totals = {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+            "total_tokens": 0.0,
+            "cost": 0.0,
+        }
 
         async def drive() -> None:
             nonlocal final_text, final_metadata
-            if settings.agent_backend == "opencode":
-                from app.services.opencode_client import stream_opencode
+            opencode_ok = True
+            last_error = ""
+            collected_tokens: list[str] = []
 
-                collected_tokens = []
-                last_error = ""
-                async for event in stream_opencode(
-                    project_dir=project_dir,
-                    instruction=instruction,
-                    provider=agent_provider or settings.llm_provider,
-                    model=settings.llm_model,
-                ):
-                    event_type = str(event.get("type") or "")
-                    if event_type in {"tool_started", "action_event"}:
-                        entry = {
-                            "step": str(event.get("tool") or event.get("reason") or "action"),
-                            "status": "running" if event_type == "tool_started" else "completed",
-                            "detail": str(event.get("reason") or (event.get("event") or {}).get("summary") or "")[:200],
-                        }
-                        progress_log.append(entry)
-                        _update_job(db, job_id, progress=progress_log)
-                    elif event_type == "token":
-                        collected_tokens.append(str(event.get("token") or ""))
-                    elif event_type == "error":
-                        last_error = str(event.get("error") or "")
-                        entry = {"step": "error", "status": "failed", "detail": last_error[:200]}
-                        progress_log.append(entry)
-                        _update_job(db, job_id, progress=progress_log)
+            async for event in stream_opencode(
+                project_dir=project_dir,
+                instruction=instruction,
+                provider=agent_provider or settings.llm_provider,
+                model=agent_model or settings.llm_model,
+                cancel_check=_job_cancelled,
+            ):
+                if _job_cancelled():
+                    break
+                event_type = str(event.get("type") or "")
+                if event_type in {"tool_started", "action_event"}:
+                    entry = {
+                        "step": str(event.get("tool") or event.get("reason") or "action"),
+                        "status": "running" if event_type == "tool_started" else "completed",
+                        "detail": str(event.get("reason") or (event.get("event") or {}).get("summary") or "")[:200],
+                    }
+                    progress_log.append(entry)
+                    _update_job(db, job_id, progress=progress_log)
+                elif event_type == "token":
+                    collected_tokens.append(str(event.get("token") or ""))
+                elif event_type == "step_completed":
+                    _merge_step_usage(
+                        usage_totals,
+                        event.get("tokens"),
+                        event.get("cost"),
+                    )
+                elif event_type == "cancelled":
+                    break
+                elif event_type == "error":
+                    last_error = str(event.get("error") or "")
+                    opencode_ok = False
+                    entry = {"step": "error", "status": "failed", "detail": last_error[:200]}
+                    progress_log.append(entry)
+                    _update_job(db, job_id, progress=progress_log)
+                elif event_type == "final":
+                    final_text = str(event.get("message") or "")
+                    if event.get("ok") is False:
+                        opencode_ok = False
+                    if event.get("error"):
+                        last_error = str(event.get("error") or last_error)
+                    final_metadata = {
+                        key: value
+                        for key, value in event.items()
+                        if key in {"awaiting_answer", "budget", "reasoning", "error"}
+                    }
+                elif event_type == "question":
+                    final_metadata["awaiting_answer"] = {
+                        "question": event.get("question"),
+                        "options": event.get("options") or [],
+                        "multiple": bool(event.get("multiple")),
+                    }
+
+            if not final_text:
                 final_text = "".join(collected_tokens).strip() or last_error
-            else:
-                async for event in stream_workspace_agent(
-                    project,
-                    request,
-                    history,
-                    inline_action_handler=make_inline_action_handler(db, project),
-                    knowledge_search_handler=make_knowledge_search_handler(db),
-                    render_handler=make_render_handler(db, project),
-                    plan_handler=make_plan_handler(db, project),
-                    cancel_check=_job_cancelled,
-                ):
-                    event_type = str(event.get("type") or "")
-                    if event_type in {"tool_started", "tool_completed", "action_event", "question", "wait"}:
-                        entry = {
-                            "step": str(event.get("tool") or event.get("title") or event_type),
-                            "status": "running" if event_type == "tool_started" else "completed",
-                            "detail": str(event.get("summary") or event.get("reason") or "")[:200],
-                        }
-                        progress_log.append(entry)
-                        _update_job(db, job_id, progress=progress_log)
-                    elif event_type == "final":
-                        final_text = str(event.get("message") or "")
-                        final_metadata = {
-                            key: value
-                            for key, value in (event.items() if isinstance(event, dict) else [])
-                            if key in {"awaiting_answer", "budget"}
-                        }
+            if last_error and not opencode_ok:
+                final_metadata.setdefault("error", last_error)
+
+            final_metadata["ok"] = opencode_ok and not _job_cancelled()
+            if usage_totals["input_tokens"] or usage_totals["output_tokens"] or usage_totals["total_tokens"]:
+                final_metadata["usage"] = {
+                    key: int(value) if key != "cost" else value
+                    for key, value in usage_totals.items()
+                    if value
+                }
+            if last_error and not final_metadata.get("error"):
+                final_metadata["error"] = last_error
 
         loop = asyncio.new_event_loop()
         try:
@@ -272,8 +278,16 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
             loop.close()
 
         cancelled = _job_cancelled()
+        db.refresh(project)
+        failed = (not cancelled) and final_metadata.get("ok") is False
 
-        if not cancelled:
+        if cancelled:
+            has_workspace = (project_dir / "code").is_dir() or (project_dir / "output").is_dir()
+            target_status = "completed" if has_workspace else "created"
+            if validate_status_transition(project.status, target_status):
+                project.status = target_status
+            set_agent_state(db, project, "idle", "Run cancelled")
+        elif not cancelled:
             record_project_message(
                 db,
                 project,
@@ -281,81 +295,52 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
                 final_text or "The run finished without a summary.",
                 metadata={"job_id": job_id, "kind": job_kind, **(final_metadata or {})},
             )
+            pending = ((project.agent_memory or {}).get("pending_clarifications") or None)
             question = (final_metadata or {}).get("awaiting_answer")
-            if isinstance(question, dict) and question.get("question"):
-                # Bridge ask_user to the clarifications contract the Plan UI reads.
-                memory = dict(project.agent_memory or {})
-                memory["pending_clarifications"] = {
-                    "message": "The agent needs a decision before continuing.",
-                    "questions": [
-                        {
-                            "id": str(question.get("id") or "question-1"),
-                            "prompt": str(question.get("question")),
-                            "options": [str(o) for o in (question.get("options") or [])],
-                            "multiple": bool(question.get("multiple")),
-                            "allow_custom": True,
-                        }
-                    ],
-                }
-                project.agent_memory = memory
+            if pending or (isinstance(question, dict) and question.get("question")):
+                if isinstance(question, dict) and question.get("question") and not pending:
+                    memory = dict(project.agent_memory or {})
+                    memory["pending_clarifications"] = {
+                        "message": "The agent needs a decision before continuing.",
+                        "questions": [
+                            {
+                                "id": str(question.get("id") or "question-1"),
+                                "prompt": str(question.get("question")),
+                                "options": [str(o) for o in (question.get("options") or [])],
+                                "multiple": bool(question.get("multiple")),
+                                "allow_custom": True,
+                            }
+                        ],
+                    }
+                    project.agent_memory = memory
                 if validate_status_transition(project.status, "needs_clarification"):
                     project.status = "needs_clarification"
+            elif failed:
+                if validate_status_transition(project.status, "failed"):
+                    project.status = "failed"
+                fail_detail = str(final_metadata.get("error") or final_text or "OpenCode failed")
+                set_agent_state(db, project, "failed", fail_detail[:200])
+                record_agent_action(db, project, job_kind, "failed", fail_detail, job_id=job_id)
+            elif validate_status_transition(project.status, "completed"):
+                project.status = "completed"
+                set_agent_state(db, project, "idle", "OpenCode finished this workspace turn")
+        job_status = "cancelled" if cancelled else ("failed" if failed else "completed")
         _update_job(
             db,
             job_id,
-            status="cancelled" if cancelled else "completed",
-            progress=progress_log + [{"step": "agent", "status": "completed"}],
+            status=job_status,
+            error=(str(final_metadata.get("error") or final_text) if failed else None),
+            progress=progress_log
+            + [{"step": "agent", "status": job_status}]
+            + ([{"step": "usage", "status": "completed", "detail": json.dumps(final_metadata.get("usage") or {})}] if final_metadata.get("usage") else []),
         )
-
-        # A successful planning turn advances the pipeline: mark the plan as
-        # ready and, for auto-build projects, chain straight into the build so
-        # "Build" mode really runs through without user intervention.
-        if (
-            not cancelled
-            and job_kind == "plan"
-            and project.analysis_plan
-            and not isinstance((final_metadata or {}).get("awaiting_answer"), dict)
-            and validate_status_transition(project.status, "planned")
-        ):
-            project.status = "planned"
-            db.commit()
-            if project.auto_build:
-                build_job = Job(project_id=str(project.id), job_type="generate", status="pending")
-                db.add(build_job)
-                project.status = "generating"
-                db.commit()
-                db.refresh(build_job)
-                set_agent_state(db, project, "generating", "Building the report with the agent loop")
-                record_agent_action(
-                    db,
-                    project,
-                    "generate",
-                    "started",
-                    "Auto-build: building the report from the plan",
-                    job_id=str(build_job.id),
-                )
-                db.commit()
-                if settings.task_backend.lower() == "celery":
-                    run_agent_job.delay(
-                        str(project.id), str(build_job.id),
-                        instruction=BUILD_INSTRUCTION, job_kind="generate",
-                    )
-                else:
-                    # Background backend already runs off the request thread,
-                    # so the build can run inline in this same worker.
-                    run_agent_job(
-                        str(project.id), str(build_job.id),
-                        instruction=BUILD_INSTRUCTION, job_kind="generate",
-                    )
-            else:
-                set_agent_state(db, project, "idle", "Plan ready for review")
 
         from app.services.provider_guard import clear_provider_block
 
         clear_provider_block(project, settings.llm_provider)
         db.commit()
         return {
-            "status": "cancelled" if cancelled else "completed",
+            "status": job_status,
             "job_id": job_id,
             "final": final_text,
         }
@@ -492,167 +477,6 @@ def resume_agent_continuation(*args):
 
 
 
-
-
-
-
-@task_decorator
-def run_recipe_execution(*args, **kwargs):
-    """Execute one recipe and only its stale dependency closure."""
-    project_id, job_id = _parse_task_args(args)
-    recipe_id = str(kwargs.get("recipe_id") or "")
-
-    db = _get_db_session()
-    try:
-        from app.models.project import Job, Project
-        from app.services.agent_runtime import (
-            record_agent_action,
-            record_project_message,
-            refresh_project_memory,
-            set_agent_state,
-        )
-        from app.services.recipe_execution import invalidate_recipe_cache, run_recipe_target
-        from app.services.reviewer import review_render_output
-
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project or not project.project_dir:
-            raise ValueError(f"Project {project_id} has no generated project directory")
-        if not recipe_id:
-            raise ValueError("Targeted recipe execution requires recipe_id")
-
-        progress_log = []
-        execution_logs = []
-
-        def progress_callback(step_id: str, status: str, line: str):
-            if line:
-                execution_logs.append(line)
-            entry = {
-                "step": step_id,
-                "status": status,
-                "time": datetime.now(timezone.utc).isoformat(),
-            }
-            if line:
-                entry["detail"] = line.splitlines()[0]
-            existing = next(
-                (item for item in reversed(progress_log) if item["step"] == step_id),
-                None,
-            )
-            if existing:
-                existing.update(entry)
-            else:
-                progress_log.append(entry)
-            _update_job(
-                db,
-                job_id,
-                status="running",
-                progress=progress_log,
-                logs="\n".join(execution_logs[-200:]),
-            )
-
-        set_agent_state(db, project, "rendering", f"Running targeted recipe {recipe_id}")
-        record_agent_action(
-            db,
-            project,
-            "recipe",
-            "started",
-            f"Running targeted recipe {recipe_id}",
-            {"recipe_id": recipe_id},
-            job_id=job_id,
-        )
-
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(
-            run_recipe_target(
-                project.project_dir,
-                recipe_id,
-                progress_callback=progress_callback,
-            )
-        )
-        loop.close()
-
-        if result["status"] == "completed":
-            review = review_render_output(project.project_dir)
-            result["review"] = review
-            if review["status"] == "failed":
-                result["status"] = "failed"
-                error = review["summary"]
-            else:
-                error = None
-                project.status = "completed"
-                set_agent_state(db, project, "completed", f"Targeted recipe {recipe_id} is current")
-                executed = result.get("executed_recipes") or []
-                cache_hits = result.get("cache_hits") or []
-                summary = (
-                    f"Updated {recipe_id}. Executed {len(executed)} recipe node(s); "
-                    f"reused {len(cache_hits)} cached node(s)."
-                )
-                record_agent_action(
-                    db,
-                    project,
-                    "recipe",
-                    "completed",
-                    summary,
-                    {
-                        "recipe_id": recipe_id,
-                        "executed_recipes": executed,
-                        "cache_hits": cache_hits,
-                    },
-                    job_id=job_id,
-                )
-                record_project_message(
-                    db,
-                    project,
-                    "assistant",
-                    f"{summary} {review['summary']}.",
-                    metadata={
-                        "job_id": job_id,
-                        "recipe_id": recipe_id,
-                        "executed_recipes": executed,
-                        "cache_hits": cache_hits,
-                    },
-                )
-        else:
-            error = json.dumps(result.get("errors") or [])
-
-        if result["status"] != "completed":
-            invalidate_recipe_cache(project.project_dir, recipe_id)
-            project.status = "failed"
-            set_agent_state(db, project, "failed", f"Targeted recipe {recipe_id} failed")
-            record_agent_action(
-                db,
-                project,
-                "recipe",
-                "failed",
-                f"Targeted recipe {recipe_id} failed",
-                {"errors": result.get("errors")},
-                job_id=job_id,
-            )
-            record_project_message(
-                db,
-                project,
-                "assistant",
-                f"The targeted {recipe_id} run failed. Failure details are available in the job log; ask the workspace agent to repair it.",
-                metadata={"job_id": job_id, "recipe_id": recipe_id, "status": "failed"},
-            )
-
-        db.commit()
-        jobs = db.query(Job).filter(Job.project_id == project_id).order_by(Job.created_at.desc()).all()
-        refresh_project_memory(db, project, jobs=jobs)
-        _update_job(
-            db,
-            job_id,
-            status="completed" if result["status"] == "completed" else "failed",
-            progress=progress_log,
-            logs="\n".join(execution_logs),
-            error=error,
-        )
-        return result
-    except Exception as exc:
-        logger.exception("Targeted recipe execution failed for project %s", project_id)
-        _update_job(db, job_id, status="failed", error=str(exc))
-        raise
-    finally:
-        db.close()@task_decorator
 
 
 

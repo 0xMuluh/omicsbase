@@ -61,8 +61,8 @@ _PROVIDERS: dict[str, ProviderSpec] = {
         key_fields=("gemini_api_key", "openai_api_key"),
         base_url_field="openai_base_url",
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        default_model="gemini-3.5-flash-lite",
-        fast_model="gemini-3.5-flash-lite",
+        default_model="gemini-3.6-flash",
+        fast_model="gemini-3.6-flash",
     ),
     "openrouter": ProviderSpec(
         key_fields=("openrouter_api_key", "openai_api_key"),

@@ -15,7 +15,7 @@ from app.models.notes import CellExecution, NoteCell, NoteCellRevision, NoteThre
 from app.models.project import Project
 from app.api.projects_notes import _promote_cell_to_workspace
 from app.services.note_execution import input_fingerprint
-from app.services.workspace_agent import list_project_result_artifacts
+from app.services.project_artifacts import list_project_result_artifacts
 
 SQLALCHEMY_DATABASE_URL = "sqlite://"
 engine = create_engine(

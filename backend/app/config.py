@@ -167,10 +167,16 @@ class Settings(BaseSettings):
     # before remaining findings are reported rather than fixed.
     qa_repair_rounds: int = 1
 
-    # Agent Engine Backend: "opencode" (native coding agent) or "legacy" (in-house loop)
+    # Kept for env compatibility. Project workspace always uses OpenCode;
+    # Notes still use the in-process note agent.
     agent_backend: str = "opencode"
     opencode_bin: str = "/home/simple/.opencode/bin/opencode"
     opencode_server_url: str = ""
+    opencode_server_hostname: str = "127.0.0.1"
+    opencode_server_port: int = 4096
+    opencode_server_autostart: bool = True
+    opencode_server_username: str = ""
+    opencode_server_password: str = ""
 
     # Project coding-agent path toggle (legacy naming).
     project_agent_enabled: bool = True

@@ -2319,20 +2319,20 @@ def create_workspace_from_note_thread(
                 from app.api.projects_pipeline import _dispatch_task
                 from app.models.project import Job
                 from app.services.agent_runtime import record_agent_action, set_agent_state
-                from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
+                from app.tasks.analysis import run_agent_job, user_instruction_for
 
-                auto_build_job = Job(project_id=str(project.id), job_type="plan", status="pending")
+                auto_build_job = Job(project_id=str(project.id), job_type="generate", status="pending")
                 db.add(auto_build_job)
-                project.status = "planning"
+                project.status = "generating"
                 db.commit()
                 db.refresh(auto_build_job)
-                set_agent_state(db, project, "planning", "Planning transferred NoteThread inputs")
+                set_agent_state(db, project, "generating", "OpenCode is building transferred NoteThread inputs")
                 record_agent_action(
                     db,
                     project,
-                    "plan",
+                    "generate",
                     "started",
-                    "Planning transferred NoteThread inputs",
+                    "OpenCode workspace build from transferred NoteThread inputs",
                     {"note_thread_id": str(thread.id), "auto_build": True},
                     job_id=str(auto_build_job.id),
                 )
@@ -2342,7 +2342,7 @@ def create_workspace_from_note_thread(
                     auto_build_job,
                     db,
                     background_tasks,
-                    task_kwargs={"instruction": PLAN_INSTRUCTION, "job_kind": "plan"},
+                    task_kwargs={"instruction": user_instruction_for(project), "job_kind": "generate"},
                 )
             except Exception as exc:
                 auto_build_reason = f"Auto-build could not be queued: {str(exc)[:500]}"

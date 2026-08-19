@@ -1,9 +1,10 @@
-"""Optional ReportPack staging for generated projects.
+"""Report-pack catalog and copy helper.
 
-A ReportPack is a methodological prior — an existing R/Quarto tree that can be
-copied verbatim and adapted when the plan explicitly selects it. Plans with
-``report_pack_id=None`` build from scratch; domain catalog defaults are
-suggestions only and must never be injected silently.
+A ReportPack is a worked example under templates/ (omicsbase-pack.yaml):
+how this lab writes a Quarto analysis website. This module lists those
+trees so a coding runtime can read them, and copies one only when
+something **explicitly** asks. It does not guess a pack from data and
+does not treat packs as parameter forms.
 """
 
 from __future__ import annotations
@@ -13,8 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.schemas.schemas import AnalysisPlan
-from app.services.checksums import file_sha256
 from app.services.report_pack import (
     MANIFEST_NAME,
     ReportPack,
@@ -26,18 +25,6 @@ from app.services.report_pack import (
 # App root derived from the correctly-resolved prompts_dir (works in both the
 # host repo layout and the container layout, which differ in path depth).
 _TEMPLATE_ROOT = Path(settings.prompts_dir).resolve().parent / "templates"
-
-# Catalog exemplars per domain (for suggestion / smoke helpers only).
-EXEMPLAR_ROOTS: dict[str, Path] = {
-    "microbiome": _TEMPLATE_ROOT / "microbiome" / "microbiota_diversity_pipeline",
-    "metabolomics": _TEMPLATE_ROOT / "metabolomics" / "prenatal_diet_metabolomics",
-}
-# Suggested pack ids when a caller asks for a domain default explicitly.
-# Never used to rewrite a plan that set report_pack_id to null.
-DEFAULT_PACK_IDS = {
-    "microbiome": "microbiome-diversity",
-    "metabolomics": "prenatal-metabolomics",
-}
 
 
 def _catalog_roots() -> list[Path]:
@@ -114,51 +101,18 @@ def resolve_report_pack(
 
 
 def format_report_pack_catalog_for_llm() -> str:
-    items = list_report_packs()
-    if not items:
-        return "(No declared ReportPacks are available.)"
-    return "\n".join(
-        f"- {item['id']}: {item['name']} (domain={item['domain']}, version={item['version']}; "
-        f"capabilities={', '.join(capability['id'] for capability in item.get('capabilities', [])) or 'none'})"
-        for item in items
-    )
-
-def exemplar_root(domain: str) -> Path | None:
-    """Return the exemplar project root for a domain, or None."""
-    root = EXEMPLAR_ROOTS.get(domain)
-    return root if root is not None and root.exists() else None
-
-
-def exemplar_report_pack(domain: str) -> ReportPack | None:
-    """Load the suggested catalog pack for a domain, if one is declared."""
-    default_id = DEFAULT_PACK_IDS.get(domain)
-    if not default_id:
-        return None
-    try:
-        return resolve_report_pack(default_id, domain=domain)
-    except ReportPackError:
-        return None
-
-
-def exemplar_project_files(domain: str) -> list[Path]:
-    """Return every safe report-source file in the complete exemplar pack."""
-    root = exemplar_root(domain)
-    if root is None:
-        return []
-    return report_pack_source_files(root)
-
-
-def spawn_exemplar_project(project_dir: str, plan: AnalysisPlan) -> dict[str, str]:
-    """Copy the exemplar project tree verbatim into the new project.
-
-    Returns {relative_path: content} for files written or already present.
-    Files that already exist (from the scaffold) are kept and returned so the
-    adapt stage still covers them.
-    """
-    pack = resolve_report_pack(plan.report_pack_id, domain=plan.domain)
-    if pack is None:
-        return {}
-    return spawn_report_pack(project_dir, pack)
+    """List worked-example trees so a coding runtime can read how this lab reports."""
+    catalog = report_pack_catalog()
+    if not catalog:
+        return "No example analyses are installed under the templates catalog."
+    lines = [
+        "Finished analyses from this lab — reference for how a project is laid out, how the data container and helpers are written, and how the site is rendered:",
+    ]
+    for pack in sorted(catalog.values(), key=lambda item: (item.domain, item.pack_id)):
+        lines.append(
+            f"- {pack.pack_id} ({pack.domain}): {pack.name} — {pack.root}"
+        )
+    return "\n".join(lines)
 
 
 def spawn_report_pack(

@@ -10,15 +10,18 @@ interface UseWorkspaceJobsOptions {
   projectId: string;
   project?: Project;
   onAgentActivity: (activity: string) => void;
+  hasUploadedFiles?: boolean;
 }
 
 export function useWorkspaceJobs({
   projectId,
   project,
   onAgentActivity,
+  hasUploadedFiles = false,
 }: UseWorkspaceJobsOptions) {
   const queryClient = useQueryClient();
   const completedSignatureRef = useRef("");
+  const autoBuildTriggeredRef = useRef(false);
   const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const jobsQuery = useQuery({
     queryKey: ["jobs", projectId],
@@ -113,13 +116,11 @@ export function useWorkspaceJobs({
   );
 
   const retryStage = retryStageForFailure(latestFailedJob?.job_type, {
-    hasPlan: Boolean(project?.analysis_plan),
     hasWorkspace: Boolean(project?.project_dir),
   });
   const retryMutation = useMutation({
     mutationFn: () => {
-      if (retryStage === "plan") return api.startPlanning(projectId);
-      if (retryStage === "generate") return api.startGeneration(projectId);
+      if (retryStage === "generate") return api.startBuild(projectId);
       return api.startRendering(projectId);
     },
     onSuccess: () => {
@@ -128,12 +129,34 @@ export function useWorkspaceJobs({
     },
   });
   const buildMutation = useMutation({
-    mutationFn: () => api.startPlanning(projectId),
+    mutationFn: () => api.startBuild(projectId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
       void queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
     },
   });
+
+  useEffect(() => {
+    if (autoBuildTriggeredRef.current) return;
+    if (!project?.auto_build) return;
+    if (project.status !== "created") return;
+    if (!hasUploadedFiles) return;
+    if (jobsQuery.isLoading || jobsQuery.data === undefined) return;
+    const hasBuildJob = jobsQuery.data.some((job) => job.job_type === "generate");
+    if (hasBuildJob) return;
+
+    autoBuildTriggeredRef.current = true;
+    onAgentActivity("Starting the build...");
+    buildMutation.mutate();
+  }, [
+    buildMutation,
+    hasUploadedFiles,
+    jobsQuery.data,
+    jobsQuery.isLoading,
+    onAgentActivity,
+    project?.auto_build,
+    project?.status,
+  ]);
 
   return {
     buildError: buildMutation.error instanceof Error ? buildMutation.error.message : null,

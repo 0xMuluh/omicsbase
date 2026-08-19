@@ -18,12 +18,17 @@ from app.services.report_pack import (
     report_pack_source_files,
     validate_source_closure,
 )
-from app.services.spawner import EXEMPLAR_ROOTS, exemplar_project_files
+from app.services.spawner import report_pack_catalog
+
+
+def _catalog_pack(pack_id: str):
+    pack = report_pack_catalog()[pack_id]
+    return pack
 
 
 def test_declared_exemplar_packs_classify_every_spawned_file():
-    microbiome = load_report_pack(EXEMPLAR_ROOTS["microbiome"], domain="microbiome")
-    metabolomics = load_report_pack(EXEMPLAR_ROOTS["metabolomics"], domain="metabolomics")
+    microbiome = _catalog_pack("microbiome-diversity")
+    metabolomics = _catalog_pack("prenatal-metabolomics")
 
     assert microbiome.source == "declared"
     assert microbiome.execution is not None
@@ -52,10 +57,10 @@ def test_declared_exemplar_packs_classify_every_spawned_file():
     assert metabolomics.classify("code/shared/methods_common.R").adaptation == "none"
     assert metabolomics.classify("code/toc-toggle.css").adaptation == "none"
 
-    for domain, pack in (("microbiome", microbiome), ("metabolomics", metabolomics)):
+    for pack in (microbiome, metabolomics):
         spawned = [
-            path.relative_to(EXEMPLAR_ROOTS[domain]).as_posix()
-            for path in exemplar_project_files(domain)
+            path.relative_to(pack.root).as_posix()
+            for path in report_pack_source_files(pack.root)
         ]
         inventory = pack.resolved_inventory(spawned)
         assert len(inventory) == len(spawned)
@@ -64,7 +69,7 @@ def test_declared_exemplar_packs_classify_every_spawned_file():
 
 
 def test_metabolomics_exemplar_artifact_paths_are_consistent():
-    root = EXEMPLAR_ROOTS["metabolomics"]
+    root = _catalog_pack("prenatal-metabolomics").root
     code = root / "code"
     loader = (code / "make_mae.R").read_text()
     analysis = (code / "prenatal_diet_analysis.R").read_text()
@@ -277,7 +282,7 @@ def test_invalid_manifests_fail_closed(tmp_path: Path, manifest: str, match: str
 
 
 def test_resolved_inventory_records_rule_and_pack_hash():
-    pack = load_report_pack(EXEMPLAR_ROOTS["microbiome"], domain="microbiome")
+    pack = _catalog_pack("microbiome-diversity")
 
     inventory = pack.resolved_inventory(["code/data.R", "code/main.R"])
 

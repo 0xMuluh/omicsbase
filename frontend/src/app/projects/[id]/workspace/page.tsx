@@ -2,10 +2,9 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { api, type EditTransaction } from "@/lib/api";
-import PlanReviewPanel from "@/components/PlanReviewPanel";
 import { WorkspaceComposer } from "@/features/workspace/components/WorkspaceComposer";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -23,6 +22,7 @@ import { useWorkspaceEdits } from "@/features/workspace/hooks/useWorkspaceEdits"
 import { useWorkspaceJobs } from "@/features/workspace/hooks/useWorkspaceJobs";
 import { useWorkspaceLayout } from "@/features/workspace/hooks/useWorkspaceLayout";
 import { WorkspaceEditorPanel } from "@/features/workspace/components/WorkspaceEditorPanel";
+import { WorkspaceAssistantContent } from "@/features/workspace/components/WorkspaceAssistantContent";
 import { useWorkspaceFiles } from "@/features/workspace/hooks/useWorkspaceFiles";
 import { flattenFileTree } from "@/features/workspace/utils/filePaths";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
@@ -46,18 +46,13 @@ import {
   MessageSquare,
   Play,
   RefreshCw,
-  ArrowRight,
 } from "lucide-react";
 
 const stateCopy: Record<string, string> = {
   idle: "Ready for instruction",
-  planning: "Designing the analysis plan",
-  needs_user: "Waiting for plan approval",
   generating: "Writing analysis source",
   rendering: "Rendering report preview",
-  repairing: "Repairing generated code",
   editing: "Applying requested edits",
-  reviewing: "Reviewing rendered output",
   completed: "Report ready",
   failed: "Needs attention",
 };
@@ -73,7 +68,6 @@ function statusTone(status: string | null | undefined) {
 
 export default function WorkspacePage() {
   const params = useParams();
-  const router = useRouter();
   const { resolvedTheme } = useTheme();
   const projectId = params.id as string;
 
@@ -84,25 +78,28 @@ export default function WorkspacePage() {
 
   const workspaceFiles = useWorkspaceFiles({ projectId, project });
   const { activeDraft, activeTab, clearDrafts, closeConflictDialog, fileTree, hasProjectFiles, hasUploadedFiles, isDirty, selectTab } = workspaceFiles;
-  const isLive = ["planning", "generating", "generated", "rendering"].includes(project?.status || "");
+  const isLive = ["generating", "rendering", "editing"].includes(project?.status || "");
   const isFailed = project?.status === "failed";
   const hasPreview = Boolean(project?.project_dir);
   const agentState = project?.agent_state || "idle";
   const previewReportPath = useMemo(() => {
     const allPaths = flattenFileTree(fileTree || []);
     const renderedPages = allPaths.filter((path) => path.startsWith("output/") && path.endsWith(".html") && !path.includes("/site_libs/"));
+    const hasIndex = renderedPages.includes("output/index.html");
     const firstContentPage = renderedPages.find((path) => path !== "output/index.html");
-    if (firstContentPage && isFailed) return firstContentPage.replace(/^output\//, "");
+    if (isFailed && firstContentPage) return firstContentPage.replace(/^output\//, "");
+    if (!hasIndex && renderedPages[0]) return renderedPages[0].replace(/^output\//, "");
     return "index.html";
   }, [fileTree, isFailed]);
   const {
     actionEvents, agentActivity, answerQuestion, askAgent, assistantPending, chatMode, displayChatMessages,
-    handleSendPrompt, pendingQuestion, quickActions, setAgentActivity, setChatMode,
+    handleSendPrompt, pendingQuestion, quickActions, setAgentActivity, setChatMode, streamingReasoning,
   } = useWorkspaceAgent({ projectId, project, activeTab, activeDraft, isDirty, previewReportPath });
   const { buildError, buildNow, buildPending, executionRuns, latestFailedJob, previewProgressSignature, retryMutation, retryStage, workspaceRefreshKey } = useWorkspaceJobs({
     projectId,
     project,
     onAgentActivity: setAgentActivity,
+    hasUploadedFiles,
   });
   const {
     iframeKey,
@@ -366,16 +363,16 @@ export default function WorkspacePage() {
               <div className="flex items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                 <HelpCircle className="h-4 w-4 shrink-0 text-amber-400" />
                 <p className="flex-1 text-xs leading-5 text-amber-700 dark:text-amber-200/90">
-                  The planner needs a couple of decisions before it can build the analysis.
+                  The agent needs a decision before it can continue. Answer in the chat below.
                 </p>
                 <Button
                   size="sm"
                   variant="outline"
                   className="h-8 gap-1.5 border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-200"
-                  onClick={() => router.push(`/projects/${projectId}/plan`)}
+                  onClick={() => setViewMode("chat")}
                 >
-                  <ArrowRight className="h-3.5 w-3.5" />
-                  Answer
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  Open chat
                 </Button>
               </div>
             ) : null}
@@ -441,9 +438,11 @@ export default function WorkspacePage() {
                       {message.content}
                     </div>
                   ) : (
-                    <div className="w-full text-base leading-relaxed text-foreground">
-                      <MarkdownRenderer content={message.content} />
-                    </div>
+                    <WorkspaceAssistantContent
+                      content={message.content}
+                      reasoning={typeof message.metadata?.reasoning === "string" ? message.metadata.reasoning : null}
+                      reasoningOpen={message.id === "streaming-assistant"}
+                    />
                   )}
                 </div>
               )) : null}
@@ -660,26 +659,7 @@ export default function WorkspacePage() {
             </div>
           </div>
 
-          {["planning", "planned", "needs_clarification"].includes(project?.status || "") ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <PlanReviewPanel projectId={projectId} />
-              </div>
-              <div className="shrink-0 border-t border-border p-3">
-                <WorkspaceComposer
-                  pendingQuestion={pendingQuestion}
-                  chatMode={chatMode}
-                  disabled={assistantPending}
-                  onSend={(message, mode) => {
-                    setChatMode(mode);
-                    void handleSendPrompt(undefined, { message, mode });
-                  }}
-                  onAnswer={answerQuestion}
-                  onModeChange={setChatMode}
-                />
-              </div>
-            </div>
-          ) : viewMode === "chat" ? (
+          {viewMode === "chat" ? (
             <div className="relative flex min-h-0 flex-1 flex-col items-center justify-between p-4 md:p-6 overflow-hidden">
               <div ref={workspaceChatScrollRef} data-thread-column className="w-full max-w-3xl flex-1 overflow-y-auto space-y-4 pr-1 no-scrollbar">
                 {displayChatMessages.map((message, index) => (
@@ -698,18 +678,31 @@ export default function WorkspacePage() {
                         {message.content}
                       </div>
                     ) : (
-                      <div className="w-full text-sm leading-7 text-foreground">
-                        <MarkdownRenderer content={message.content} />
-                      </div>
+                      <WorkspaceAssistantContent
+                        content={message.content}
+                        reasoning={
+                          message.id === "streaming-assistant" && streamingReasoning
+                            ? streamingReasoning
+                            : typeof message.metadata?.reasoning === "string"
+                              ? message.metadata.reasoning
+                              : null
+                        }
+                        reasoningOpen={assistantPending && (message.id === "streaming-assistant" || Boolean(streamingReasoning))}
+                      />
                     )}
                   </div>
                 ))}
 
                 {assistantPending ? (
                   <div className="flex justify-start py-2">
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin text-teal-500" />
-                      {agentActivity}
+                    <div className="flex w-full max-w-3xl flex-col gap-2">
+                      {streamingReasoning ? (
+                        <WorkspaceAssistantContent content="" reasoning={streamingReasoning} reasoningOpen />
+                      ) : null}
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin text-teal-500" />
+                        {agentActivity}
+                      </div>
                     </div>
                   </div>
                 ) : null}
@@ -724,23 +717,32 @@ export default function WorkspacePage() {
                 <div className="w-full max-w-3xl shrink-0 pb-2">
                   {hasUploadedFiles && !assistantPending ? (
                     <div className="flex flex-col items-center gap-1.5">
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => void buildNow()}
-                        disabled={buildPending}
-                        className="gap-2 rounded-full border border-teal-500/40 bg-teal-500/10 px-4 text-teal-800 hover:bg-teal-500/20 dark:text-teal-100"
-                      >
-                        {buildPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        Build the report
-                      </Button>
+                      {project.auto_build && !buildError ? (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-teal-500" />
+                          {buildPending ? "Starting the build..." : "Preparing the build..."}
+                        </div>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => void buildNow()}
+                          disabled={buildPending}
+                          className="gap-2 rounded-full border border-teal-500/40 bg-teal-500/10 px-4 text-teal-800 hover:bg-teal-500/20 dark:text-teal-100"
+                        >
+                          {buildPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                          Build the report
+                        </Button>
+                      )}
                       {buildError ? (
                         <p className="text-xs text-red-600 dark:text-red-300">{buildError}</p>
                       ) : null}
                     </div>
                   ) : !hasUploadedFiles && !assistantPending ? (
                     <p className="text-center text-xs leading-5 text-muted-foreground">
-                      Attach study files with +, or ask the agent to import an example dataset. Planning starts when you say go.
+                      {project.auto_build
+                        ? "Attach study files with +, or import an example dataset — the build will start automatically."
+                        : "Attach study files with +, or ask the agent to import an example dataset. Planning starts when you say go."}
                     </p>
                   ) : null}
                 </div>

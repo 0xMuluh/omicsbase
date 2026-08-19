@@ -354,33 +354,7 @@ def validate_capability_bindings(
 
 
 def bind_plan_recipes(plan: Any) -> Any:
-    """Validate explicit recipe bindings and fill deterministic aliases."""
-    from app.services.recipe_registry import get_recipe, load_recipe_registry, resolve_recipe
-    from app.services.spawner import resolve_report_pack
-
-    for step in plan.workflow:
-        recipe = get_recipe(step.recipe_id) if step.recipe_id else None
-        if recipe and recipe.get("domain") != plan.domain:
-            recipe = None
-        recipe = recipe or resolve_recipe(step.id, plan.domain)
-        step.recipe_id = recipe.get("id") if recipe else None
-    plan.recipe_registry_version = load_recipe_registry().get("version")
-    # Null means from-scratch: do not inject a domain default pack.
-    if not str(plan.report_pack_id or "").strip():
-        plan.report_pack_id = None
-        return plan
-    try:
-        pack = resolve_report_pack(plan.report_pack_id, domain=plan.domain)
-    except Exception as exc:
-        raise CapabilityContractError(
-            f"Selected ReportPack {plan.report_pack_id!r} could not be resolved: {exc}"
-        ) from exc
-    if pack is None:
-        plan.report_pack_id = None
-        return plan
-    plan.report_pack_id = pack.pack_id
-    resolve_plan_capabilities(pack, plan)
-    validate_plan_parameter_bindings(pack, plan)
+    """Legacy no-op kept for callers that still pass an AnalysisPlan object."""
     return plan
 
 

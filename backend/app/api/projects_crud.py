@@ -29,7 +29,7 @@ def _ensure_agent_memory(db: Session, projects: list[Project]) -> None:
         files = db.query(UploadedFile).filter(UploadedFile.project_id == project.id).all()
         jobs = db.query(Job).filter(Job.project_id == project.id).order_by(Job.created_at.desc()).all()
         refresh_project_memory(db, project, files=files, jobs=jobs)
-        state = "needs_user" if project.status == "planned" else (project.status if project.status in {"planning", "generating", "rendering", "completed", "failed"} else "idle")
+        state = project.status if project.status in {"generating", "rendering", "editing", "completed", "failed", "needs_clarification"} else "idle"
         set_agent_state(db, project, state, "Imported existing project state")
         if not project.agent_actions:
             record_agent_action(db, project, "memory", "completed", "Imported existing project state")

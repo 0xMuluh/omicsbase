@@ -34,7 +34,7 @@ _gemini_client: Any = None
 _gemini_client_key: str | None = None
 
 # Stable fallback when the configured model isn't a Gemini model name.
-_GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+_GEMINI_FALLBACK_MODEL = "gemini-3.6-flash"
 _NON_GEMINI_HINTS = ("claude", "gpt-", "deepseek", "llama", "qwen", "grok", "o1-", "o3-", "o4-", "grok-")
 
 

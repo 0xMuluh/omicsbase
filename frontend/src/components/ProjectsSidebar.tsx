@@ -27,14 +27,6 @@ import { useReuseCache } from "@/lib/use-note-settings";
 const STORAGE_KEY = "omicsbase.projects-sidebar.open";
 
 function projectHref(project: Project): string {
-  if (project.status === "created") return `/projects/${project.id}/workspace`;
-  if (project.status === "planning" && project.auto_build) return `/projects/${project.id}/workspace`;
-  if (
-    project.project_dir
-    || ["planned", "approved", "generating", "generated", "rendering", "completed", "failed"].includes(project.status)
-  ) {
-    return `/projects/${project.id}/workspace`;
-  }
   return `/projects/${project.id}/workspace`;
 }
 

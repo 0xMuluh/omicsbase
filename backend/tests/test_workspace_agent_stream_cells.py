@@ -14,7 +14,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.project import Project, ProjectMessage
 from app.models.runs import RunTelemetry
-from app.services import home_agent, workspace_agent
+from app.services import home_agent, opencode_client
 
 
 def test_workspace_agent_stream_persists_typed_cells(monkeypatch):
@@ -54,7 +54,7 @@ def test_workspace_agent_stream_persists_typed_cells(monkeypatch):
     async def fake_title(prompt: str) -> str:
         return "Existing workspace"
 
-    monkeypatch.setattr(workspace_agent, "stream_workspace_agent", fake_stream)
+    monkeypatch.setattr(opencode_client, "stream_opencode", fake_stream)
     monkeypatch.setattr(home_agent, "generate_project_title", fake_title)
     app.dependency_overrides[get_db] = override_get_db
 

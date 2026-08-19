@@ -8,17 +8,13 @@ from typing import Any
 
 AGENT_STATES = {
     "idle",
-    "planning",
-    "needs_user",
     "generating",
     "rendering",
-    "repairing",
     "editing",
-    "reviewing",
     "completed",
     "failed",
 }
-BUSY_PROJECT_STATUSES = frozenset({"planning", "generating", "rendering", "repairing", "reviewing", "editing"})
+BUSY_PROJECT_STATUSES = frozenset({"generating", "rendering", "editing"})
 
 EDIT_VERBS = (
     "add",

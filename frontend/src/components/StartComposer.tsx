@@ -25,7 +25,7 @@ import { ComposerAddMenu } from "@/components/composer/ComposerAddMenu";
 import { DatasetPicker } from "@/components/composer/DatasetPicker";
 import { Button } from "@/components/ui/button";
 
-type LaunchMode = "notes" | "build" | "plan";
+type LaunchMode = "notes" | "build";
 
 interface AttachedFile {
   file: File;
@@ -334,14 +334,6 @@ export function StartComposer({
                         setModeOpen(false);
                       }}
                     />
-                    <ModeOption
-                      title="Plan"
-                      active={mode === "plan"}
-                      onClick={() => {
-                        setMode("plan");
-                        setModeOpen(false);
-                      }}
-                    />
                   </motion.div>
                 ) : null}
               </AnimatePresence>
@@ -384,10 +376,8 @@ export function StartComposer({
       ) : (
         <p className="mt-4 text-center text-sm text-muted-foreground">
           {mode === "build"
-            ? "Build mode lets OmicsBase take control when the study plan is clear."
-            : mode === "plan"
-              ? "Plan mode pauses for your approval before generation."
-              : "Notes opens a lightweight notebook."}
+            ? "Build mode starts OpenCode on the workspace as soon as uploads finish."
+            : "Notes opens a lightweight notebook."}
         </p>
       )}
 

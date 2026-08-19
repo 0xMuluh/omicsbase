@@ -93,4 +93,4 @@ Post-render review checks the selected ReportPack's declared sources and artifac
 | Backend | FastAPI, SQLAlchemy, Celery, Redis, PostgreSQL |
 | Analysis | R, Bioconductor, Quarto (Docker) |
 
-One agent loop owns a run end to end: it plans (`set_plan`), stages a ReportPack, adapts source, runs R, renders, reads its own failures, and repairs — all with inline tools in a single conversation. Pipeline endpoints (`/plan`, `/generate`, `/run`, `/edit`) are thin adapters that start the same loop headlessly; deterministic checks (validation, budgets, hash-checked edit journal) live below the model as tools, not above it as gates.
+OpenCode owns the workspace through a living ``opencode serve`` session: it reads `data/`, writes R/Quarto under `code/`, renders to `output/index.html`, and uses the `ask_user` MCP tool when it needs a decision. OmicsBase stages uploads, relays `/global/event` traffic to the frontend, and serves the preview. Finished examples live under `templates/` as reference layouts, not as required parameter forms or a separate plan step.

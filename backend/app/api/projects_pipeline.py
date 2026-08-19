@@ -1,4 +1,4 @@
-"""Project planning, generation, and execution pipeline endpoints."""
+"""Project build, render, and edit pipeline endpoints."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from app.schemas.schemas import (
     ClarificationsSubmit,
     EditRequest,
     JobOut,
-    PlanApproval,
 )
 from app.services.agent_runtime import is_edit_prompt
 
@@ -95,49 +94,6 @@ def _dispatch_task(
     raise HTTPException(status_code=500, detail=job.error)
 
 
-@router.post("/{project_id}/plan", response_model=JobOut, status_code=202)
-def start_planning(
-    project_id: str,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_current_tenant),
-):
-    """Start the planning process."""
-    project = get_project_for_tenant(db, project_id, tenant_id)
-    _ensure_agent_provider_available(project)
-
-    from app.services.study_manifest import manifest_errors
-
-    _refresh_study_manifest(db, project)
-    # Roles are still intentionally unresolved at this point. Let the LLM
-    # classify them before applying the role-dependent input contract.
-    blocking_errors = manifest_errors(project.study_manifest, include_input_contract=False)
-    if blocking_errors:
-        db.commit()
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Study inputs are not ready", "errors": blocking_errors},
-        )
-
-    job = Job(project_id=project_id, job_type="plan", status="pending")
-    db.add(job)
-    project.status = "planning"
-    db.commit()
-    db.refresh(job)
-
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    set_agent_state(db, project, "planning", "Planning analysis workflow")
-    record_agent_action(db, project, "plan", "started", "Planning analysis workflow", job_id=str(job.id))
-
-    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
-    _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
-        "instruction": PLAN_INSTRUCTION,
-        "job_kind": "plan",
-    })
-
-    return job
-
-
 @router.get("/{project_id}/clarifications", response_model=ClarificationRequest | None)
 def get_clarifications(
     project_id: str,
@@ -160,7 +116,7 @@ def submit_clarifications(
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Record the user's answers and re-run planning with them."""
+    """Record the user's answers and resume the build."""
     project = get_project_for_tenant(db, project_id, tenant_id)
     _ensure_agent_provider_available(project)
 
@@ -175,62 +131,27 @@ def submit_clarifications(
     agent_memory["clarifications"] = list(stored.values())
     agent_memory.pop("pending_clarifications", None)
     project.agent_memory = agent_memory
-    project.status = "planning"
+    project.status = "generating"
     project.analysis_plan = None
     db.commit()
 
-    job = Job(project_id=project_id, job_type="plan", status="pending")
+    job = Job(project_id=project_id, job_type="generate", status="pending")
     db.add(job)
-    project.status = "planning"
+    project.status = "generating"
     db.commit()
     db.refresh(job)
 
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    set_agent_state(db, project, "planning", "Re-planning with answered questions")
-    record_agent_action(db, project, "plan", "restarted", "Re-planning with answered questions", job_id=str(job.id))
+    set_agent_state(db, project, "generating", "OpenCode is continuing with the user's answers")
+    record_agent_action(db, project, "generate", "restarted", "OpenCode continuing after clarifications", job_id=str(job.id))
 
-    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
+    from app.tasks.analysis import run_agent_job, user_instruction_for
     _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
-        "instruction": PLAN_INSTRUCTION,
-        "job_kind": "plan",
+        "instruction": user_instruction_for(project),
+        "job_kind": "generate",
     })
 
     return job
-
-
-@router.post("/{project_id}/approve")
-def approve_plan(
-    project_id: str,
-    data: PlanApproval,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_current_tenant),
-):
-    """Update the analysis plan; retained for API compatibility."""
-    project = get_project_for_tenant(db, project_id, tenant_id)
-
-    from app.services.study_manifest import manifest_errors
-
-    _refresh_study_manifest(db, project)
-    blocking_errors = manifest_errors(
-        project.study_manifest,
-        include_input_contract=not getattr(settings, "project_agent_enabled", True),
-    )
-    if blocking_errors:
-        db.commit()
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Study inputs are not valid for this plan", "errors": blocking_errors},
-        )
-
-    project.analysis_plan = data.plan.model_dump()
-    project.status = "planned"
-    db.commit()
-
-    from app.services.agent_runtime import record_agent_action, refresh_project_memory, set_agent_state
-    set_agent_state(db, project, "idle", "Analysis plan updated")
-    refresh_project_memory(db, project)
-    record_agent_action(db, project, "plan", "updated", "Analysis plan updated")
-    return {"status": "planned"}
 
 
 @router.post("/{project_id}/generate", response_model=JobOut, status_code=202)
@@ -240,24 +161,19 @@ def start_generation(
     db: Session = Depends(get_db),
     tenant_id: str = Depends(get_current_tenant),
 ):
-    """Start generating the Quarto project."""
+    """Start generating the Quarto project with OpenCode."""
     project = get_project_for_tenant(db, project_id, tenant_id)
     _ensure_agent_provider_available(project)
-    if not project.analysis_plan:
-        raise HTTPException(status_code=400, detail="No analysis plan")
 
     from app.services.study_manifest import manifest_errors
 
     _refresh_study_manifest(db, project)
-    blocking_errors = manifest_errors(
-        project.study_manifest,
-        include_input_contract=not getattr(settings, "project_agent_enabled", True),
-    )
+    blocking_errors = manifest_errors(project.study_manifest, include_input_contract=False)
     if blocking_errors:
         db.commit()
         raise HTTPException(
             status_code=422,
-            detail={"message": "Study inputs are not valid for generation", "errors": blocking_errors},
+            detail={"message": "Study inputs are not ready", "errors": blocking_errors},
         )
 
     job = Job(project_id=project_id, job_type="generate", status="pending")
@@ -267,12 +183,12 @@ def start_generation(
     db.refresh(job)
 
     from app.services.agent_runtime import record_agent_action, set_agent_state
-    set_agent_state(db, project, "generating", "Building the report with the agent loop")
-    record_agent_action(db, project, "generate", "started", "Building the report with the agent loop", job_id=str(job.id))
+    set_agent_state(db, project, "generating", "OpenCode is building the report")
+    record_agent_action(db, project, "generate", "started", "OpenCode workspace build", job_id=str(job.id))
 
-    from app.tasks.analysis import BUILD_INSTRUCTION, run_agent_job
+    from app.tasks.analysis import run_agent_job, user_instruction_for
     _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
-        "instruction": BUILD_INSTRUCTION,
+        "instruction": user_instruction_for(project),
         "job_kind": "generate",
     })
 
@@ -304,9 +220,8 @@ def start_rendering(
     from app.tasks.analysis import run_agent_job
     _dispatch_task(run_agent_job, project, job, db, background_tasks, task_kwargs={
         "instruction": (
-            "Render the report now with render_report. If the render fails, read the "
-            "errors, repair the workspace source, and render again until it passes. "
-            "Finish with validate_report for anything structural."
+            "Render or rebuild the Quarto report with bash. If it fails, read "
+            "the errors, repair the source, and render again until it passes."
         ),
         "job_kind": "render",
     })

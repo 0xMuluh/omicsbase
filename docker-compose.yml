@@ -15,6 +15,32 @@ services:
     ports:
       - "6379:6379"
 
+  opencode:
+    image: omicsbase-backend:dev
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: >
+      sh -c 'if [ -n "$$GEMINI_API_KEY" ] && [ -z "$$GOOGLE_GENERATIVE_AI_API_KEY" ]; then
+      export GOOGLE_GENERATIVE_AI_API_KEY="$$GEMINI_API_KEY"; fi;
+      exec opencode serve --hostname 0.0.0.0 --port 4096'
+    env_file:
+      - .env
+    environment:
+      PROJECTS_DIR: /app/projects
+      DEV_MODE: "true"
+      OPENCODE_BIN: /usr/local/bin/opencode
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GEMINI_API_KEY}
+    ports:
+      - "4096:4096"
+    volumes:
+      - ./backend/projects:/app/projects
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts
+      - ./registry:/app/registry
+      - ./templates:/app/templates
+      - /home/simple/.opencode/bin/opencode:/usr/local/bin/opencode:ro
+
   backend:
     image: omicsbase-backend:dev
     build:
@@ -28,12 +54,12 @@ services:
       TASK_BACKEND: celery
       PROJECTS_DIR: /app/projects
       DEV_MODE: "true"
-      # The dev backend image is already the controlled Bioconductor runtime.
-      # Production deployments must use a dedicated sandbox runner instead.
       USE_DOCKER_SANDBOX: "false"
       AGENT_MAX_STEPS: "10"
       OPENCODE_BIN: /usr/local/bin/opencode
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      OPENCODE_SERVER_URL: http://opencode:4096
+      OPENCODE_SERVER_AUTOSTART: "false"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"
     ports:
       - "8000:8000"
     volumes:
@@ -48,6 +74,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - opencode
 
   worker:
     image: omicsbase-backend:dev
@@ -60,11 +87,11 @@ services:
       TASK_BACKEND: celery
       PROJECTS_DIR: /app/projects
       DEV_MODE: "true"
-      # The dev backend image is already the controlled Bioconductor runtime.
-      # Production deployments must use a dedicated sandbox runner instead.
       USE_DOCKER_SANDBOX: "false"
       AGENT_MAX_STEPS: "10"
       OPENCODE_BIN: /usr/local/bin/opencode
+      OPENCODE_SERVER_URL: http://opencode:4096
+      OPENCODE_SERVER_AUTOSTART: "false"
     volumes:
       - ./backend/projects:/app/projects
       - ./backend/app:/app/app
@@ -76,6 +103,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - opencode
 
   beat:
     image: omicsbase-backend:dev
@@ -88,8 +116,6 @@ services:
       TASK_BACKEND: celery
       PROJECTS_DIR: /app/projects
       DEV_MODE: "true"
-      # The dev backend image is already the controlled Bioconductor runtime.
-      # Production deployments must use a dedicated sandbox runner instead.
       USE_DOCKER_SANDBOX: "false"
       AGENT_MAX_STEPS: "10"
     volumes:

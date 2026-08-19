@@ -1,13 +1,13 @@
-"""Headless agent-job and pipeline-adapter tests for the one-loop architecture.
+"""Headless OpenCode workspace-job tests.
 
-The provider stream is scripted; everything else (executor, tools, journal,
-job bookkeeping, plan persistence) runs for real. Sessions are used in the
-create/run/verify pattern because the task closes its own session.
+The OpenCode stream is scripted; staging and job bookkeeping run for real.
 """
 
 from __future__ import annotations
 
 import uuid
+
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,10 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models.project import Job, Project
-from app.services import agent_loop
-from app.tasks.analysis import BUILD_INSTRUCTION, PLAN_INSTRUCTION, run_agent_job
-
-from agent_test_helpers import openhands_from_stream, text_turn, tool_turn
+from app.tasks.analysis import run_agent_job, user_instruction_for
 
 
 def _db():
@@ -37,6 +34,7 @@ def _seed_project(factory, tmp_path, *, plan=None, status="created"):
         tenant_id="tenant-a",
         question="Compare the groups",
         status=status,
+        auto_build=True,
         project_dir=str(tmp_path / "project"),
         analysis_plan=plan,
     )
@@ -57,8 +55,8 @@ def _seed_job(factory, pid, job_type):
     return jid
 
 
-def _patch_task(monkeypatch, factory, fake_run_native):
-    monkeypatch.setattr(agent_loop, "run_native_agent", fake_run_native)
+def _patch_opencode(monkeypatch, factory, fake_stream):
+    monkeypatch.setattr("app.services.opencode_client.stream_opencode", fake_stream)
     monkeypatch.setattr("app.tasks.analysis._get_db_session", lambda: factory())
     monkeypatch.setattr("app.tasks.analysis._update_job", lambda _db, job_id, **kw: None)
 
@@ -75,143 +73,173 @@ def _project_row(factory, pid):
     return payload
 
 
-def test_plan_instruction_constants_are_stable():
-    assert "set_plan" in PLAN_INSTRUCTION
-    assert "never use, copy, or reference" in PLAN_INSTRUCTION
-    assert "from scratch" in BUILD_INSTRUCTION
-    assert "continue from" in BUILD_INSTRUCTION
+def test_instruction_uses_user_words_and_never_names_templates():
+    assert "set_plan" not in user_instruction_for(None)
+    assert "render_report" not in user_instruction_for(None)
+    assert "inspect_project" not in user_instruction_for(None)
+    assert "example analyses" not in user_instruction_for(None)
+    assert "templates" not in user_instruction_for(None)
+    assert "copy" not in user_instruction_for(None)
+
+    class _FakeProject:
+        question = "Compare the groups"
+        custom_plan_text = ""
+        notes = ""
+
+    assert user_instruction_for(_FakeProject) == "Compare the groups"
 
 
-def test_run_agent_job_plan_turn_persists_plan(monkeypatch, tmp_path):
+def test_run_agent_job_completes_without_analysis_plan(monkeypatch, tmp_path):
     engine, factory = _db()
-    pid = _seed_project(factory, tmp_path)
-    jid = _seed_job(factory, pid, "plan")
-
-    plan_payload = {
-        "project_name": "Job project",
-        "study_type": "case-control",
-        "question": "Compare the groups",
-        "domain": "microbiome",
-        "report_pack_id": "microbiome-diversity",
-        "workflow": [
-            {"id": "alpha", "name": "Alpha diversity", "classification": "standard"},
-        ],
-    }
-
-    async def fake_stream(**kwargs):
-        for event in tool_turn("set_plan", {"plan": plan_payload}):
-            yield event
-
-    calls = []
-
-    async def fake_run_native(executor, message, *, cancel_check=None):
-        calls.append(message)
-        async for event in openhands_from_stream(fake_stream)(executor, message, cancel_check=cancel_check):
-            yield event
-
-    _patch_task(monkeypatch, factory, fake_run_native)
-
-    result = run_agent_job(pid, jid, instruction=PLAN_INSTRUCTION, job_kind="plan")
-    assert result["status"] == "completed"
-    assert calls and "Plan this analysis" in calls[0]
-    verify = _project_row(factory, pid)
-    assert verify["analysis_plan"]["report_pack_id"] == "microbiome-diversity"
-
-
-def test_run_agent_job_build_turn_renders_and_repairs(monkeypatch, tmp_path):
-    """The scripted build: stage → render fails → render passes → summary."""
-    engine, factory = _db()
-    pid = _seed_project(factory, tmp_path)
+    monkeypatch.setattr("app.tasks.analysis.settings.projects_dir", str(tmp_path / "projects"))
+    pid = _seed_project(factory, tmp_path, status="generating")
     jid = _seed_job(factory, pid, "generate")
-    (tmp_path / "project" / "code").mkdir(parents=True)
-    (tmp_path / "project" / "code" / "index.qmd").write_text("# Stub report\n")
 
-    script = [
-        tool_turn("stage_report_pack"),
-        tool_turn("render_report"),
-        tool_turn("render_report"),
-        text_turn("The report built and rendered successfully."),
-    ]
+    captured = {}
 
     async def fake_stream(**kwargs):
-        for event in script.pop(0):
-            yield event
+        captured["instruction"] = kwargs.get("instruction")
+        code_dir = Path(kwargs["project_dir"]) / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+        (code_dir / "data.R").write_text("# staged study container\n")
+        yield {"type": "token", "token": "Wrote the report from observed data."}
+        yield {"type": "final", "message": "Wrote the report from observed data."}
 
-    render_calls = []
+    _patch_opencode(monkeypatch, factory, fake_stream)
 
-    async def fake_render_handler(arguments):
-        render_calls.append(arguments)
-        if len(render_calls) == 1:
-            return {
-                "status": "error",
-                "render_status": "failed",
-                "errors": [{"step": "qmd", "file": "code/index.qmd", "error": "object 'otu' not found"}],
-                "failed_page": "index.qmd",
-            }
-        return {"status": "completed", "render_status": "completed", "pages": ["index.html"]}
-
-    async def fake_run_native(executor, message, *, cancel_check=None):
-        executor.render_handler = fake_render_handler
-        async for event in openhands_from_stream(fake_stream)(executor, message, cancel_check=cancel_check):
-            yield event
-
-    _patch_task(monkeypatch, factory, fake_run_native)
-
-    result = run_agent_job(pid, jid, instruction=BUILD_INSTRUCTION, job_kind="generate")
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
     assert result["status"] == "completed"
-    assert "rendered successfully" in result["final"]
-    assert len(render_calls) == 2, "the model must see the first failure and re-render"
+    assert "Wrote the report" in result["final"]
+    assert captured["instruction"] == "Compare the groups"
+    verify = _project_row(factory, pid)
+    assert verify["analysis_plan"] is None
+    assert verify["status"] == "completed"
+
+
+def test_run_agent_job_completes_when_opencode_returns_ok(monkeypatch, tmp_path):
+    engine, factory = _db()
+    monkeypatch.setattr("app.tasks.analysis.settings.projects_dir", str(tmp_path / "projects"))
+    pid = _seed_project(factory, tmp_path, status="generating")
+    jid = _seed_job(factory, pid, "generate")
+    calls = {"count": 0}
+
+    async def fake_stream(**kwargs):
+        calls["count"] += 1
+        yield {"type": "final", "message": "OpenCode finished.", "ok": True}
+
+    _patch_opencode(monkeypatch, factory, fake_stream)
+
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
+    assert result["status"] == "completed"
+    assert calls["count"] == 1
+    verify = _project_row(factory, pid)
+    assert verify["status"] == "completed"
+
+
+def test_run_agent_job_fails_when_opencode_errors(monkeypatch, tmp_path):
+    engine, factory = _db()
+    pid = _seed_project(factory, tmp_path, status="generating")
+    jid = _seed_job(factory, pid, "generate")
+
+    async def fake_stream(**kwargs):
+        yield {"type": "error", "error": "APIError 503 from https://api.orcarouter.ai/v1/chat/completions"}
+        yield {
+            "type": "final",
+            "message": "APIError 503 from https://api.orcarouter.ai/v1/chat/completions",
+            "ok": False,
+        }
+
+    _patch_opencode(monkeypatch, factory, fake_stream)
+
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
+    assert result["status"] == "failed"
+    verify = _project_row(factory, pid)
+    assert verify["status"] == "failed"
 
 
 def test_run_agent_job_bridges_ask_user_to_clarifications(monkeypatch, tmp_path):
     engine, factory = _db()
-    pid = _seed_project(factory, tmp_path, status="planning")
-    jid = _seed_job(factory, pid, "plan")
-
-    pending = {
-        "id": "question-1",
-        "question": "Which column defines the groups?",
-        "options": ["condition", "treatment"],
-        "multiple": False,
-    }
+    pid = _seed_project(factory, tmp_path, status="generating")
+    jid = _seed_job(factory, pid, "generate")
 
     async def fake_stream(**kwargs):
-        for event in text_turn(pending["question"]):
-            yield event
+        yield {
+            "type": "question",
+            "question": "Which column defines the groups?",
+            "options": ["condition", "treatment"],
+            "multiple": False,
+        }
+        yield {
+            "type": "final",
+            "message": "Need a grouping column.",
+            "awaiting_answer": {
+                "question": "Which column defines the groups?",
+                "options": ["condition", "treatment"],
+                "multiple": False,
+            },
+        }
 
-    async def fake_run_native(executor, message, *, cancel_check=None):
-        async for event in openhands_from_stream(fake_stream)(executor, message, cancel_check=cancel_check):
-            if event.get("type") == "final":
-                event["awaiting_answer"] = pending
-            yield event
+    _patch_opencode(monkeypatch, factory, fake_stream)
 
-    _patch_task(monkeypatch, factory, fake_run_native)
-
-    result = run_agent_job(pid, jid, instruction=PLAN_INSTRUCTION, job_kind="plan")
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
     assert result["status"] == "completed"
     verify = _project_row(factory, pid)
-    pending_clarifications = (verify["agent_memory"] or {}).get("pending_clarifications")
-    assert pending_clarifications and pending_clarifications["questions"][0]["prompt"] == pending["question"]
+    pending = (verify["agent_memory"] or {}).get("pending_clarifications")
+    assert pending and pending["questions"][0]["prompt"] == "Which column defines the groups?"
     assert verify["status"] == "needs_clarification"
 
 
-def test_pipeline_generate_endpoint_dispatches_agent_job(monkeypatch, tmp_path):
-    """POST /generate keeps its contract but starts one loop turn."""
+def test_run_agent_job_honours_cancelled_job(monkeypatch, tmp_path):
+    engine, factory = _db()
+    monkeypatch.setattr("app.tasks.analysis.settings.projects_dir", str(tmp_path / "projects"))
+    pid = _seed_project(factory, tmp_path, status="generating")
+    jid = _seed_job(factory, pid, "generate")
+    db = factory()
+    job = db.query(Job).filter(Job.id == jid).first()
+    job.status = "cancelled"
+    db.commit()
+    db.close()
+
+    async def fake_stream(**kwargs):
+        if kwargs.get("cancel_check") and kwargs["cancel_check"]():
+            yield {"type": "cancelled"}
+            yield {"type": "final", "message": "Run cancelled.", "ok": True, "cancelled": True}
+            return
+        yield {"type": "final", "message": "should not run", "ok": True}
+
+    _patch_opencode(monkeypatch, factory, fake_stream)
+
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
+    assert result["status"] == "cancelled"
+    verify = _project_row(factory, pid)
+    assert verify["status"] == "created"
+
+
+def test_merge_step_usage_accumulates_tokens():
+    from app.tasks.analysis import _merge_step_usage
+
+    totals = {"input_tokens": 0.0, "output_tokens": 0.0, "total_tokens": 0.0, "cost": 0.0}
+    _merge_step_usage(totals, {"input_tokens": 10, "output_tokens": 4}, 0.01)
+    _merge_step_usage(totals, {"input_tokens": 5, "output_tokens": 2}, None)
+    assert totals["input_tokens"] == 15
+    assert totals["output_tokens"] == 6
+    assert totals["cost"] == 0.01
+
+
+def test_pipeline_generate_endpoint_dispatches_opencode_job(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     from app.main import app
     from app.database import get_db
 
     engine, factory = _db()
-    pid = _seed_project(factory, tmp_path, plan={"project_name": "p", "study_type": "cc", "question": "q"})
+    pid = _seed_project(factory, tmp_path)
     db = factory()
 
     dispatched = []
 
     def fake_dispatch(task_func, project_arg, job, db_arg, background_tasks=None, *, task_kwargs=None):
         dispatched.append((getattr(task_func, "__name__", str(task_func)), dict(task_kwargs or {})))
-        # The real dispatcher hands the job to Celery/background tasks; the
-        # test only proves the wiring, so mark it terminal here.
         job.status = "completed"
 
     monkeypatch.setattr("app.api.projects_pipeline._dispatch_task", fake_dispatch)
@@ -235,45 +263,8 @@ def test_pipeline_generate_endpoint_dispatches_agent_job(monkeypatch, tmp_path):
         assert response.status_code == 202
         assert dispatched and dispatched[0][0] == "run_agent_job"
         assert dispatched[0][1]["job_kind"] == "generate"
-        assert "render_report" in dispatched[0][1]["instruction"]
+        assert "render_report" not in dispatched[0][1]["instruction"]
+        assert dispatched[0][1]["instruction"] == "Compare the groups"
     finally:
         app.dependency_overrides.pop(get_db, None)
         db.close()
-
-
-def test_set_plan_accepts_json_string_encoded_plan(monkeypatch, tmp_path):
-    """Providers that serialize nested objects as text still get a stored plan."""
-    engine, factory = _db()
-    pid = _seed_project(factory, tmp_path)
-    jid = _seed_job(factory, pid, "plan")
-
-    plan_payload = {
-        "project_name": "String plan project",
-        "study_type": "case-control",
-        "question": "Compare groups",
-        "domain": "microbiome",
-        "report_pack_id": None,
-        "workflow": [{"id": "alpha", "name": "Alpha diversity", "classification": "standard"}],
-    }
-
-    async def fake_stream(**kwargs):
-        import json as _json
-        from agent_test_helpers import tool_turn
-
-        for event in tool_turn("set_plan", {"plan": _json.dumps(plan_payload)}):
-            yield event
-
-    async def fake_run_native(executor, message, *, cancel_check=None):
-        from agent_test_helpers import openhands_from_stream
-
-        async for event in openhands_from_stream(fake_stream)(executor, message, cancel_check=cancel_check):
-            yield event
-
-    _patch_task(monkeypatch, factory, fake_run_native)
-    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
-
-    result = run_agent_job(pid, jid, instruction=PLAN_INSTRUCTION, job_kind="plan")
-    assert result["status"] == "completed"
-    verify = _project_row(factory, pid)
-    assert verify["analysis_plan"]["project_name"] == "String plan project"
-    assert verify["analysis_plan"]["report_pack_id"] is None

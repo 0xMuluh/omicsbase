@@ -90,7 +90,19 @@ async def lifespan(app: FastAPI):
     elif settings.dev_mode:
         print("⚠ Running in DEV_MODE — auth bypass, default tenants, and sandbox bypass are permitted")
 
+    from app.services.opencode_server import ensure_server
+
+    try:
+        opencode_url = await ensure_server()
+        print(f"✓ OpenCode server ready at {opencode_url}")
+    except Exception as exc:
+        print(f"✗ OpenCode server unavailable: {exc}")
+
     yield
+
+    from app.services.opencode_server import shutdown_server
+
+    await shutdown_server()
 
 
 app = FastAPI(

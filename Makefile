@@ -2,9 +2,9 @@
 
 # Recommended dev path: Docker backend/worker/db, local frontend with HMR.
 dev: check-docker
-	@echo "Starting Docker backend, worker, Postgres, and Redis..."
+	@echo "Starting Docker OpenCode, backend, worker, Postgres, and Redis..."
 	docker compose build backend
-	docker compose up -d backend worker
+	docker compose up -d opencode backend worker
 	@echo "Starting frontend at http://localhost:3000..."
 	$(MAKE) dev-frontend
 
@@ -13,8 +13,8 @@ dev: check-docker
 # live. Rebuild (make dev) only when the Dockerfile, requirements, or asset
 # directories (skills/, templates/) change.
 up: check-docker
-	@echo "Starting Docker backend and worker from the existing image..."
-	docker compose up -d backend worker
+	@echo "Starting Docker OpenCode, backend, and worker from the existing image..."
+	docker compose up -d opencode backend worker
 	@echo "Starting frontend at http://localhost:3000..."
 	$(MAKE) dev-frontend
 
@@ -32,7 +32,7 @@ dev-local: check-docker r-deps-check
 
 dev-docker: check-docker
 	@echo "Starting Docker backend and worker with baked R/Quarto dependencies..."
-	docker compose up --build backend worker
+	docker compose up --build opencode backend worker
 
 docker-build: check-docker
 	@echo "Building backend image with standard R packages..."

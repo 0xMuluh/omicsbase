@@ -1,5 +1,5 @@
 import { API_BASE, request } from "./client";
-import type { AnalysisPlan, ClarificationAnswer, ClarificationRequest, Job, Project, ProjectFile, WorkspaceResult } from "./types/projects";
+import type { ClarificationAnswer, ClarificationRequest, Job, Project, ProjectFile, WorkspaceResult } from "./types/projects";
 import type { AssistantMessage, ChatMessage, ProjectMessage } from "./types/messages";
 
 export const projectsApi = {
@@ -26,8 +26,8 @@ export const projectsApi = {
   getNoteResults: (projectId: string) =>
     request<WorkspaceResult[]>(`/projects/${projectId}/note-results`),
 
-  startPlanning: (projectId: string) =>
-    request<Job>(`/projects/${projectId}/plan`, { method: "POST" }),
+  startBuild: (projectId: string) =>
+    request<Job>(`/projects/${projectId}/generate`, { method: "POST" }),
   getClarifications: (projectId: string) =>
     request<ClarificationRequest | null>(`/projects/${projectId}/clarifications`),
   submitClarifications: (projectId: string, answers: ClarificationAnswer[]) =>
@@ -35,13 +35,6 @@ export const projectsApi = {
       method: "POST",
       body: JSON.stringify({ answers }),
     }),
-  updatePlan: (projectId: string, plan: AnalysisPlan) =>
-    request<{ status: string }>(`/projects/${projectId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ project_id: projectId, plan }),
-    }),
-  startGeneration: (projectId: string) =>
-    request<Job>(`/projects/${projectId}/generate`, { method: "POST" }),
   startRendering: (projectId: string) =>
     request<Job>(`/projects/${projectId}/run`, { method: "POST" }),
   editProject: (projectId: string, instruction: string) =>

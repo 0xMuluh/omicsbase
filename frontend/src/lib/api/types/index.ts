@@ -242,6 +242,7 @@ export interface AgentStreamEvent {
   job_id?: string;
   step?: number;
   token?: string;
+  reasoning?: string;
   chat_mode?: string;
   name?: string;
   name_source?: "default" | "auto" | "user";

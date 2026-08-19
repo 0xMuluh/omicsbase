@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { friendlyToolLabel } from "@/lib/toolLabels";
 import type { ActionEvent } from "@/components/AgentActionCard";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -48,6 +48,8 @@ export function useWorkspaceAgent({
     queryFn: () => api.listMessages(projectId),
   });
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [streamingReasoning, setStreamingReasoning] = useState("");
+  const streamingReasoningRef = useRef("");
   const [assistantPending, setAssistantPending] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const [agentActivity, setAgentActivity] = useState("Understanding the workspace...");
@@ -101,6 +103,8 @@ export function useWorkspaceAgent({
       attachments,
     };
     setChatMessages((prev) => [...prev, userMessage]);
+    setStreamingReasoning("");
+    streamingReasoningRef.current = "";
     setAssistantPending(true);
     setQuickActions([]);
     setActionEvents([]);
@@ -181,6 +185,10 @@ export function useWorkspaceAgent({
               ];
             });
           }
+          if (streamEvent.type === "reasoning_token" && typeof streamEvent.token === "string") {
+            streamingReasoningRef.current += streamEvent.token;
+            setStreamingReasoning(streamingReasoningRef.current);
+          }
           if (
             streamEvent.type === "message"
             && typeof streamEvent.message === "object"
@@ -206,9 +214,18 @@ export function useWorkspaceAgent({
                 role: "assistant",
                 content: streamEvent.message as string,
                 time: new Date().toISOString(),
-                metadata: streamEvent.job_id ? { job_id: streamEvent.job_id } : null,
+                metadata: {
+                  ...(streamEvent.job_id ? { job_id: streamEvent.job_id } : {}),
+                  ...(typeof streamEvent.reasoning === "string" && streamEvent.reasoning
+                    ? { reasoning: streamEvent.reasoning }
+                    : streamingReasoningRef.current
+                      ? { reasoning: streamingReasoningRef.current }
+                      : {}),
+                },
               },
             ]);
+            streamingReasoningRef.current = "";
+            setStreamingReasoning("");
           }
         },
       );
@@ -229,6 +246,8 @@ export function useWorkspaceAgent({
       ]);
     } finally {
       setAssistantPending(false);
+      streamingReasoningRef.current = "";
+      setStreamingReasoning("");
       setAgentActivity("Understanding the workspace...");
     }
   };
@@ -298,6 +317,7 @@ export function useWorkspaceAgent({
     handleSendPrompt,
     pendingQuestion,
     quickActions,
+    streamingReasoning,
     setAgentActivity,
     setChatMode,
   };

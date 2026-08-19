@@ -48,7 +48,7 @@ def test_default_model_for_guards_claude_leftover(monkeypatch):
 
 def test_fast_model_for_providers():
     assert providers.fast_model_for("qwen") == "qwen3.7-plus-2026-05-26"
-    assert providers.fast_model_for("gemini") == "gemini-3.5-flash-lite"
+    assert providers.fast_model_for("gemini") == "gemini-3.6-flash"
     assert providers.fast_model_for("orcarouter") == "orcarouter/free"
     assert providers.fast_model_for("nope") is None
 

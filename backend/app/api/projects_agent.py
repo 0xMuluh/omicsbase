@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -126,7 +127,6 @@ async def workspace_agent_stream(
         raise HTTPException(status_code=422, detail="Message cannot be empty")
 
     from app.services.agent_runtime import build_run_event_metadata, record_project_message as persist_project_message
-    from app.services.workspace_agent import stream_workspace_agent
     from app.services.agent_plans import (
         append_continuation_step,
         continuation_can_resume,
@@ -356,46 +356,34 @@ async def workspace_agent_stream(
             finally:
                 title_db.close()
 
-        from app.services.workspace_handlers import (
-            make_inline_action_handler,
-            make_knowledge_search_handler,
-            make_plan_handler,
-            make_render_handler,
+        from app.models.project import Project, ProjectMessage, UploadedFile
+        from app.services.llm import resolve_target
+        from app.services.opencode_client import stream_opencode
+        from app.tasks.analysis import _stage_uploaded_files
+
+        agent_provider, agent_model = resolve_target("agent")
+
+        project_dir = Path(settings.projects_dir) / str(project.id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        if not project.project_dir:
+            project.project_dir = str(project_dir)
+        _stage_uploaded_files(
+            project_dir,
+            db.query(UploadedFile).filter(UploadedFile.project_id == str(project.id)).all(),
         )
+        db.commit()
 
-        inline_action_handler = make_inline_action_handler(db, project)
-        knowledge_search_handler = make_knowledge_search_handler(db)
-        render_handler = make_render_handler(db, project)
-        plan_handler = make_plan_handler(db, project)
+        prompt = data.message
+        if data.chat_mode == "discuss":
+            prompt = f"[discuss mode — do not modify files]\n{prompt}"
 
-        if settings.agent_backend == "opencode":
-            from app.services.opencode_client import stream_opencode
-            from app.services.spawner import exemplar_root
-
-            domain = getattr(project, "domain", None) or "microbiome"
-            template_path = exemplar_root(domain)
-            project_dir = Path(settings.projects_dir) / str(project.id)
-            project_dir.mkdir(parents=True, exist_ok=True)
-
-            stream_source = stream_opencode(
-                project_dir=project_dir,
-                instruction=data.message,
-                provider=agent_provider,
-                model=agent_model,
-                reference_template=template_path,
-                session_id=str(project.id),
-            )
-        else:
-            stream_source = stream_workspace_agent(
-                project,
-                agent_request,
-                persisted_history,
-                inline_action_handler=inline_action_handler,
-                knowledge_search_handler=knowledge_search_handler,
-                render_handler=render_handler,
-                plan_handler=plan_handler,
-                cancel_check=lambda: run_cancel_requested(db, str(run.id)),
-            )
+        stream_source = stream_opencode(
+            project_dir=project_dir,
+            instruction=prompt,
+            provider=agent_provider,
+            model=agent_model,
+            chat_mode=data.chat_mode,
+        )
 
         async for event in stream_source:
             event = dict(event)
@@ -462,312 +450,6 @@ async def workspace_agent_stream(
                 )
                 event["message_id"] = str(tool_message.id)
 
-            if event["type"] == "action":
-                action = event["action"]
-                arguments = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
-                instruction = event.get("instruction") or data.message.strip()
-                mutation_authorized = event.get("mutation_authorized") is True
-                if not mutation_authorized:
-                    event = {
-                        "type": "final",
-                        "message": (
-                            "I inspected the request but did not start or change the analysis "
-                            "because no explicit workspace mutation was authorized."
-                        ),
-                    }
-                elif project.status in {"planning", "generating", "rendering", "repairing", "reviewing", "editing"}:
-                    from app.services.agent_runtime import queue_pending_guidance
-
-                    guidance = instruction or data.message.strip()
-                    queued = queue_pending_guidance(
-                        db,
-                        project,
-                        guidance,
-                        source=f"action:{action}",
-                        mutation_authorized=True,
-                    )
-                    message_text = (
-                        "The workspace is busy with another job, so I queued your guidance "
-                        f"for after it finishes: {queued['content']}"
-                    )
-                    message = record_run_message(
-                        db,
-                        project,
-                        "assistant",
-                        message_text,
-                        metadata={
-                            "action": "queue_guidance",
-                            "queued_action": action,
-                            "pending_guidance": queued,
-                        },
-                    )
-                    event = {
-                        "type": "final",
-                        "message": message_text,
-                        "message_id": str(message.id),
-                    }
-                elif action == "edit_project":
-                    if not project.project_dir:
-                        event = {
-                            "type": "final",
-                            "message": "There is no generated workspace to edit yet. Build the project first.",
-                        }
-                    else:
-                        job = _queue_agent_edit(
-                            db,
-                            project,
-                            instruction,
-                            background_tasks,
-                        )
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            event["message"],
-                            metadata={"action": action, "job_id": str(job.id)},
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": event["message"],
-                            "message_id": str(message.id),
-                        }
-                elif action == "plan_analysis":
-                    try:
-                        job = _queue_agent_planning(db, project, background_tasks)
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            event["message"],
-                            metadata={"action": action, "job_id": str(job.id)},
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": event["message"],
-                            "message_id": str(message.id),
-                        }
-                    except ValueError as exc:
-                        event = {"type": "final", "message": str(exc)}
-                elif action == "render_report":
-                    if not project.project_dir:
-                        event = {
-                            "type": "final",
-                            "message": "There is no generated workspace to render yet.",
-                        }
-                    else:
-                        job = _queue_agent_render(db, project, background_tasks)
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            event["message"],
-                            metadata={"action": action, "job_id": str(job.id)},
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": event["message"],
-                            "message_id": str(message.id),
-                        }
-                elif action == "repair_report":
-                    if not project.project_dir:
-                        event = {
-                            "type": "final",
-                            "message": "There is no generated workspace to repair yet.",
-                        }
-                    else:
-                        job = _queue_agent_render(db, project, background_tasks)
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            event["message"],
-                            metadata={"action": action, "job_id": str(job.id)},
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": event["message"],
-                            "message_id": str(message.id),
-                        }
-                elif action == "run_recipe":
-                    recipe_id = str(arguments.get("recipe_id") or "")
-                    try:
-                        job = _queue_agent_recipe(
-                            db,
-                            project,
-                            recipe_id,
-                            background_tasks,
-                        )
-                        message_text = f"I’m running {recipe_id} and only its stale dependencies."
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            message_text,
-                            metadata={
-                                "action": action,
-                                "recipe_id": recipe_id,
-                                "job_id": str(job.id),
-                            },
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": message_text,
-                            "message_id": str(message.id),
-                        }
-                    except ValueError as exc:
-                        event = {"type": "final", "message": str(exc)}
-                elif action == "undo_project_edit":
-                    transaction_id = str(arguments.get("transaction_id") or "").strip()
-                    if not project.project_dir:
-                        event = {"type": "final", "message": "There is no generated workspace whose edit history can be undone."}
-                    elif not transaction_id:
-                        event = {"type": "final", "message": "Undo requires a transaction_id from the workspace edit history."}
-                    else:
-                        try:
-                            from app.services.edit_engine import EditBusy, EditEngineError, revert_transaction
-                            result = revert_transaction(project.project_dir, transaction_id, lock_timeout=0)
-                            from app.services.agent_runtime import refresh_project_memory, record_agent_action
-                            from app.services.project_edit_index import record_project_edit
-                            record_project_edit(db, project, result)
-                            refresh_project_memory(db, project)
-                            record_agent_action(
-                                db,
-                                project,
-                                "file_edit",
-                                "completed",
-                                f"Undid edit transaction {transaction_id}",
-                                {"transaction_id": transaction_id, "revert_transaction_id": result.transaction_id},
-                                files=[item.path for item in result.files],
-                            )
-                            event = {
-                                "type": "final",
-                                "message": f"Undid edit transaction {transaction_id} with a new hash-checked transaction.",
-                                "details": result.to_dict(),
-                            }
-                        except EditBusy as exc:
-                            event = {"type": "final", "message": f"Undo is temporarily blocked because the workspace is busy: {exc}"}
-                        except EditEngineError as exc:
-                            event = {"type": "final", "message": f"Undo was not applied: {exc}"}
-                elif action == "run_analysis":
-                    try:
-                        job = _queue_agent_generation(
-                            db,
-                            project,
-                            background_tasks,
-                            resume_from_checkpoint=bool(arguments.get("resume_from_checkpoint", True)),
-                        )
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            event["message"],
-                            metadata={"action": action, "job_id": str(job.id)},
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": event["message"],
-                            "message_id": str(message.id),
-                        }
-                    except ValueError as exc:
-                        event = {"type": "final", "message": str(exc)}
-                elif action in {
-                    "set_recipe_enabled",
-                    "update_recipe_parameters",
-                    "set_analysis_variables",
-                    "rollback_analysis_configuration",
-                }:
-                    try:
-                        mutation = _apply_agent_configuration(
-                            db,
-                            project,
-                            action,
-                            arguments,
-                        )
-                        target_recipe_id = None
-                        if action == "update_recipe_parameters" and arguments.get("recipe_id"):
-                            target_recipe_id = str(arguments["recipe_id"])
-                        elif (
-                            action == "set_recipe_enabled"
-                            and arguments.get("enabled") is True
-                            and arguments.get("recipe_id")
-                        ):
-                            target_recipe_id = str(arguments["recipe_id"])
-                        job = _queue_agent_generation(
-                            db,
-                            project,
-                            background_tasks,
-                            target_recipe_id=target_recipe_id,
-                        )
-                        run_scope = (
-                            f"I’m rerunning {target_recipe_id} and only its stale dependencies"
-                            if target_recipe_id
-                            else "I’m rebuilding the affected report configuration"
-                        )
-                        message_text = f"{mutation['summary']}. {run_scope}, then validating the report."
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            message_text,
-                            metadata={
-                                "action": action,
-                                "arguments": arguments,
-                                "job_id": str(job.id),
-                            },
-                        )
-                        event = {
-                            "type": "action_queued",
-                            "action": action,
-                            "job_id": str(job.id),
-                            "message": message_text,
-                            "message_id": str(message.id),
-                        }
-                    except ValueError as exc:
-                        event = {
-                            "type": "final",
-                            "message": f"I did not change the analysis configuration: {exc}",
-                        }
-                elif action == "queue_guidance":
-                    from app.services.agent_runtime import queue_pending_guidance
-
-                    guidance = str(arguments.get("guidance") or instruction or data.message).strip()
-                    try:
-                        queued = queue_pending_guidance(
-                            db,
-                            project,
-                            guidance,
-                            source="agent",
-                            mutation_authorized=True,
-                        )
-                        message_text = (
-                            f"Queued for after the current job: {queued['content']}"
-                        )
-                        message = record_run_message(
-                            db,
-                            project,
-                            "assistant",
-                            message_text,
-                            metadata={"action": action, "pending_guidance": queued},
-                        )
-                        event = {
-                            "type": "final",
-                            "message": message_text,
-                            "message_id": str(message.id),
-                        }
-                    except ValueError as exc:
-                        event = {"type": "final", "message": str(exc)}
 
             if event["type"] == "final" and not event.get("message_id"):
                 metadata: dict = {}
@@ -777,6 +459,8 @@ async def workspace_agent_stream(
                     metadata["quick_actions"] = event["quick_actions"]
                 if getattr(data, "chat_mode", None):
                     metadata["chat_mode"] = data.chat_mode
+                if event.get("reasoning"):
+                    metadata["reasoning"] = event["reasoning"]
                 message = record_run_message(
                     db,
                     project,
@@ -870,7 +554,20 @@ async def workspace_agent_stream(
                                 "continuation_status": consumed.get("status"),
                             },
                         )
-                target_status = "cancelled" if cancelled else ("paused" if waiting_for_continuation else "completed")
+                turn_failed = (
+                    event_type == "final"
+                    and event.get("ok") is False
+                    and not waiting_for_continuation
+                )
+                target_status = (
+                    "cancelled"
+                    if cancelled
+                    else "paused"
+                    if waiting_for_continuation
+                    else "failed"
+                    if turn_failed
+                    else "completed"
+                )
                 if run.status not in {"completed", "failed", "cancelled"}:
                     transition_agent_run(
                         db,
@@ -879,18 +576,37 @@ async def workspace_agent_stream(
                         event_type=(
                             "run_cancelled" if cancelled
                             else "run_waiting_continuation" if waiting_for_continuation
+                            else "run_failed" if turn_failed
                             else "run_completed"
                         ),
-                        payload={"message_id": event.get("message_id"), "event_type": event_type},
+                        payload={
+                            "message_id": event.get("message_id"),
+                            "event_type": event_type,
+                            "ok": event.get("ok"),
+                            "error": event.get("error"),
+                        },
                     )
-                run.result_payload = {"message_id": event.get("message_id"), "event_type": event_type}
+                run.result_payload = {
+                    "message_id": event.get("message_id"),
+                    "event_type": event_type,
+                    "ok": event.get("ok"),
+                    "error": event.get("error"),
+                }
                 if not telemetry_written:
                     record_run_telemetry(
                         db,
                         run,
                         kind="agent",
                         operation="workspace_turn",
-                        status=("cancelled" if cancelled else "paused" if waiting_for_continuation else "completed"),
+                        status=(
+                            "cancelled"
+                            if cancelled
+                            else "paused"
+                            if waiting_for_continuation
+                            else "failed"
+                            if turn_failed
+                            else "completed"
+                        ),
                         duration_ms=(asyncio.get_running_loop().time() - turn_started) * 1000,
                         provider=settings.llm_provider,
                         model=settings.llm_model,
@@ -1080,234 +796,24 @@ def get_job(
     return job
 
 
-def _queue_agent_planning(
-    db: Session,
-    project: Project,
-    background_tasks: BackgroundTasks,
-) -> Job:
-    from app.api.projects_pipeline import _dispatch_task
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import PLAN_INSTRUCTION, run_agent_job
-
-    files = db.query(UploadedFile).filter(UploadedFile.project_id == project.id).all()
-    data_files = [f for f in files if f.file_role != "analysis_plan"]
-    if not data_files:
-        raise ValueError(
-            "No study data files are registered yet. Import a package dataset or fetch a URL first."
-        )
-
-    job = Job(project_id=project.id, job_type="plan", status="pending")
-    db.add(job)
-    project.status = "planning"
+@router.post("/{project_id}/jobs/{job_id}/cancel", response_model=JobOut)
+def cancel_job(
+    project_id: str,
+    job_id: str,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_current_tenant),
+):
+    """Request cancellation of a running or pending generate job."""
+    get_project_for_tenant(db, project_id, tenant_id)
+    job = db.query(Job).filter(Job.id == job_id, Job.project_id == project_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in {"completed", "failed", "cancelled"}:
+        return job
+    job.status = "cancelled"
     db.commit()
     db.refresh(job)
-    set_agent_state(db, project, "planning", "Planning analysis from acquired study inputs")
-    record_agent_action(
-        db,
-        project,
-        "plan",
-        "started",
-        "Workspace agent requested analysis planning",
-        job_id=str(job.id),
-    )
-    _dispatch_task(
-        run_agent_job,
-        project,
-        job,
-        db,
-        background_tasks,
-        task_kwargs={"instruction": PLAN_INSTRUCTION, "job_kind": "plan"},
-    )
     return job
-
-
-def _queue_agent_edit(
-    db: Session,
-    project: Project,
-    instruction: str,
-    background_tasks: BackgroundTasks,
-) -> Job:
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import edit_instruction, run_agent_job
-
-    job = Job(project_id=project.id, job_type="edit", status="pending")
-    db.add(job)
-    project.status = "rendering"
-    db.commit()
-    db.refresh(job)
-    set_agent_state(db, project, "editing", "Editing generated source", {"instruction": instruction})
-    record_agent_action(
-        db,
-        project,
-        "edit",
-        "started",
-        "Workspace agent is editing generated source",
-        {"instruction": instruction},
-        job_id=str(job.id),
-    )
-    if settings.task_backend.lower() == "celery":
-        run_agent_job.delay(str(project.id), str(job.id), instruction=edit_instruction(instruction), job_kind="edit")
-    elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(run_agent_job, str(project.id), str(job.id), instruction=edit_instruction(instruction), job_kind="edit")
-    else:
-        raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
-    return job
-
-
-def _queue_agent_render(
-    db: Session,
-    project: Project,
-    background_tasks: BackgroundTasks,
-) -> Job:
-    from app.api.projects_pipeline import _dispatch_task
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import run_agent_job
-
-    job = Job(project_id=project.id, job_type="render", status="pending")
-    db.add(job)
-    project.status = "rendering"
-    db.commit()
-    db.refresh(job)
-    set_agent_state(db, project, "rendering", "Rendering report")
-    record_agent_action(db, project, "render", "started", "Workspace agent requested a render", job_id=str(job.id))
-    _dispatch_task(
-        run_agent_job,
-        project,
-        job,
-        db,
-        background_tasks,
-        task_kwargs={
-            "instruction": (
-                "Render the report now with render_report. If it fails, read the errors, "
-                "repair the workspace source, and render again until it passes."
-            ),
-            "job_kind": "render",
-        },
-    )
-    return job
-
-
-def _queue_agent_generation(
-    db: Session,
-    project: Project,
-    background_tasks: BackgroundTasks,
-    target_recipe_id: str | None = None,
-    resume_from_checkpoint: bool = True,
-) -> Job:
-    if not project.analysis_plan:
-        raise ValueError("The project has no analysis plan to execute.")
-
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.tasks.analysis import BUILD_INSTRUCTION, run_agent_job
-
-    job = Job(project_id=project.id, job_type="generate", status="pending")
-    db.add(job)
-    project.status = "generating"
-    db.commit()
-    db.refresh(job)
-    set_agent_state(db, project, "generating", "Rebuilding configured analysis graph")
-    record_agent_action(
-        db,
-        project,
-        "generate",
-        "started",
-        "Workspace agent is rebuilding the configured analysis graph",
-        job_id=str(job.id),
-    )
-    if settings.task_backend.lower() == "celery":
-        run_agent_job.delay(str(project.id), str(job.id), instruction=BUILD_INSTRUCTION, job_kind="generate")
-    elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(run_agent_job, str(project.id), str(job.id), instruction=BUILD_INSTRUCTION, job_kind="generate")
-    else:
-        raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
-    return job
-
-
-def _queue_agent_recipe(
-    db: Session,
-    project: Project,
-    recipe_id: str,
-    background_tasks: BackgroundTasks,
-) -> Job:
-    if not recipe_id:
-        raise ValueError("run_recipe requires recipe_id.")
-    enabled = {
-        step.get("recipe_id")
-        for step in (project.analysis_plan or {}).get("workflow", [])
-        if step.get("enabled")
-    }
-    inventory_id = f"{(project.analysis_plan or {}).get('domain')}.inventory"
-    if recipe_id != inventory_id and recipe_id not in enabled:
-        raise ValueError(f"Recipe is not enabled in the current analysis plan: {recipe_id}")
-    if not project.project_dir:
-        raise ValueError("The project has no generated workspace to execute.")
-
-    from app.services.agent_runtime import record_agent_action, set_agent_state
-    from app.services.recipe_registry import get_recipe
-    from app.tasks.analysis import run_recipe_execution
-
-    if not get_recipe(recipe_id):
-        raise ValueError(f"Unknown recipe: {recipe_id}")
-    job = Job(
-        project_id=project.id,
-        job_type="recipe",
-        status="pending",
-        progress=[{"target_recipe_id": recipe_id}],
-    )
-    db.add(job)
-    project.status = "rendering"
-    db.commit()
-    db.refresh(job)
-    set_agent_state(db, project, "rendering", f"Running targeted recipe {recipe_id}")
-    record_agent_action(
-        db,
-        project,
-        "recipe",
-        "started",
-        f"Queued targeted recipe {recipe_id}",
-        {"recipe_id": recipe_id},
-        job_id=str(job.id),
-    )
-    if settings.task_backend.lower() == "celery":
-        run_recipe_execution.delay(str(project.id), str(job.id), recipe_id=recipe_id)
-    elif settings.task_backend.lower() == "background":
-        background_tasks.add_task(
-            run_recipe_execution,
-            str(project.id),
-            str(job.id),
-            recipe_id=recipe_id,
-        )
-    else:
-        raise HTTPException(status_code=500, detail=f"Unsupported task backend: {settings.task_backend}")
-    return job
-
-
-def _apply_agent_configuration(
-    db: Session,
-    project: Project,
-    action: str,
-    arguments: dict,
-) -> dict:
-    from app.services.agent_runtime import record_agent_action, refresh_project_memory
-    from app.services.analysis_configuration import apply_analysis_configuration
-
-    mutation = apply_analysis_configuration(project, action, arguments)
-    project.analysis_plan = mutation["plan"]
-    db.commit()
-    refresh_project_memory(db, project)
-    record_agent_action(
-        db,
-        project,
-        "analysis_config",
-        "completed",
-        mutation["summary"],
-        {
-            "operation": action,
-            "arguments": arguments,
-            "previous_plan": mutation["previous_plan"],
-        },
-    )
-    return mutation
 
 
 def _workspace_event_snapshot(db: Session, project_id: str) -> dict | None:
