@@ -102,6 +102,9 @@ def test_run_agent_job_completes_without_analysis_plan(monkeypatch, tmp_path):
         code_dir = Path(kwargs["project_dir"]) / "code"
         code_dir.mkdir(parents=True, exist_ok=True)
         (code_dir / "data.R").write_text("# staged study container\n")
+        output_dir = Path(kwargs["project_dir"]) / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "index.html").write_text("<html><body>report</body></html>")
         yield {"type": "token", "token": "Wrote the report from observed data."}
         yield {"type": "final", "message": "Wrote the report from observed data."}
 
@@ -125,6 +128,9 @@ def test_run_agent_job_completes_when_opencode_returns_ok(monkeypatch, tmp_path)
 
     async def fake_stream(**kwargs):
         calls["count"] += 1
+        output_dir = Path(kwargs["project_dir"]) / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "index.html").write_text("<html><body>report</body></html>")
         yield {"type": "final", "message": "OpenCode finished.", "ok": True}
 
     _patch_opencode(monkeypatch, factory, fake_stream)
@@ -134,6 +140,23 @@ def test_run_agent_job_completes_when_opencode_returns_ok(monkeypatch, tmp_path)
     assert calls["count"] == 1
     verify = _project_row(factory, pid)
     assert verify["status"] == "completed"
+
+
+def test_run_agent_job_fails_when_report_artifact_is_missing(monkeypatch, tmp_path):
+    engine, factory = _db()
+    monkeypatch.setattr("app.tasks.analysis.settings.projects_dir", str(tmp_path / "projects"))
+    pid = _seed_project(factory, tmp_path, status="generating")
+    jid = _seed_job(factory, pid, "generate")
+
+    async def fake_stream(**kwargs):
+        yield {"type": "final", "message": "OpenCode finished.", "ok": True}
+
+    _patch_opencode(monkeypatch, factory, fake_stream)
+
+    result = run_agent_job(pid, jid, instruction="Compare the groups", job_kind="generate")
+    assert result["status"] == "failed"
+    verify = _project_row(factory, pid)
+    assert verify["status"] == "failed"
 
 
 def test_run_agent_job_fails_when_opencode_errors(monkeypatch, tmp_path):

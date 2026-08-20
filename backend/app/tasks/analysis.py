@@ -98,6 +98,10 @@ def edit_instruction(instruction: str) -> str:
     )
 
 
+_REPORT_REQUIRED_JOB_KINDS = frozenset({"generate", "render"})
+_REPORT_ARTIFACT = Path("output/index.html")
+
+
 @task_decorator
 def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat_mode: str = "build", **kwargs):
     """Run one OpenCode turn for a pipeline job.
@@ -279,6 +283,29 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
 
         cancelled = _job_cancelled()
         db.refresh(project)
+        pending = ((project.agent_memory or {}).get("pending_clarifications") or None)
+        question = (final_metadata or {}).get("awaiting_answer")
+        awaiting_clarification = bool(pending) or (
+            isinstance(question, dict) and bool(question.get("question"))
+        )
+
+        # OpenCode success only means that the agent stopped without an
+        # API/runtime error. Report-producing jobs also require the published
+        # report artifact. Clarification turns remain intentionally incomplete
+        # and continue through the existing question flow.
+        report_path = project_dir / _REPORT_ARTIFACT
+        if (
+            not cancelled
+            and final_metadata.get("ok") is True
+            and job_kind in _REPORT_REQUIRED_JOB_KINDS
+            and not awaiting_clarification
+            and not report_path.is_file()
+        ):
+            artifact_error = "Required completion artifact missing: output/index.html"
+            final_metadata["ok"] = False
+            final_metadata["error"] = artifact_error
+            progress_log.append({"step": "artifact", "status": "failed", "detail": artifact_error})
+
         failed = (not cancelled) and final_metadata.get("ok") is False
 
         if cancelled:
@@ -295,8 +322,6 @@ def run_agent_job(*args, instruction: str = "", job_kind: str = "generate", chat
                 final_text or "The run finished without a summary.",
                 metadata={"job_id": job_id, "kind": job_kind, **(final_metadata or {})},
             )
-            pending = ((project.agent_memory or {}).get("pending_clarifications") or None)
-            question = (final_metadata or {}).get("awaiting_answer")
             if pending or (isinstance(question, dict) and question.get("question")):
                 if isinstance(question, dict) and question.get("question") and not pending:
                     memory = dict(project.agent_memory or {})
