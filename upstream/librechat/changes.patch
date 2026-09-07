@@ -1,0 +1,3593 @@
+diff --git a/api/server/controllers/auth/LogoutController.js b/api/server/controllers/auth/LogoutController.js
+index cdf540456985b9055873cec518e2fc7b4c326714..4bfa4dc0be2851d2f77061eba5b02d6c3a4182bf 100644
+--- a/api/server/controllers/auth/LogoutController.js
++++ b/api/server/controllers/auth/LogoutController.js
+@@ -80,6 +80,7 @@ const logoutController = async (req, res) => {
+     const { status, message } = logout;
+ 
+     res.clearCookie('refreshToken');
++    res.clearCookie('omicsbase_openhands', { path: '/' });
+     res.clearCookie('openid_access_token');
+     res.clearCookie('openid_id_token');
+     res.clearCookie('openid_user_id');
+diff --git a/api/server/experimental.js b/api/server/experimental.js
+index ce21fae0ddcaa077de9d0c7daa39ea23d197f62d..a78b00f1415823ed8634c78f6e3a0f682b42b5ea 100644
+--- a/api/server/experimental.js
++++ b/api/server/experimental.js
+@@ -531,6 +531,7 @@ if (cluster.isMaster) {
+     app.use('/api/convos', routes.convos);
+     app.use('/api/presets', routes.presets);
+     app.use('/api/projects', routes.projects);
++    app.use('/api/notes', routes.notes);
+     app.use('/api/prompts', routes.prompts);
+     app.use('/api/skills', routes.skills);
+     app.use('/api/categories', routes.categories);
+diff --git a/api/server/index.js b/api/server/index.js
+index 5f50c0d04c8d05eef350bd113ba943967718bf11..a9be87558f4f1a24a0292a367a8e67a0de649025 100644
+--- a/api/server/index.js
++++ b/api/server/index.js
+@@ -385,6 +385,7 @@ const startServer = async () => {
+   app.use('/api/convos', routes.convos);
+   app.use('/api/presets', routes.presets);
+   app.use('/api/projects', routes.projects);
++  app.use('/api/notes', routes.notes);
+   app.use('/api/prompts', routes.prompts);
+   app.use('/api/skills', routes.skills);
+   app.use('/api/categories', routes.categories);
+diff --git a/api/server/routes/index.js b/api/server/routes/index.js
+index c3b6c4bb8e7772c11caeec3d48e3d78a599fd8ce..368305df4c237c200ee21f14adeca77a514062ae 100644
+--- a/api/server/routes/index.js
++++ b/api/server/routes/index.js
+@@ -18,6 +18,7 @@ const messages = require('./messages');
+ const memories = require('./memories');
+ const presets = require('./presets');
+ const projects = require('./projects');
++const notes = require('./notes');
+ const prompts = require('./prompts');
+ const schedules = require('./schedules');
+ const skills = require('./skills');
+@@ -74,6 +75,7 @@ module.exports = {
+   models,
+   prompts,
+   projects,
++  notes,
+   schedules,
+   skills,
+   actions,
+diff --git a/api/server/routes/projects.js b/api/server/routes/projects.js
+index fd782a1ba5d5ede2900982d6c31b385db22f3994..a4cadecaa6af83ebad35303ace490bd09e447320 100644
+--- a/api/server/routes/projects.js
++++ b/api/server/routes/projects.js
+@@ -1,5 +1,5 @@
+ const express = require('express');
+-const { createProjectHandlers } = require('@librechat/api');
++const { createProjectHandlers, createWorkspaceHandler } = require('@librechat/api');
+ const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
+ const db = require('~/models');
+ 
+@@ -18,6 +18,7 @@ router.use(requireJwtAuth);
+ router.get('/', handlers.listProjects);
+ router.post('/', handlers.createProject);
+ router.put('/conversations/:conversationId', handlers.assignConversationToProject);
++router.post('/:projectId/workspace', createWorkspaceHandler({ getChatProject: db.getChatProject }));
+ router.get('/:projectId', handlers.getProject);
+ router.patch('/:projectId', handlers.updateProject);
+ router.delete('/:projectId', handlers.deleteProject);
+diff --git a/api/server/services/Files/process.js b/api/server/services/Files/process.js
+index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c82350d30 100644
+--- a/api/server/services/Files/process.js
++++ b/api/server/services/Files/process.js
+@@ -484,6 +484,7 @@ const processImageFile = async ({ req, res, metadata, returnFile = false, sseStr
+       filepath,
+       ...storageMetadata,
+       filename: file.originalname,
++      conversationId: metadata?.conversationId || req.body?.conversationId || undefined,
+       context: FileContext.message_attachment,
+       source,
+       type: `image/${appConfig.imageOutputType}`,
+@@ -495,6 +496,16 @@ const processImageFile = async ({ req, res, metadata, returnFile = false, sseStr
+     true,
+   );
+ 
++  const convoId = metadata?.conversationId || req.body?.conversationId;
++  if (convoId && convoId !== 'new') {
++    try {
++      const { bridgeFileToThread } = require('~/server/services/NoteCells/noteDataBridge');
++      await bridgeFileToThread({ conversationId: convoId, userId: req.user.id, file: result });
++    } catch (bridgeErr) {
++      logger.warn('[processFileUpload] Note data bridge warning:', bridgeErr.message);
++    }
++  }
++
+   if (returnFile) {
+     return result;
+   }
+@@ -845,6 +856,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+         });
+       }
+       const result = await db.createFile(fileInfo, true);
++      const convoId = metadata?.conversationId || req.body?.conversationId;
++      if (convoId && convoId !== 'new') {
++        try {
++          const { bridgeFileToThread } = require('~/server/services/NoteCells/noteDataBridge');
++          await bridgeFileToThread({ conversationId: convoId, userId: req.user.id, file: result });
++        } catch (bridgeErr) {
++          logger.warn('[processAgentFileUpload] Note data bridge warning:', bridgeErr.message);
++        }
++      }
+       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
+     };
+ 
+@@ -1076,6 +1096,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+       filepath,
+       ...storageMetadata,
+       filename: filename ?? sanitizeFilename(file.originalname),
++      conversationId: metadata?.conversationId || req.body?.conversationId || undefined,
+       context: messageAttachment ? FileContext.message_attachment : FileContext.agents,
+       model: messageAttachment ? undefined : req.body.model,
+       metadata: fileInfoMetadata,
+@@ -1090,6 +1111,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+   };
+ 
+   const result = await db.createFile(fileInfo, true);
++  const convoId = metadata?.conversationId || req.body?.conversationId;
++  if (convoId && convoId !== 'new') {
++    try {
++      const { bridgeFileToThread } = require('~/server/services/NoteCells/noteDataBridge');
++      await bridgeFileToThread({ conversationId: convoId, userId: req.user.id, file: result });
++    } catch (bridgeErr) {
++      logger.warn('[processAgentFileUpload] Note data bridge warning:', bridgeErr.message);
++    }
++  }
+ 
+   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
+ };
+diff --git a/client/index.html b/client/index.html
+index 7ea758aaccfe91046a3c19f1637323af689d00d7..48287ad77eebe4a1fe41408fc42ce3ab92b560ec 100644
+--- a/client/index.html
++++ b/client/index.html
+@@ -15,6 +15,13 @@
+     <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
+     <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
+     <link rel="apple-touch-icon" href="assets/apple-touch-icon-180x180.png" />
++    <!-- Soft Daisy display face (OmicsBase1): Fraunces for headings / greetings -->
++    <link rel="preconnect" href="https://fonts.googleapis.com" />
++    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
++    <link
++      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,100..900,0..100,0..1&display=swap"
++      rel="stylesheet"
++    />
+     <meta
+       name="viewport"
+       content="width=device-width, initial-scale=1, interactive-widget=resizes-content"
+@@ -33,14 +40,14 @@
+       let backgroundColor;
+ 
+       if (theme === 'dark') {
+-        backgroundColor = '#0d0d0d';
++        backgroundColor = '#05080c';
+       } else if (theme === 'light') {
+-        backgroundColor = '#ffffff';
++        backgroundColor = '#fafafa';
+       } else if (theme === 'system') {
+         const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
+-        backgroundColor = prefersDarkScheme ? '#0d0d0d' : '#ffffff';
++        backgroundColor = prefersDarkScheme ? '#05080c' : '#fafafa';
+       } else {
+-        backgroundColor = '#ffffff';
++        backgroundColor = '#fafafa';
+       }
+ 
+       loadingContainerStyle.innerHTML = `
+diff --git a/client/src/components/Auth/AuthLayout.tsx b/client/src/components/Auth/AuthLayout.tsx
+index 57fa4e5d86c5495994b731498ccbe60427ffc4b3..8c6e9d97f79ad804b9ee179a514108b8c798c4fe 100644
+--- a/client/src/components/Auth/AuthLayout.tsx
++++ b/client/src/components/Auth/AuthLayout.tsx
+@@ -60,40 +60,46 @@ function AuthLayout({
+   };
+ 
+   return (
+-    <div className="relative flex min-h-screen flex-col bg-surface-primary">
+-      <Banner />
+-      <BlinkAnimation active={isFetching}>
+-        <div className="mt-6 h-10 w-full bg-cover">
+-          <img
+-            src="assets/logo.svg"
+-            className="h-full w-full object-contain"
+-            alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'LibreChat' })}
+-          />
+-        </div>
+-      </BlinkAnimation>
+-      <DisplayError />
+-      <div className="absolute bottom-0 left-0 md:m-4">
+-        <ThemeSelector />
++    <div className="relative flex min-h-screen flex-col overflow-hidden bg-presentation">
++      <div className="omicsbase-aurora" aria-hidden="true">
++        <div className="omicsbase-aurora-glow" />
++        <div className="omicsbase-aurora-vignette" />
+       </div>
++      <div className="relative z-[1] flex min-h-screen flex-col">
++        <Banner />
++        <BlinkAnimation active={isFetching}>
++          <div className="mt-6 h-10 w-full bg-cover">
++            <img
++              src="assets/logo.svg"
++              className="h-full w-full object-contain"
++              alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'LibreChat' })}
++            />
++          </div>
++        </BlinkAnimation>
++        <DisplayError />
++        <div className="absolute bottom-0 left-0 md:m-4">
++          <ThemeSelector />
++        </div>
+ 
+-      <main className="flex flex-grow items-center justify-center">
+-        <div className="w-authPageWidth overflow-hidden bg-surface-primary px-6 py-4 sm:max-w-md sm:rounded-lg">
+-          {!hasStartupConfigError && !isFetching && header && (
+-            <h1
+-              className="mb-4 text-center text-3xl font-semibold text-text-primary"
+-              style={{ userSelect: 'none' }}
+-            >
+-              {header}
+-            </h1>
+-          )}
+-          {children}
+-          {!pathname.includes('2fa') &&
+-            (pathname.includes('login') || pathname.includes('register')) && (
+-              <SocialLoginRender startupConfig={startupConfig} />
++        <main className="flex flex-grow items-center justify-center">
++          <div className="w-authPageWidth overflow-hidden rounded-xl border border-border-light/60 bg-surface-primary/80 px-6 py-4 shadow-sm backdrop-blur-sm sm:max-w-md">
++            {!hasStartupConfigError && !isFetching && header && (
++              <h1
++                className="mb-4 text-center font-display text-3xl font-semibold tracking-tight text-text-primary"
++                style={{ userSelect: 'none' }}
++              >
++                {header}
++              </h1>
+             )}
+-        </div>
+-      </main>
+-      <Footer startupConfig={startupConfig} />
++            {children}
++            {!pathname.includes('2fa') &&
++              (pathname.includes('login') || pathname.includes('register')) && (
++                <SocialLoginRender startupConfig={startupConfig} />
++              )}
++          </div>
++        </main>
++        <Footer startupConfig={startupConfig} />
++      </div>
+     </div>
+   );
+ }
+diff --git a/client/src/components/Auth/VerifyEmail.tsx b/client/src/components/Auth/VerifyEmail.tsx
+index bba11455a7ef60c53798b1955c65274925b996ff..a1f096cd2fabe9ee7da3343c12ca656c26cc5c45 100644
+--- a/client/src/components/Auth/VerifyEmail.tsx
++++ b/client/src/components/Auth/VerifyEmail.tsx
+@@ -78,7 +78,7 @@ function RequestPasswordReset() {
+ 
+   const VerificationSuccess = () => (
+     <div className="flex flex-col items-center justify-center">
+-      <h1 className="mb-4 text-center text-3xl font-semibold text-text-primary">{headerText}</h1>
++      <h1 className="mb-4 text-center font-display text-3xl font-semibold tracking-tight text-text-primary">{headerText}</h1>
+       {countdown > 0 && (
+         <p className="text-center text-lg text-text-secondary">
+           {localize('com_auth_email_verification_redirecting', { 0: countdown.toString() })}
+@@ -103,7 +103,7 @@ function RequestPasswordReset() {
+ 
+   const VerificationInProgress = () => (
+     <div className="flex flex-col items-center justify-center">
+-      <h1 className="mb-4 text-center text-3xl font-semibold text-text-primary">
++      <h1 className="mb-4 text-center font-display text-3xl font-semibold tracking-tight text-text-primary">
+         {localize('com_auth_email_verification_in_progress')}
+       </h1>
+       <div className="mt-4 flex justify-center">
+diff --git a/client/src/components/Chat/Footer.tsx b/client/src/components/Chat/Footer.tsx
+index 31cc0d48eee10aadd6e8f60df5cb0958ca773382..e731f41c819f30b2a3dff74a27fffe5519e49701 100644
+--- a/client/src/components/Chat/Footer.tsx
++++ b/client/src/components/Chat/Footer.tsx
+@@ -38,12 +38,17 @@ function Footer({ className, startupConfig }: FooterProps) {
+ 
+   const mainContentParts = (
+     typeof config?.customFooter === 'string'
+-      ? config.customFooter
++      ? config.customFooter.trim()
++        ? config.customFooter
++        : ''
+       : '[LibreChat ' +
+         Constants.VERSION +
+         '](https://librechat.ai) - ' +
+         localize('com_ui_latest_footer')
+-  ).split('|');
++  )
++    .split('|')
++    .map((part) => part.trim())
++    .filter(Boolean);
+ 
+   useEffect(() => {
+     if (config?.analyticsGtmId != null && typeof window.google_tag_manager === 'undefined') {
+diff --git a/client/src/components/Chat/Input/ChatForm.tsx b/client/src/components/Chat/Input/ChatForm.tsx
+index 1190a9fc96fb43b80b3fe71c8f842447e5fa3d65..f4ce1c75fbc755eaf2057eb44809cde8d67a1fb9 100644
+--- a/client/src/components/Chat/Input/ChatForm.tsx
++++ b/client/src/components/Chat/Input/ChatForm.tsx
+@@ -43,7 +43,7 @@ import { useGetStartupConfig } from '~/data-provider';
+ import { mainTextareaId, BadgeItem } from '~/common';
+ import PendingSteerChips from './PendingSteerChips';
+ import PendingQuoteChips from './PendingQuoteChips';
+-import AttachFileChat from './Files/AttachFileChat';
++import ComposerPlusMenu from './ComposerPlusMenu';
+ import useSteering from '~/hooks/Chat/useSteering';
+ import FileFormChat from './Files/FileFormChat';
+ import InFlightSteers from './InFlightSteers';
+@@ -512,7 +512,7 @@ const ChatForm = memo(function ChatForm({
+   const baseClasses = useMemo(
+     () =>
+       cn(
+-        'md:py-3.5 m-0 w-full resize-none py-[13px] placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
++        'md:py-3.5 m-0 w-full resize-none py-[13px] text-[17px] leading-6 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
+         isCollapsed ? 'max-h-[52px]' : 'max-h-[45vh] md:max-h-[55vh]',
+         isMoreThanThreeRows ? 'pl-5' : 'px-5',
+       ),
+@@ -704,12 +704,13 @@ const ChatForm = memo(function ChatForm({
+                 )}
+               >
+                 <div className={`${isRTL ? 'mr-2' : 'ml-2'}`}>
+-                  <AttachFileChat
++                  <ComposerPlusMenu
+                     conversation={conversation}
+                     disableInputs={disableInputs}
+                     files={files}
+                     setFiles={setFiles}
+                     setFilesLoading={setFilesLoading}
++                    methods={methods}
+                   />
+                 </div>
+                 <BadgeRow
+diff --git a/client/src/components/Chat/Landing.tsx b/client/src/components/Chat/Landing.tsx
+index 8df1f1e995b853637db49cf5b88b45d7209cb3f8..0b14045521f49e5f2ad01b88317b41a32541f54c 100644
+--- a/client/src/components/Chat/Landing.tsx
++++ b/client/src/components/Chat/Landing.tsx
+@@ -189,7 +189,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding:
+               <SplitText
+                 key={`split-text-${name}`}
+                 text={name}
+-                className={`${getTextSizeClass(name)} font-medium text-text-primary`}
++                className={`${getTextSizeClass(name)} font-display font-medium tracking-tight text-text-primary`}
+                 delay={50}
+                 textAlign="center"
+                 animationFrom={greetingAnimationFrom}
+@@ -204,7 +204,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding:
+             <SplitText
+               key={`split-text-${greetingText}${user?.name ? '-user' : ''}`}
+               text={greetingText}
+-              className={`${getTextSizeClass(greetingText)} font-medium text-text-primary`}
++              className={`${getTextSizeClass(greetingText)} font-display font-medium tracking-tight text-text-primary`}
+               delay={50}
+               textAlign="center"
+               animationFrom={greetingAnimationFrom}
+diff --git a/client/src/components/Chat/Messages/Content/ToolCall.tsx b/client/src/components/Chat/Messages/Content/ToolCall.tsx
+index 25f0d3d3cc2f04c5540f310c2562ff7336576ee9..ee1de0b227504379978239a8a007dc24ab280299 100644
+--- a/client/src/components/Chat/Messages/Content/ToolCall.tsx
++++ b/client/src/components/Chat/Messages/Content/ToolCall.tsx
+@@ -18,6 +18,7 @@ import { useToolCallIntent } from './Parts/intent';
+ import { AttachmentGroup } from './Parts';
+ import ToolCallInfo from './ToolCallInfo';
+ import ProgressText from './ProgressText';
++import RCellBlock from '~/components/Messages/Content/RCellBlock';
+ import { logger } from '~/utils';
+ import store from '~/store';
+ 
+@@ -254,6 +255,79 @@ export default function ToolCall({
+     return localize('com_assistants_completed_function', { 0: function_name });
+   };
+ 
++  const isRCellTool = function_name === 'execute_r_cell' || name?.includes('execute_r_cell');
++  const parsedRCode = useMemo(() => {
++    if (!_args) return '';
++    if (typeof _args === 'object' && _args !== null) {
++      return String((_args as Record<string, unknown>).code || '').trim();
++    }
++    if (typeof _args === 'string') {
++      try {
++        const obj = JSON.parse(_args);
++        if (obj && typeof obj === 'object') {
++          return String((obj as Record<string, unknown>).code || '').trim();
++        }
++      } catch {
++        // Streamed JSON chunk: extract code content while streaming
++        const match = /"code"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(_args);
++        if (match && match[1]) {
++          try {
++            return JSON.parse(`"${match[1]}"`);
++          } catch {
++            return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
++          }
++        }
++        if (!_args.trim().startsWith('{')) {
++          return _args.trim();
++        }
++        return '';
++      }
++    }
++    return '';
++  }, [_args]);
++
++  const parsedCellId = useMemo(() => {
++    if (!_args) return undefined;
++    if (typeof _args === 'object' && _args !== null) {
++      const id = String((_args as Record<string, unknown>).cell_id || '').trim();
++      return id || undefined;
++    }
++    if (typeof _args === 'string') {
++      try {
++        const obj = JSON.parse(_args);
++        if (obj && typeof obj === 'object') {
++          const id = String((obj as Record<string, unknown>).cell_id || '').trim();
++          return id || undefined;
++        }
++      } catch {
++        const match = /"cell_id"\s*:\s*"([^"\\]*)"/.exec(_args);
++        if (match && match[1]) {
++          return match[1].trim() || undefined;
++        }
++      }
++    }
++    return undefined;
++  }, [_args]);
++
++  if (isRCellTool && (parsedRCode || output)) {
++    const metaMatch = output
++      ? /<!--\s*noteCell\s+cellId=([^\s]+)\s+executionId=([^\s]+)/.exec(output)
++      : null;
++    return (
++      <div className="my-2 w-full">
++        <RCellBlock
++          initialCode={parsedRCode}
++          initialOutput={output ?? undefined}
++          isAgentGenerated={true}
++          isParentRunning={phase === 'running'}
++          cellId={metaMatch?.[1] || parsedCellId}
++          executionId={metaMatch?.[2]}
++          blockKey={toolCallId ? `tool-${toolCallId}` : undefined}
++        />
++      </div>
++    );
++  }
++
+   if (!isLast && (!function_name || function_name.length === 0) && !output) {
+     return null;
+   }
+diff --git a/client/src/components/Chat/Presentation.tsx b/client/src/components/Chat/Presentation.tsx
+index 95a10655cc774bafca2f46bbacdf0d7916c53248..d7145bd9fdfcba0f4a360011bdeabf742dbc762a 100644
+--- a/client/src/components/Chat/Presentation.tsx
++++ b/client/src/components/Chat/Presentation.tsx
+@@ -141,13 +141,17 @@ export default function Presentation({ children }: { children: React.ReactNode }
+ 
+   return (
+     <DragDropWrapper className="relative flex w-full grow overflow-hidden bg-presentation">
++      <div className="omicsbase-aurora" aria-hidden="true">
++        <div className="omicsbase-aurora-glow" />
++        <div className="omicsbase-aurora-vignette" />
++      </div>
+       <AppChatSurface>
+         <ParentSubagentsProvider
+           conversationId={conversationId ?? ''}
+           enabled={conversationEndpoint === EModelEndpoint.agents && conversationAgentId != null}
+         >
+           <SidePanelGroup panel={panelElement}>
+-            <main className="flex h-full flex-col overflow-y-auto" role="main">
++            <main className="relative z-[1] flex h-full flex-col overflow-y-auto" role="main">
+               {children}
+             </main>
+           </SidePanelGroup>
+diff --git a/client/src/components/Chat/ProjectLandingChip.tsx b/client/src/components/Chat/ProjectLandingChip.tsx
+index acd3b7782690d76a32d6fc120c06d7200d573e91..47a899cce5eae0a08018839ef0840c2728f89aee 100644
+--- a/client/src/components/Chat/ProjectLandingChip.tsx
++++ b/client/src/components/Chat/ProjectLandingChip.tsx
+@@ -1,6 +1,6 @@
+ import { useCallback, useMemo } from 'react';
+-import { Folder, X } from 'lucide-react';
+-import { useSearchParams } from 'react-router-dom';
++import { Folder, X, Layout } from 'lucide-react';
++import { useNavigate, useSearchParams } from 'react-router-dom';
+ import { ControlCombobox, TooltipAnchor } from '@librechat/client';
+ import type { TChatProject } from 'librechat-data-provider';
+ import type { OptionWithIcon } from '~/common';
+@@ -16,6 +16,7 @@ import { useLocalize } from '~/hooks';
+  */
+ export default function ProjectLandingChip({ project }: { project: TChatProject }) {
+   const localize = useLocalize();
++  const navigate = useNavigate();
+   const { conversation, setConversation } = useChatContext();
+   const [searchParams, setSearchParams] = useSearchParams();
+ 
+@@ -53,7 +54,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject
+   );
+ 
+   return (
+-    <div className="flex items-center gap-0.5 px-2.5 pt-2">
++    <div className="flex items-center gap-1 px-2.5 pt-2">
+       <ControlCombobox
+         selectId="project-landing-select"
+         selectedValue={project._id}
+@@ -76,6 +77,21 @@ export default function ProjectLandingChip({ project }: { project: TChatProject
+         className="h-8 w-auto min-w-[7.5rem] max-w-[14rem] gap-1.5 rounded-full border-0 bg-transparent px-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+         popoverClassName="animate-popover-bottom min-w-64 rounded-2xl shadow-xl"
+       />
++
++      <TooltipAnchor
++        description="Switch to Study Workspace (ADE Deliverable)"
++        render={
++          <button
++            type="button"
++            onClick={() => navigate(`/projects/${encodeURIComponent(project._id)}?tab=workspace`)}
++            className="flex h-7 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
++          >
++            <Layout className="h-3.5 w-3.5" />
++            <span className="hidden sm:inline">Workspace</span>
++          </button>
++        }
++      />
++
+       <TooltipAnchor
+         description={localize('com_ui_remove_from_project')}
+         render={
+@@ -92,3 +108,4 @@ export default function ProjectLandingChip({ project }: { project: TChatProject
+     </div>
+   );
+ }
++
+diff --git a/client/src/components/Projects/ProjectWorkspace.tsx b/client/src/components/Projects/ProjectWorkspace.tsx
+index 2f5a0fdd2764af2f4bbbb6950293e30ed168b35d..df75174f4e78f2515e1bec26309ced6693a2aff2 100644
+--- a/client/src/components/Projects/ProjectWorkspace.tsx
++++ b/client/src/components/Projects/ProjectWorkspace.tsx
+@@ -1,10 +1,10 @@
+-import { useCallback, useId, useMemo, useState } from 'react';
++import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+ import { useRecoilValue } from 'recoil';
+ import * as Ariakit from '@ariakit/react';
+ import { useQueryClient } from '@tanstack/react-query';
+-import { useNavigate, useParams } from 'react-router-dom';
++import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+ import { Constants, QueryKeys } from 'librechat-data-provider';
+-import { ArrowLeft, ArrowUpDown, Check, Folder, Pencil, Plus, Trash2 } from 'lucide-react';
++import { ArrowLeft, ArrowUpDown, Check, Folder, Pencil, Plus, Trash2, MessageSquare, Layout } from 'lucide-react';
+ import { Button, Spinner, DropdownPopup, TooltipAnchor, useMediaQuery } from '@librechat/client';
+ import type { ConversationListResponse } from 'librechat-data-provider';
+ import type { MenuItemProps, RenderProp } from '~/common';
+@@ -13,8 +13,10 @@ import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+ import ProjectDeleteDialog from './ProjectDeleteDialog';
+ import ProjectEditDialog from './ProjectEditDialog';
+ import { useLocalize, useNewConvo } from '~/hooks';
++import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
+ import { cn, clearMessagesCache } from '~/utils';
+ import ProjectChatList from './ProjectChatList';
++import WorkspaceCanvas from './WorkspaceCanvas';
+ import store from '~/store';
+ 
+ type ChatSortField = 'updatedAt' | 'createdAt';
+@@ -39,6 +41,28 @@ export default function ProjectWorkspace() {
+   const navigate = useNavigate();
+   const queryClient = useQueryClient();
+   const { projectId = '' } = useParams();
++  const { setSidebarOpen } = useSidebarToggle();
++  const [searchParams, setSearchParams] = useSearchParams();
++  const activeTab = (searchParams.get('tab') as 'notes' | 'workspace') || 'notes';
++
++  useEffect(() => {
++    if (activeTab === 'workspace') {
++      setSidebarOpen(false);
++    }
++  }, [activeTab, setSidebarOpen]);
++
++  const setActiveTab = useCallback((tab: 'notes' | 'workspace') => {
++    setSearchParams((prev) => {
++      const next = new URLSearchParams(prev);
++      if (tab === 'notes') {
++        next.delete('tab');
++      } else {
++        next.set('tab', tab);
++      }
++      return next;
++    }, { replace: true });
++  }, [setSearchParams]);
++
+   const [sortBy, setSortBy] = useState<ChatSortField>('updatedAt');
+   const [isEditOpen, setIsEditOpen] = useState(false);
+   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+@@ -135,6 +159,24 @@ export default function ProjectWorkspace() {
+     );
+   }
+ 
++  if (activeTab === 'workspace') {
++    return (
++      <main className="flex h-full min-h-0 flex-col overflow-hidden bg-presentation text-text-primary">
++        <ProjectEditDialog open={isEditOpen} onOpenChange={setIsEditOpen} project={project} />
++        <ProjectDeleteDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen} project={project} />
++
++        {/* Edge-to-Edge Full Bleed Studio with Single Unified Header */}
++        <div className="flex flex-1 min-h-0 w-full overflow-hidden">
++          <WorkspaceCanvas
++            project={project}
++            onNavigateNotes={() => setActiveTab('notes')}
++            onEditProject={() => setIsEditOpen(true)}
++          />
++        </div>
++      </main>
++    );
++  }
++
+   return (
+     <main className="flex h-full min-h-0 flex-col overflow-y-auto bg-presentation text-text-primary">
+       <header className="sticky top-0 z-10 border-b border-border-light bg-presentation">
+@@ -159,7 +201,7 @@ export default function ProjectWorkspace() {
+             <Folder className="h-6 w-6" aria-hidden="true" />
+           </span>
+           <div className="min-w-0 flex-1 pt-0.5">
+-            <h1 className="truncate text-balance text-2xl font-semibold tracking-tight text-text-primary">
++            <h1 className="truncate text-balance font-display text-2xl font-semibold tracking-tight text-text-primary">
+               {project.name}
+             </h1>
+             {project.description ? (
+@@ -213,11 +255,37 @@ export default function ProjectWorkspace() {
+         <ProjectEditDialog open={isEditOpen} onOpenChange={setIsEditOpen} project={project} />
+         <ProjectDeleteDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen} project={project} />
+ 
++        {/* Mode Switcher Tabs */}
++        <div className="mt-7 flex items-center justify-between border-b border-border-light pb-3">
++          <div className="flex items-center gap-2">
++            <button
++              type="button"
++              onClick={() => setActiveTab('notes')}
++              className="flex items-center gap-2 rounded-xl border border-border-light bg-surface-secondary px-3.5 py-2 text-sm font-medium text-text-primary shadow-xs transition-all"
++            >
++              <MessageSquare className="h-4 w-4 text-primary" />
++              <span>Notes</span>
++              <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-xs text-text-secondary">
++                {project.conversationCount}
++              </span>
++            </button>
++
++            <button
++              type="button"
++              onClick={() => setActiveTab('workspace')}
++              className="flex items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium text-text-secondary transition-all hover:text-text-primary"
++            >
++              <Layout className="h-4 w-4 text-primary" />
++              <span>Workspace</span>
++            </button>
++          </div>
++        </div>
++
+         <button
+           type="button"
+           onClick={startProjectChat}
+           className={cn(
+-            'mt-7 flex w-full items-center gap-3 rounded-2xl border border-border-light bg-surface-secondary px-3.5 py-3 text-left',
++            'mt-6 flex w-full items-center gap-3 rounded-2xl border border-border-light bg-surface-secondary px-3.5 py-3 text-left',
+             'transition-colors duration-150 hover:bg-surface-hover',
+             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+           )}
+diff --git a/client/src/components/SidePanel/SidePanelGroup.tsx b/client/src/components/SidePanel/SidePanelGroup.tsx
+index aa611b145289dd5b03381c0dce200e2bcd5da3a5..6db6dc5b47a0f4768572229c188ccd69d32c6710 100644
+--- a/client/src/components/SidePanel/SidePanelGroup.tsx
++++ b/client/src/components/SidePanel/SidePanelGroup.tsx
+@@ -30,7 +30,7 @@ const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
+         orientation="horizontal"
+         defaultLayout={defaultLayout}
+         onLayoutChanged={onLayoutChanged}
+-        className="relative flex-1 bg-presentation"
++        className="relative z-[1] flex-1 bg-transparent"
+       >
+         <ResizablePanel defaultSize="50" minSize={minSizeMain} id="messages-view">
+           {children}
+diff --git a/client/src/hooks/Conversations/useGenerateConvo.ts b/client/src/hooks/Conversations/useGenerateConvo.ts
+index abe321575345248c0803f50eef86ba50d75c97a2..752f72f021c3d65957f270302dbc2bbb73256256 100644
+--- a/client/src/hooks/Conversations/useGenerateConvo.ts
++++ b/client/src/hooks/Conversations/useGenerateConvo.ts
+@@ -67,7 +67,7 @@ const useGenerateConvo = ({
+     } = {}) => {
+       let conversation = {
+         conversationId: 'new',
+-        title: 'New Chat',
++        title: 'New Note',
+         endpoint: null,
+         ...template,
+         createdAt: '',
+diff --git a/client/src/hooks/Files/useFileHandling.ts b/client/src/hooks/Files/useFileHandling.ts
+index 650cef6fc1746cecd68b0bb6030a1a18229bad04..8f15e1a181ce39ebd7dc0167a66f03d7c816ab5f 100644
+--- a/client/src/hooks/Files/useFileHandling.ts
++++ b/client/src/hooks/Files/useFileHandling.ts
+@@ -402,6 +402,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
+       if (conversation?.agent_id != null && formData.get('agent_id') == null) {
+         formData.append('agent_id', conversation.agent_id);
+       }
++      if (conversation?.conversationId != null && formData.get('conversationId') == null) {
++        formData.append('conversationId', conversation.conversationId);
++      }
+ 
+       uploadWithRecovery(formData, extendedFile.file_id, uploadLifecycle);
+       return;
+diff --git a/client/src/hooks/SSE/useResumableSSE.ts b/client/src/hooks/SSE/useResumableSSE.ts
+index 503c4fa8e51637b0ffc4fc0cc3df8c3135463256..c53543940a76e2d4b963569ea84dd33a5cfba586 100644
+--- a/client/src/hooks/SSE/useResumableSSE.ts
++++ b/client/src/hooks/SSE/useResumableSSE.ts
+@@ -528,7 +528,7 @@ const buildOptimisticConversation = (
+     ...submission.conversation,
+     conversationId,
+     endpoint: submission.conversation.endpoint ?? null,
+-    title: submission.conversation.title ?? 'New Chat',
++    title: submission.conversation.title ?? 'New Note',
+     messages: messageIds.length > 0 ? messageIds : submission.conversation.messages,
+     createdAt: submission.conversation.createdAt ?? now,
+     updatedAt: now,
+diff --git a/client/src/hooks/useNewConvo.ts b/client/src/hooks/useNewConvo.ts
+index 32f1ee71b48b3b9ef71f6c2e6b40a11a1faea226..9f2877d7234e30b4befde1d42205597990601edc 100644
+--- a/client/src/hooks/useNewConvo.ts
++++ b/client/src/hooks/useNewConvo.ts
+@@ -351,7 +351,7 @@ const useNewConvo = (index = 0) => {
+ 
+       const conversation = {
+         conversationId: Constants.NEW_CONVO as string,
+-        title: 'New Chat',
++        title: 'New Note',
+         endpoint: null,
+         ...template,
+         createdAt: '',
+diff --git a/client/src/locales/en/translation.json b/client/src/locales/en/translation.json
+index bd719a49f6d2d665b075727093526f09083d53fd..c2bd4a7441125e99c275550f8cbd4662287d99a3 100644
+--- a/client/src/locales/en/translation.json
++++ b/client/src/locales/en/translation.json
+@@ -2,7 +2,7 @@
+   "chat_direction_left_to_right": "Left to Right",
+   "chat_direction_right_to_left": "Right to Left",
+   "com_a11y_ai_composing": "The AI is still composing.",
+-  "com_a11y_chats_date_section": "Chats from {{date}}",
++  "com_a11y_chats_date_section": "Notes from {{date}}",
+   "com_a11y_end": "The AI has finished their reply.",
+   "com_a11y_selected": "selected",
+   "com_a11y_start": "The AI has started their reply.",
+@@ -32,7 +32,7 @@
+   "com_agents_category_sales_description": "Agents focused on sales processes, customer relations",
+   "com_agents_category_tab_label": "{{category}} category, {{position}} of {{total}}",
+   "com_agents_category_tabs_label": "Agent Categories",
+-  "com_agents_chat_with": "Chat with {{name}}",
++  "com_agents_chat_with": "Start note with {{name}}",
+   "com_agents_clear_search": "Clear search",
+   "com_agents_contact": "Contact",
+   "com_agents_copy_link": "Copy Link",
+@@ -104,7 +104,7 @@
+   "com_agents_search_no_results": "No agents found for \"{{query}}\"",
+   "com_agents_search_placeholder": "Search agents...",
+   "com_agents_see_more": "See more",
+-  "com_agents_start_chat": "Start Chat",
++  "com_agents_start_chat": "Start Note",
+   "com_agents_top_picks": "Top Picks",
+   "com_agents_update_error": "There was an error updating your agent.",
+   "com_assistants_actions": "Actions",
+@@ -269,7 +269,7 @@
+   "com_endpoint_config_key_name": "Key",
+   "com_endpoint_config_key_never_expires": "Current key: never expires",
+   "com_endpoint_config_new_key_expiration": "New key expiration",
+-  "com_endpoint_config_placeholder": "Set your Key in the Header menu to chat.",
++  "com_endpoint_config_placeholder": "Set your Key in the Header menu to use notes.",
+   "com_endpoint_config_required_fields": "The following fields are required:",
+   "com_endpoint_config_value": "Enter value for",
+   "com_endpoint_context": "Context",
+@@ -438,19 +438,19 @@
+   "com_nav_advanced_prompts": "Advanced prompts editor",
+   "com_nav_advanced_prompts_desc": "Enable versioning and production control for prompts",
+   "com_nav_always_make_prod": "Always make new prompt versions production",
+-  "com_nav_archive_all_chats": "Archive all chats",
+-  "com_nav_archive_all_confirm_message": "Are you sure you want to archive all chats? They will be moved out of your chat list and remain available under Archived chats.",
++  "com_nav_archive_all_chats": "Archive all notes",
++  "com_nav_archive_all_confirm_message": "Are you sure you want to archive all notes? They will be moved out of your note list and remain available under Archived notes.",
+   "com_nav_archive_created_at": "Date Archived",
+   "com_nav_archive_name": "Name",
+-  "com_nav_archived_chats": "Archived chats",
++  "com_nav_archived_chats": "Archived notes",
+   "com_nav_at_command": "@-Command",
+   "com_nav_at_command_description": "Toggle command \"@\" for switching endpoints, models, presets, etc.",
+   "com_nav_audio_play_error": "Error playing audio: {{0}}",
+   "com_nav_audio_process_error": "Error processing audio: {{0}}",
+   "com_nav_auto_expand_tools": "Auto-expand tool details",
+-  "com_nav_auto_scroll": "Auto-Scroll to latest message on chat open",
++  "com_nav_auto_scroll": "Auto-Scroll to latest message on note open",
+   "com_nav_auto_send_prompts": "Send prompts on select",
+-  "com_nav_auto_send_prompts_desc": "Automatically submit prompt to chat when selected",
++  "com_nav_auto_send_prompts_desc": "Automatically submit prompt to note when selected",
+   "com_nav_auto_send_text": "Auto send text",
+   "com_nav_auto_transcribe_audio": "Auto transcribe audio",
+   "com_nav_automatic_playback": "Autoplay Latest Message",
+@@ -477,12 +477,12 @@
+   "com_nav_balance_week": "week",
+   "com_nav_balance_weeks": "weeks",
+   "com_nav_browser": "Browser",
+-  "com_nav_center_chat_input": "Center Chat Input on Welcome Screen",
++  "com_nav_center_chat_input": "Center Note Input on Welcome Screen",
+   "com_nav_change_picture": "Change picture",
+-  "com_nav_chat_direction": "Chat direction",
+-  "com_nav_chat_direction_selected": "Chat direction: {{direction}}",
+-  "com_nav_chat_title_in_tab": "Display chat title in tab",
+-  "com_nav_clear_all_chats": "Delete all chats",
++  "com_nav_chat_direction": "Note direction",
++  "com_nav_chat_direction_selected": "Note direction: {{direction}}",
++  "com_nav_chat_title_in_tab": "Display note title in tab",
++  "com_nav_clear_all_chats": "Delete all notes",
+   "com_nav_clear_cache_confirm_message": "Are you sure you want to clear the cache?",
+   "com_nav_clear_conversation": "Clear conversations",
+   "com_nav_clear_conversation_confirm_message": "Are you sure you want to clear all conversations? This is irreversible.",
+@@ -499,7 +499,7 @@
+   "com_nav_conversation_mode": "Conversation Mode",
+   "com_nav_convo_menu_options": "Conversation Menu Options",
+   "com_nav_db_sensitivity": "Decibel sensitivity",
+-  "com_nav_default_temporary_chat": "Temporary Chat by default",
++  "com_nav_default_temporary_chat": "Temporary Note by default",
+   "com_nav_delete_account": "Delete account",
+   "com_nav_delete_account_button": "Permanently delete my account",
+   "com_nav_delete_account_confirm": "Delete account - are you sure?",
+@@ -542,16 +542,16 @@
+   "com_nav_info_client_image_resize_unsupported": "Image resizing is unavailable because this browser does not support the required image processing features.",
+   "com_nav_info_code_background": "When enabled, the model can run code executions in the background: the conversation continues immediately while the code runs, and the model retrieves the result later with the background task tool. Output and generated files still attach to the original code run. Requires the app-level background tools capability.",
+   "com_nav_info_collapse_user_messages": "When enabled, long user messages render collapsed to a preview with a Show more option, so pasted text or code cannot dominate the conversation. The full text stays in the page, ready to copy or search.",
+-  "com_nav_info_default_temporary_chat": "When enabled, new chats will start with temporary chat mode activated by default. Temporary chats are not saved to your history.",
++  "com_nav_info_default_temporary_chat": "When enabled, new notes will start with temporary note mode activated by default. Temporary notes are not saved to your history.",
+   "com_nav_info_during_run_action": "Choose what pressing Enter does while the assistant is still responding. \"Steer the response\" inserts your message into the current response at its next step; \"Queue for after\" sends it as a new turn once the response finishes. You can always override this per message from the send button.",
+   "com_nav_info_enter_to_send": "When enabled, pressing `ENTER` will send your message. When disabled, pressing Enter will add a new line, and you'll need to press `CTRL + ENTER` / `⌘ + ENTER` to send your message.",
+   "com_nav_info_fork_change_default": "`Visible messages only` includes just the direct path to the selected message. `Include related branches` adds branches along the path. `Include all to/from here` includes all connected messages and branches.",
+   "com_nav_info_fork_split_target_setting": "When enabled, forking will commence from the target message to the latest message in the conversation, according to the behavior selected.",
+   "com_nav_info_latex_parsing": "When enabled, LaTeX code in messages will be rendered as mathematical equations. Disabling this may improve performance if you don't need LaTeX rendering.",
+   "com_nav_info_paste_long_text_as_file": "When enabled, pasting very long text attaches it as a text file instead of filling the message box. File processing limits may apply.",
+-  "com_nav_info_save_badges_state": "When enabled, the state of the chat badges will be saved. This means that if you create a new chat, the badges will remain in the same state as the previous chat. If you disable this option, the badges will reset to their default state every time you create a new chat",
+-  "com_nav_info_save_draft": "When enabled, the text and attachments you enter in the chat form will be automatically saved locally as drafts. These drafts will be available even if you reload the page or switch to a different conversation. Drafts are stored locally on your device and are deleted once the message is sent.",
+-  "com_nav_info_show_thinking": "When enabled, the chat will display the thinking dropdowns open by default, allowing you to view the AI's reasoning in real-time. When disabled, the thinking dropdowns will remain closed by default for a cleaner and more streamlined interface",
++  "com_nav_info_save_badges_state": "When enabled, the state of the note badges will be saved. This means that if you create a new note, the badges will remain in the same state as the previous note. If you disable this option, the badges will reset to their default state every time you create a new note",
++  "com_nav_info_save_draft": "When enabled, the text and attachments you enter in the note form will be automatically saved locally as drafts. These drafts will be available even if you reload the page or switch to a different conversation. Drafts are stored locally on your device and are deleted once the message is sent.",
++  "com_nav_info_show_thinking": "When enabled, the note will display the thinking dropdowns open by default, allowing you to view the AI's reasoning in real-time. When disabled, the thinking dropdowns will remain closed by default for a cleaner and more streamlined interface",
+   "com_nav_info_smooth_streaming": "When enabled, newly streamed words fade in smoothly for the latest response. This is purely visual — it does not delay token delivery — and is disabled automatically when your device prefers reduced motion.",
+   "com_nav_info_stateful_sessions": "When enabled, this agent uses the dedicated stateful Code API instead of the default stateless service. Files, installed packages, and working state usually carry over between runs. The workspace may occasionally reset, so save anything important under /mnt/data. Requires Code Interpreter and the app-level stateful sessions capability.",
+   "com_nav_info_stateful_code_environment": "Choose who shares this agent's stateful workspace. This does not share live files with stateless code sessions.",
+@@ -604,7 +604,7 @@
+   "com_nav_latex_parsing": "Parsing LaTeX in messages (may affect performance)",
+   "com_nav_log_out": "Log out",
+   "com_nav_long_audio_warning": "Longer texts will take longer to process.",
+-  "com_nav_maximize_chat_space": "Maximize chat space",
++  "com_nav_maximize_chat_space": "Maximize note space",
+   "com_nav_mcp_access_revoked": "MCP server access revoked successfully.",
+   "com_nav_mcp_configure_server": "Configure {{0}}",
+   "com_nav_mcp_connect": "Connect",
+@@ -622,7 +622,7 @@
+   "com_nav_mcp_vars_updated": "MCP custom user variables updated successfully.",
+   "com_nav_modular_chat": "Enable switching Endpoints mid-conversation",
+   "com_nav_my_files": "My Files",
+-  "com_nav_new_chat_switch_to_history": "Switch to Chat History on new chat",
++  "com_nav_new_chat_switch_to_history": "Switch to Note History on new note",
+   "com_nav_not_supported": "Not Supported",
+   "com_nav_open_sidebar": "Open sidebar",
+   "com_nav_paste_long_text_as_file": "Paste long text as a file",
+@@ -638,13 +638,13 @@
+   "com_nav_send_message": "Send message",
+   "com_nav_setting_about": "About",
+   "com_nav_setting_account": "Account",
+-  "com_nav_setting_chat": "Chat",
++  "com_nav_setting_chat": "Note",
+   "com_nav_setting_delay": "Delay (s)",
+   "com_nav_setting_general": "General",
+   "com_nav_setting_mcp": "MCP Settings",
+   "com_nav_setting_speech": "Speech",
+   "com_nav_settings": "Settings",
+-  "com_nav_shared_links": "Shared chats",
++  "com_nav_shared_links": "Shared notes",
+   "com_nav_show_thinking": "Open Thinking Dropdowns by Default",
+   "com_nav_slash_command": "/-Command",
+   "com_nav_slash_command_description": "Toggle command \"/\" for selecting a prompt via keyboard",
+@@ -678,9 +678,9 @@
+   "com_shortcut_enable_all_hint": "When off, no shortcut below responds. Your custom keys are kept, and the app stops showing shortcut hints until you turn this back on.",
+   "com_shortcut_edit_aria": "Customize shortcut for {{0}}",
+   "com_shortcut_edit_last_message": "Edit last message",
+-  "com_shortcut_focus_chat_input": "Focus chat input",
++  "com_shortcut_focus_chat_input": "Focus note input",
+   "com_shortcut_focus_search": "Focus search",
+-  "com_shortcut_group_chat": "Chat",
++  "com_shortcut_group_chat": "Note",
+   "com_shortcut_group_general": "General",
+   "com_shortcut_group_navigation": "Navigation",
+   "com_shortcut_group_panels": "Open panels",
+@@ -755,9 +755,9 @@
+   "com_ui_active": "Active",
+   "com_ui_add": "Add",
+   "com_ui_add_description": "Add a description",
+-  "com_ui_add_first_bookmark": "Click on a chat to add one",
++  "com_ui_add_first_bookmark": "Click on a note to add one",
+   "com_ui_add_first_mcp_server": "Create your first MCP server to get started",
+-  "com_ui_add_first_project": "Create a project to keep related conversations together",
++  "com_ui_add_first_project": "Create a report to keep related notes together",
+   "com_ui_add_first_prompt": "Create your first prompt to get started",
+   "com_ui_add_labels": "Add Labels",
+   "com_ui_add_mcp": "Add MCP",
+@@ -766,7 +766,7 @@
+   "com_ui_add_multi_conversation": "Add multi-conversation",
+   "com_ui_add_skills": "Add Skills",
+   "com_ui_add_special_variables": "Add Special Variables",
+-  "com_ui_add_to_chat": "Add to chat",
++  "com_ui_add_to_chat": "Add to note",
+   "com_ui_add_tools": "Add tools",
+   "com_ui_add_web_search_api_keys": "Add Web Search API Keys",
+   "com_ui_adding_details": "Adding details",
+@@ -856,7 +856,7 @@
+   "com_ui_agents_allow_share_public": "Allow sharing Agents publicly",
+   "com_ui_agents_allow_use": "Allow using Agents",
+   "com_ui_all": "all",
+-  "com_ui_all_projects": "All projects",
++  "com_ui_all_projects": "All reports",
+   "com_ui_all_proper": "All",
+   "com_ui_all_turns": "All turns",
+   "com_ui_always_interrupt": "Always interrupt instead",
+@@ -895,8 +895,8 @@
+   "com_ui_approval_expired": "This request expired or was already handled.",
+   "com_ui_approve": "Approve",
+   "com_ui_archive": "Archive",
+-  "com_ui_archive_all_error": "Failed to archive all chats",
+-  "com_ui_archive_all_success": "All chats archived",
++  "com_ui_archive_all_error": "Failed to archive all notes",
++  "com_ui_archive_all_success": "All notes archived",
+   "com_ui_archive_delete_error": "Failed to delete archived conversation",
+   "com_ui_archive_error": "Failed to archive conversation",
+   "com_ui_artifact_click": "Click to open",
+@@ -1003,11 +1003,11 @@
+   "com_ui_capabilities_count": "{{count}} capabilities",
+   "com_ui_capabilities_count_one": "{{count}} capability",
+   "com_ui_category": "Category",
+-  "com_ui_change_project": "Change project",
++  "com_ui_change_project": "Change report",
+   "com_ui_change_version": "Change Version",
+-  "com_ui_chat": "Chat",
+-  "com_ui_chat_history": "Chat History",
+-  "com_ui_chats": "Chats",
++  "com_ui_chat": "Note",
++  "com_ui_chat_history": "Note History",
++  "com_ui_chats": "Notes",
+   "com_ui_check_internet": "Check your internet connection",
+   "com_ui_clear": "Clear",
+   "com_ui_clear_all": "Clear all",
+@@ -1028,7 +1028,7 @@
+   "com_ui_code": "Code",
+   "com_ui_code_background": "Background execution",
+   "com_ui_collapse": "Collapse",
+-  "com_ui_collapse_chat": "Collapse Chat",
++  "com_ui_collapse_chat": "Collapse Note",
+   "com_ui_collapse_summary": "Collapse Summary",
+   "com_ui_collapse_thoughts": "Collapse Thoughts",
+   "com_ui_command_finished": "Finished running",
+@@ -1069,7 +1069,7 @@
+   "com_ui_context_usage_label_unknown": "Context usage: {{0}} tokens used",
+   "com_ui_context_window": "Context window",
+   "com_ui_continue": "Continue",
+-  "com_ui_continue_chat": "Continue this chat",
++  "com_ui_continue_chat": "Continue this note",
+   "com_ui_continue_chat_error": "There was an error copying this conversation",
+   "com_ui_continue_oauth": "Continue with OAuth",
+   "com_ui_control_bar": "Control bar",
+@@ -1101,7 +1101,7 @@
+   "com_ui_create_mcp_server": "Create MCP server",
+   "com_ui_create_memory": "Create Memory",
+   "com_ui_create_new_agent": "Create New Agent",
+-  "com_ui_create_project": "Create project",
++  "com_ui_create_project": "Create report",
+   "com_ui_create_prompt": "Create Prompt",
+   "com_ui_create_prompt_page": "New Prompt Configuration Page",
+   "com_ui_create_skill": "Create Skill",
+@@ -1153,7 +1153,7 @@
+   "com_ui_delete_confirm": "This will delete",
+   "com_ui_delete_confirm_prompt_version_var": "This will delete the selected version for \"{{0}}.\" If no other versions exist, the prompt will be deleted.",
+   "com_ui_delete_confirm_strong": "This will delete <strong>{{title}}</strong>",
+-  "com_ui_delete_conversation": "Delete chat?",
++  "com_ui_delete_conversation": "Delete note?",
+   "com_ui_delete_conversation_tooltip": "Delete conversation",
+   "com_ui_delete_link": "Delete Link",
+   "com_ui_delete_mcp_server": "Delete MCP Server?",
+@@ -1161,9 +1161,9 @@
+   "com_ui_delete_memory": "Delete Memory",
+   "com_ui_delete_not_allowed": "Delete operation is not allowed",
+   "com_ui_delete_preset": "Delete Preset?",
+-  "com_ui_delete_project": "Delete project?",
+-  "com_ui_delete_project_action": "Delete project",
+-  "com_ui_delete_project_confirm": "Delete \"{{name}}\"? The chats inside won't be deleted.",
++  "com_ui_delete_project": "Delete report?",
++  "com_ui_delete_project_action": "Delete report",
++  "com_ui_delete_project_confirm": "Delete \"{{name}}\"? The notes inside won't be deleted.",
+   "com_ui_delete_prompt": "Delete Prompt?",
+   "com_ui_delete_selected": "Delete selected",
+   "com_ui_delete_selected_items": "Delete selected items",
+@@ -1220,7 +1220,7 @@
+   "com_ui_edit_memory": "Edit Memory",
+   "com_ui_edit_message": "Edit message",
+   "com_ui_edit_preset_title": "Edit Preset - {{title}}",
+-  "com_ui_edit_project": "Edit project",
++  "com_ui_edit_project": "Edit report",
+   "com_ui_edit_prompt_page": "Edit Prompt Page",
+   "com_ui_edit_skill": "Edit Skill",
+   "com_ui_editable_message": "Editable Message",
+@@ -1258,7 +1258,7 @@
+   "com_ui_examples": "Examples",
+   "com_ui_exit_full_screen": "Exit full screen",
+   "com_ui_expand": "Expand",
+-  "com_ui_expand_chat": "Expand Chat",
++  "com_ui_expand_chat": "Expand Note",
+   "com_ui_expand_editor": "Expand editor",
+   "com_ui_expand_thoughts": "Expand Thoughts",
+   "com_ui_export_activity_label": "Activity",
+@@ -1620,16 +1620,16 @@
+   "com_ui_navigate_results": "Navigate results",
+   "com_ui_new": "New",
+   "com_ui_new_action": "New action",
+-  "com_ui_new_chat": "New chat",
+-  "com_ui_new_chat_in_project": "New chat in {{name}}",
++  "com_ui_new_chat": "New note",
++  "com_ui_new_chat_in_project": "New note in {{name}}",
+   "com_ui_new_conversation_title": "New Conversation Title",
+-  "com_ui_new_project": "New project",
++  "com_ui_new_project": "New report",
+   "com_ui_next": "Next",
+   "com_ui_next_result": "Next result",
+   "com_ui_next_sibling": "Next sibling message",
+   "com_ui_no": "No",
+   "com_ui_no_auth": "None (Auto-detect)",
+-  "com_ui_no_bookmarks": "it seems like you have no bookmarks yet. Click on a chat and add a new one",
++  "com_ui_no_bookmarks": "it seems like you have no bookmarks yet. Click on a note and add a new one",
+   "com_ui_no_bookmarks_match": "No bookmarks match your search",
+   "com_ui_no_bookmarks_title": "No bookmarks yet",
+   "com_ui_no_categories": "No categories available",
+@@ -1643,15 +1643,15 @@
+   "com_ui_no_memories": "No memories. Create them manually or prompt the AI to remember something",
+   "com_ui_no_memories_match": "No memories match your search",
+   "com_ui_no_memories_title": "No memories yet",
+-  "com_ui_no_matching_projects": "No projects match your search",
++  "com_ui_no_matching_projects": "No reports match your search",
+   "com_ui_no_options": "No options available",
+-  "com_ui_no_project_chats": "No chats yet",
+-  "com_ui_no_projects": "No projects yet",
++  "com_ui_no_project_chats": "No notes yet",
++  "com_ui_no_projects": "No reports yet",
+   "com_ui_no_prompts_title": "No prompts yet",
+   "com_ui_no_read_access": "You don't have permission to view memories",
+   "com_ui_no_results_found": "No results found",
+   "com_ui_no_schedules": "Create one to have an agent run a prompt on a schedule",
+-  "com_ui_no_schedules_title": "No scheduled chats yet",
++  "com_ui_no_schedules_title": "No scheduled notes yet",
+   "com_ui_no_search_results": "No results match your search",
+   "com_ui_no_selection": "No selection",
+   "com_ui_no_skills_found": "No skills found",
+@@ -1684,9 +1684,9 @@
+   "com_ui_open_archived_chat_new_tab_title": "{{title}} (opens in new tab)",
+   "com_ui_open_artifact": "Open artifact",
+   "com_ui_open_as_artifact": "Open as artifact",
+-  "com_ui_open_project": "Open project",
+-  "com_ui_open_source_chat_new_tab": "Open Source Chat in New Tab",
+-  "com_ui_open_source_chat_new_tab_title": "Open Source Chat in New Tab - {{title}}",
++  "com_ui_open_project": "Open report",
++  "com_ui_open_source_chat_new_tab": "Open Source Note in New Tab",
++  "com_ui_open_source_chat_new_tab_title": "Open Source Note in New Tab - {{title}}",
+   "com_ui_open_var": "Open {{0}}",
+   "com_ui_openai": "OpenAI",
+   "com_ui_optional": "(optional)",
+@@ -1726,21 +1726,21 @@
+   "com_ui_privacy_policy_url": "Privacy Policy URL",
+   "com_ui_pro": "Pro",
+   "com_ui_production": "Production",
+-  "com_ui_project": "Project",
+-  "com_ui_project_chat_count": "{{count}} chats",
+-  "com_ui_project_chat_count_single": "1 chat",
+-  "com_ui_project_count": "{{count}} projects",
+-  "com_ui_project_count_partial": "{{count}}+ projects",
+-  "com_ui_project_count_single": "1 project",
+-  "com_ui_project_create_error": "Failed to create project",
+-  "com_ui_project_delete_error": "Failed to delete project",
+-  "com_ui_project_name": "Project name",
+-  "com_ui_project_name_placeholder": "New project",
+-  "com_ui_project_not_found": "Project not found",
+-  "com_ui_project_rename_error": "Failed to rename project",
+-  "com_ui_project_update_error": "Failed to update project assignment",
+-  "com_ui_project_updated": "Project assignment updated",
+-  "com_ui_projects": "Projects",
++  "com_ui_project": "Report",
++  "com_ui_project_chat_count": "{{count}} notes",
++  "com_ui_project_chat_count_single": "1 note",
++  "com_ui_project_count": "{{count}} reports",
++  "com_ui_project_count_partial": "{{count}}+ reports",
++  "com_ui_project_count_single": "1 report",
++  "com_ui_project_create_error": "Failed to create report",
++  "com_ui_project_delete_error": "Failed to delete report",
++  "com_ui_project_name": "Report name",
++  "com_ui_project_name_placeholder": "New report",
++  "com_ui_project_not_found": "Report not found",
++  "com_ui_project_rename_error": "Failed to rename report",
++  "com_ui_project_update_error": "Failed to update report assignment",
++  "com_ui_project_updated": "Report assignment updated",
++  "com_ui_projects": "Reports",
+   "com_ui_prompt": "Prompt",
+   "com_ui_prompt_category_selector_aria": "Prompt's category selector",
+   "com_ui_prompt_delete_confirm": "Are you sure you want to delete the '{{0}}' prompt?",
+@@ -1831,7 +1831,7 @@
+   "com_ui_remote_agents_allow_use": "Allow users to create API keys and query agents remotely",
+   "com_ui_remove_agent_from_chain": "Remove {{0}} from chain",
+   "com_ui_remove_all_quotes": "Remove all selections",
+-  "com_ui_remove_from_project": "Remove from project",
++  "com_ui_remove_from_project": "Remove from report",
+   "com_ui_remove_queued": "Remove message",
+   "com_ui_dismiss_unconfirmed_delivery": "Dismiss unconfirmed delivery",
+   "com_ui_remove_quote": "Remove quote",
+@@ -1907,11 +1907,11 @@
+   "com_ui_schedule_disabled_insufficient_balance": "Disabled: insufficient balance",
+   "com_ui_schedule_disabled_invalid": "Disabled: invalid schedule",
+   "com_ui_schedule_disabled_permission_revoked": "Disabled: permission revoked",
+-  "com_ui_schedule_disabled_project_deleted": "Disabled: project unavailable",
+-  "com_ui_schedule_disabled_project_required": "Disabled: a project is required",
++  "com_ui_schedule_disabled_project_deleted": "Disabled: report unavailable",
++  "com_ui_schedule_disabled_project_required": "Disabled: a report is required",
+   "com_ui_schedule_disabled_too_many_failures": "Disabled: too many failures",
+   "com_ui_schedule_edit": "Edit schedule",
+-  "com_ui_schedule_enable_blocked": "Couldn't enable this schedule. Open it to check its agent, project, and frequency.",
++  "com_ui_schedule_enable_blocked": "Couldn't enable this schedule. Open it to check its agent, report, and frequency.",
+   "com_ui_schedule_enabled": "Enabled",
+   "com_ui_schedule_frequency": "Frequency",
+   "com_ui_schedule_hour": "Hour",
+@@ -1929,7 +1929,7 @@
+   "com_ui_schedule_next_runs": "Next",
+   "com_ui_schedule_options": "Schedule options",
+   "com_ui_schedule_pm": "PM",
+-  "com_ui_schedule_project_none": "No project",
++  "com_ui_schedule_project_none": "No report",
+   "com_ui_schedule_prompt_placeholder": "Summarize the top AI news from the last 24 hours and highlight anything worth acting on.",
+   "com_ui_schedule_run_now": "Run now",
+   "com_ui_schedule_run_now_started": "Run started",
+@@ -1940,15 +1940,15 @@
+   "com_ui_schedule_runs_hourly": "Runs every hour at :{{minute}}",
+   "com_ui_schedule_runs_weekdays": "Runs weekdays at {{time}}",
+   "com_ui_schedule_runs_weekly": "Runs weekly on {{days}} at {{time}}",
+-  "com_ui_schedule_target_new_chat": "Each run starts a new chat with this agent",
++  "com_ui_schedule_target_new_chat": "Each run starts a new note with this agent",
+   "com_ui_schedule_time": "Time",
+   "com_ui_schedule_timezone": "Time zone",
+   "com_ui_schedule_timezone_search": "Search time zones",
+   "com_ui_schedule_updated": "Schedule updated",
+   "com_ui_schedule_weekdays": "Weekdays",
+   "com_ui_schedule_weekly": "Weekly",
+-  "com_ui_schedules": "Scheduled chats",
+-  "com_ui_schedules_error": "Couldn't load your scheduled chats",
++  "com_ui_schedules": "Scheduled notes",
++  "com_ui_schedules_error": "Couldn't load your scheduled notes",
+   "com_ui_schedules_used": "{{used}} of {{max}} schedules used",
+   "com_ui_schema": "Schema",
+   "com_ui_scope": "Scope",
+@@ -1964,7 +1964,7 @@
+   "com_ui_search_default_placeholder": "Search by name or email (min 2 chars)",
+   "com_ui_search_language": "Search languages...",
+   "com_ui_search_people_placeholder": "Search for people or groups by name or email",
+-  "com_ui_search_projects": "Search projects",
++  "com_ui_search_projects": "Search reports",
+   "com_ui_search_result_count": "{{count}} result found",
+   "com_ui_search_results_count": "{{count}} results found",
+   "com_ui_search_skills": "Search skills...",
+@@ -1979,7 +1979,7 @@
+   "com_ui_select_file": "Select a file",
+   "com_ui_select_model": "Select a model",
+   "com_ui_select_options": "Select options...",
+-  "com_ui_select_project": "Select project",
++  "com_ui_select_project": "Select report",
+   "com_ui_select_provider": "Select a provider",
+   "com_ui_select_provider_first": "Select a provider first",
+   "com_ui_select_region": "Select a region",
+@@ -1993,11 +1993,11 @@
+   "com_ui_set": "Set",
+   "com_ui_settings_label_2fa": "Two-factor authentication",
+   "com_ui_settings_label_agent_api_keys": "Agent API keys",
+-  "com_ui_settings_label_archive_all_chats": "Archive all chats",
++  "com_ui_settings_label_archive_all_chats": "Archive all notes",
+   "com_ui_settings_label_auto_refill": "Auto-refill",
+   "com_ui_settings_label_avatar": "Avatar",
+   "com_ui_settings_label_backup_codes": "Backup codes",
+-  "com_ui_settings_label_clear_chats": "Delete all chats",
++  "com_ui_settings_label_clear_chats": "Delete all notes",
+   "com_ui_settings_label_conversation_mode": "Conversation mode",
+   "com_ui_settings_label_credits": "Token balance",
+   "com_ui_settings_label_decibel": "Decibel threshold",
+@@ -2011,7 +2011,7 @@
+   "com_ui_settings_label_playback_rate": "Playback rate",
+   "com_ui_settings_label_provider_api_keys": "Provider API keys",
+   "com_ui_settings_label_revoke_keys": "Revoke all provider API keys",
+-  "com_ui_settings_label_shared_links": "Shared chats",
++  "com_ui_settings_label_shared_links": "Shared notes",
+   "com_ui_settings_label_voice": "Voice",
+   "com_ui_settings_no_results": "No settings match your search",
+   "com_ui_settings_results_aria": "Search results",
+@@ -2042,14 +2042,14 @@
+   "com_ui_share_access_description": "Choose who can access this resource and what they can do.",
+   "com_ui_share_create_message": "Your name and any messages you add after sharing stay private.",
+   "com_ui_share_delete_error": "There was an error deleting the shared link",
+-  "com_ui_share_error": "There was an error sharing the chat link",
++  "com_ui_share_error": "There was an error sharing the note link",
+   "com_ui_share_everyone": "Share with everyone",
+   "com_ui_share_everyone_description_var": "This {{resource}} will be available to everyone. Please make sure the {{resource}} is really meant to be shared with everyone. Be careful with your data.",
+   "com_ui_share_files": "Share files in this conversation",
+   "com_ui_share_files_description": "Images and files in this conversation won't be visible to viewers unless this is enabled.",
+   "com_ui_share_files_update_note": "Choose your setting, then select Update link. The same URL will include the latest messages and file choice.",
+-  "com_ui_share_link_to_chat": "Share link to chat",
+-  "com_ui_share_no_messages": "This chat has no saved messages to share yet.",
++  "com_ui_share_link_to_chat": "Share link to note",
++  "com_ui_share_no_messages": "This note has no saved messages to share yet.",
+   "com_ui_share_qr_code_description": "QR code for sharing this conversation link",
+   "com_ui_share_target_not_saved": "The latest message has not finished saving. Try sharing again in a moment.",
+   "com_ui_share_update_message": "Your name and custom instructions stay private. Edits to shared messages appear right away; select Update link to include new messages without changing the URL.",
+@@ -2152,9 +2152,9 @@
+   "com_ui_skills_use_all_hint": "The agent can use every skill available to you, including skills added in the future.",
+   "com_ui_skip": "Skip",
+   "com_ui_something_else": "Something else...",
+-  "com_ui_sort_chats_by": "Sort chats by",
++  "com_ui_sort_chats_by": "Sort notes by",
+   "com_ui_sort_created": "Created",
+-  "com_ui_sort_projects_by": "Sort projects by",
++  "com_ui_sort_projects_by": "Sort reports by",
+   "com_ui_sort_updated": "Updated",
+   "com_ui_special": "special",
+   "com_ui_special_var_current_date": "Current Date",
+@@ -2235,7 +2235,7 @@
+   "com_ui_stop": "Stop",
+   "com_ui_storage": "Storage",
+   "com_ui_storage_filter_sort": "Filter and Sort by Storage",
+-  "com_ui_subagent_back_to_parent": "Back to parent chat",
++  "com_ui_subagent_back_to_parent": "Back to parent note",
+   "com_ui_subagent_activity": "Agent activity",
+   "com_ui_subagent_agent_count": "{{0}} agent",
+   "com_ui_subagent_agents_count": "{{0}} agents",
+@@ -2268,7 +2268,7 @@
+   "com_ui_subagent_event_source": "Source",
+   "com_ui_subagent_event_received": "Occurred",
+   "com_ui_subagent_event_expected_action": "Expected action",
+-  "com_ui_subagent_continue_new_chat": "Continue in a new chat",
++  "com_ui_subagent_continue_new_chat": "Continue in a new note",
+   "com_ui_subagent_control_interrupt": "Interrupt",
+   "com_ui_subagent_control_message_truncated": "Message shortened for display.",
+   "com_ui_subagent_control_queue": "Queued guidance",
+@@ -2330,8 +2330,8 @@
+   "com_ui_table_error": "Table error",
+   "com_ui_table_error_description": "The table failed to load. Refresh the page or try again.",
+   "com_ui_teach_or_explain": "Learning",
+-  "com_ui_temporary": "Temporary Chat",
+-  "com_ui_temporary_description": "This chat won't appear in your history and will be deleted automatically.",
++  "com_ui_temporary": "Temporary Note",
++  "com_ui_temporary_description": "This note won't appear in your history and will be deleted automatically.",
+   "com_ui_terms_and_conditions": "Terms and Conditions",
+   "com_ui_terms_of_service": "Terms of service",
+   "com_ui_text_variables": "Text variables",
+@@ -2383,8 +2383,8 @@
+   "com_ui_tools_marketplace_search": "Search tools…",
+   "com_ui_tools_mcp_deselect_all": "Deselect all",
+   "com_ui_tools_mcp_no_tools": "This server has not exposed any tools yet.",
+-  "com_ui_tools_mcp_runtime_tools_available": "This server's tools are resolved at runtime, during chat.",
+-  "com_ui_tools_mcp_runtime_tools": "All of this server's tools are attached; they are resolved at runtime, during chat.",
++  "com_ui_tools_mcp_runtime_tools_available": "This server's tools are resolved at runtime, during a note.",
++  "com_ui_tools_mcp_runtime_tools": "All of this server's tools are attached; they are resolved at runtime, during a note.",
+   "com_ui_tools_mcp_select_all": "Select all",
+   "com_ui_tools_mcp_status_unconfigured": "Needs configuration",
+   "com_ui_tools_mcp_tools_section": "Tools in this server",
+@@ -2523,7 +2523,7 @@
+   "com_ui_you_answered": "You answered:",
+   "com_ui_your_answer": "Type your answer…",
+   "com_ui_your_api_key": "Your API Key",
+-  "com_ui_your_projects": "Your projects",
++  "com_ui_your_projects": "Your reports",
+   "com_ui_zoom": "Zoom",
+   "com_ui_zoom_in": "Zoom in",
+   "com_ui_zoom_level": "Zoom level",
+@@ -2541,9 +2541,9 @@
+   "com_insights_no_data": "No data yet",
+   "com_insights_user": "User",
+   "com_insights_unknown_user": "Unknown user",
+-  "com_insights_chats": "Chats",
+-  "com_insights_search_placeholder": "Search by chat id or user",
+-  "com_insights_no_search_results": "No chats match this search.",
++  "com_insights_chats": "Notes",
++  "com_insights_search_placeholder": "Search by note id or user",
++  "com_insights_no_search_results": "No notes match this search.",
+   "com_insights_latest_conversations": "Latest conversations",
+   "com_insights_date": "Date",
+   "com_insights_first_message": "First message",
+@@ -2561,6 +2561,6 @@
+   "com_insights_end_date": "End date",
+   "com_insights_invalid_date_range": "Choose an end date after the start date, within {{days}} days.",
+   "com_insights_sparkline_accessibility": "{{label}} over time",
+-  "com_nav_mobile_drawer_strip": "Show chat beside the sidebar on mobile",
++  "com_nav_mobile_drawer_strip": "Show note beside the sidebar on mobile",
+   "com_nav_mobile_drawer_strip_info": "The sidebar stops short of the edge so a strip of the conversation stays visible. Tapping it closes the sidebar."
+ }
+diff --git a/client/src/style.css b/client/src/style.css
+index ae0a05dfaed036812f4b00aad94ecd402b74710d..ee67b48b0f4071895a1d2f7916b3ef7860af4870 100644
+--- a/client/src/style.css
++++ b/client/src/style.css
+@@ -24,17 +24,18 @@
+   --gray-850: 23 23 23;
+   --gray-875: 18 18 18;
+   --gray-900: 13 13 13;
+-  --green-50: 236 253 245;
+-  --green-100: 209 250 229;
+-  --green-200: 167 243 208;
+-  --green-300: 110 231 183;
+-  --green-400: 52 211 153;
+-  --green-500: 16 185 129;
+-  --green-600: 5 150 105;
+-  --green-700: 4 120 87;
+-  --green-800: 6 95 70;
+-  --green-900: 6 78 59;
+-  --green-950: 2 44 34;
++  /* Soft Daisy teal family (OmicsBase1) */
++  --green-50: 237 247 246;
++  --green-100: 213 239 236;
++  --green-200: 168 219 214;
++  --green-300: 121 189 180;
++  --green-400: 67 161 150;
++  --green-500: 56 126 126;
++  --green-600: 28 87 87;
++  --green-700: 10 67 67;
++  --green-800: 15 53 54;
++  --green-900: 8 32 34;
++  --green-950: 5 26 21;
+   --red-50: 254 242 242;
+   --red-100: 254 226 226;
+   --red-200: 254 202 202;
+@@ -148,11 +149,11 @@
+ 
+ html {
+   --brand-purple: 126 34 206;
+-  --presentation: var(--white);
+-  --text-primary: var(--gray-800);
+-  --text-secondary: var(--gray-600);
+-  --text-secondary-alt: var(--gray-500);
+-  --text-tertiary: var(--gray-500);
++  --presentation: 250 250 250; /* Soft Daisy #fafafa */
++  --text-primary: 21 27 33;
++  --text-secondary: 35 42 48;
++  --text-secondary-alt: 87 94 102;
++  --text-tertiary: 87 94 102;
+   --shimmer-dip: 129 130 134;
+   --shimmer-dip-alpha: 0.18;
+   --text-warning: var(--amber-700);
+@@ -160,47 +161,47 @@ html {
+   --link: var(--blue-600);
+   --link-hover: var(--blue-700);
+   --link-visited: 147 51 234;
+-  --accent-primary: 18 110 107;
+-  --accent-primary-hover: 10 79 83;
+-  --ring-primary: var(--gray-500);
++  --accent-primary: 28 87 87; /* Soft Daisy #1c5757 */
++  --accent-primary-hover: 10 67 67;
++  --ring-primary: 56 126 126; /* Soft Daisy ring #387e7e */
+   --header-primary: var(--white);
+-  --header-hover: var(--gray-50);
+-  --header-button-hover: var(--gray-50);
+-  --surface-active: var(--gray-100);
+-  --surface-active-alt: var(--gray-200);
+-  --surface-hover: var(--gray-200);
+-  --surface-hover-alt: var(--gray-300);
+-  --surface-composer-hover: var(--gray-200);
++  --header-hover: 237 247 246;
++  --header-button-hover: 237 247 246;
++  --surface-active: 237 247 246;
++  --surface-active-alt: 220 240 237;
++  --surface-hover: 237 247 246;
++  --surface-hover-alt: 220 240 237;
++  --surface-composer-hover: 237 247 246;
+   --surface-primary: var(--white);
+-  --surface-primary-alt: var(--gray-50);
+-  --surface-primary-contrast: var(--gray-100);
+-  --surface-secondary: var(--gray-50);
+-  --surface-secondary-alt: var(--gray-200);
+-  --surface-tertiary: var(--gray-100);
++  --surface-primary-alt: 244 244 246;
++  --surface-primary-contrast: 237 247 246;
++  --surface-secondary: 244 244 246;
++  --surface-secondary-alt: 237 247 246;
++  --surface-tertiary: 237 247 246;
+   --surface-tertiary-alt: var(--white);
+   --surface-dialog: var(--white);
+-  --surface-overlay: var(--gray-500);
+-  --surface-submit: var(--green-700);
+-  --surface-submit-hover: var(--green-800);
++  --surface-overlay: 87 94 102;
++  --surface-submit: 28 87 87;
++  --surface-submit-hover: 10 67 67;
+   --surface-destructive: var(--red-700);
+   --surface-destructive-hover: var(--red-800);
+   --surface-chat: var(--white);
+   --surface-code: var(--surface-primary-alt);
+   --surface-qr: var(--white);
+-  --border-light: var(--gray-200);
++  --border-light: 220 232 230;
+   --border-light-alpha: 1;
+-  --border-medium-alt: var(--gray-300);
+-  --border-medium: var(--gray-300);
++  --border-medium-alt: 196 216 214;
++  --border-medium: 196 216 214;
+   --border-medium-alpha: 1;
+-  --border-heavy: var(--gray-400);
++  --border-heavy: 148 180 176;
+   --border-heavy-alpha: 1;
+-  --border-xheavy: var(--gray-500);
++  --border-xheavy: 87 94 102;
+   --border-xheavy-alpha: 1;
+   --border-destructive: var(--red-600);
+-  --status-success: var(--green-700);
+-  --status-success-subtle: var(--green-50);
+-  --status-success-border: var(--green-300);
+-  --status-success-strong: 2 133 94;
++  --status-success: 28 87 87;
++  --status-success-subtle: 237 247 246;
++  --status-success-border: 121 189 180;
++  --status-success-strong: 10 67 67;
+   --status-info: var(--blue-600);
+   --status-info-subtle: var(--blue-50);
+   --status-info-border: var(--blue-300);
+@@ -225,7 +226,7 @@ html {
+   --series-4: 182 123 5;
+   --series-5: 216 90 142;
+   --series-6: 126 35 205;
+-  --series-7: 1 131 1;
++  --series-7: 28 87 87; /* Soft Daisy teal */
+ 
+   --surface-inverted: var(--gray-850);
+   --surface-inverted-hover: var(--gray-700);
+@@ -242,6 +243,7 @@ html {
+   --theme-space-compact: 0.375rem;
+   --theme-space-normal: 0.75rem;
+   --theme-font-family: Inter, sans-serif;
++  --theme-font-display: Fraunces, ui-serif, Georgia, serif;
+   --theme-elevation-surface: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+   --theme-motion-fast: 150ms;
+   --theme-motion-normal: 200ms;
+@@ -256,11 +258,11 @@ html {
+ }
+ .dark {
+   --brand-purple: 171 104 255;
+-  --presentation: var(--gray-800);
+-  --text-primary: var(--gray-100);
+-  --text-secondary: var(--gray-300);
+-  --text-secondary-alt: var(--gray-400);
+-  --text-tertiary: var(--gray-400);
++  --presentation: 5 8 12; /* Soft Daisy #05080c teal-black */
++  --text-primary: 246 246 243; /* #f6f6f3 */
++  --text-secondary: 203 213 225; /* #cbd5e1 */
++  --text-secondary-alt: 148 163 184; /* #94a3b8 */
++  --text-tertiary: 148 163 184;
+   --shimmer-base: 255 255 255;
+   --shimmer-base-alpha: 0.8;
+   --shimmer-dip: 179 179 179;
+@@ -270,42 +272,43 @@ html {
+   --link: var(--blue-400);
+   --link-hover: var(--blue-300);
+   --link-visited: 192 132 252;
+-  --accent-primary: 65 167 157;
+-  --accent-primary-hover: 109 200 185;
+-  --header-primary: var(--gray-700);
+-  --header-hover: var(--gray-600);
+-  --header-button-hover: var(--gray-700);
+-  --surface-active: var(--gray-500);
+-  --surface-active-alt: var(--gray-700);
+-  --surface-hover: var(--gray-650);
+-  --surface-hover-alt: var(--gray-600);
+-  --surface-composer-hover: var(--gray-600);
+-  --surface-primary: var(--gray-900);
+-  --surface-primary-alt: var(--gray-850);
+-  --surface-primary-contrast: var(--gray-850);
+-  --surface-secondary: var(--gray-800);
+-  --surface-secondary-alt: var(--gray-800);
+-  --surface-tertiary: var(--gray-700);
+-  --surface-tertiary-alt: var(--gray-700);
+-  --surface-dialog: var(--gray-875);
++  --accent-primary: 99 204 192; /* Soft Daisy #63ccc0 */
++  --accent-primary-hover: 133 225 213;
++  --ring-primary: 45 212 191; /* #2dd4bf */
++  --header-primary: 12 18 22; /* #0c1216 */
++  --header-hover: 18 28 32;
++  --header-button-hover: 18 28 32;
++  --surface-active: 28 87 87;
++  --surface-active-alt: 22 50 51;
++  --surface-hover: 18 36 38;
++  --surface-hover-alt: 22 50 51;
++  --surface-composer-hover: 23 25 36;
++  --surface-primary: 5 8 12;
++  --surface-primary-alt: 12 18 22;
++  --surface-primary-contrast: 18 28 32;
++  --surface-secondary: 12 18 22;
++  --surface-secondary-alt: 18 28 32;
++  --surface-tertiary: 22 40 42;
++  --surface-tertiary-alt: 22 40 42;
++  --surface-dialog: 18 20 28;
+   --surface-overlay: 0 0 0;
+-  --surface-submit: var(--green-700);
+-  --surface-submit-hover: var(--green-800);
++  --surface-submit: 28 87 87;
++  --surface-submit-hover: 45 212 191;
+   --surface-destructive: var(--red-800);
+   --surface-destructive-hover: var(--red-900);
+-  --surface-chat: var(--gray-700);
++  --surface-chat: 12 18 22;
+   --surface-code: var(--presentation);
+   --surface-qr: var(--white);
+-  --border-light: var(--gray-700);
+-  --border-medium-alt: var(--gray-600);
+-  --border-medium: var(--gray-600);
+-  --border-heavy: var(--gray-500);
+-  --border-xheavy: var(--gray-400);
++  --border-light: 22 40 42;
++  --border-medium-alt: 28 60 58;
++  --border-medium: 28 60 58;
++  --border-heavy: 45 90 88;
++  --border-xheavy: 99 204 192;
+   --border-destructive: var(--red-500);
+-  --status-success: var(--green-300);
+-  --status-success-subtle: var(--green-950);
+-  --status-success-border: var(--green-800);
+-  --status-success-strong: var(--green-800);
++  --status-success: 99 204 192;
++  --status-success-subtle: 5 26 21;
++  --status-success-border: 10 67 67;
++  --status-success-strong: 28 87 87;
+   --status-info: var(--blue-300);
+   --status-info-subtle: var(--blue-950);
+   --status-info-border: var(--blue-800);
+@@ -318,19 +321,19 @@ html {
+   --status-error-subtle: var(--red-950);
+   --status-error-border: var(--red-800);
+   --status-error-strong: var(--red-800);
+-  --status-neutral: var(--gray-300);
+-  --status-neutral-subtle: var(--gray-800);
+-  --status-neutral-border: var(--gray-700);
++  --status-neutral: 203 213 225;
++  --status-neutral-subtle: 12 18 22;
++  --status-neutral-border: 22 40 42;
+   --text-on-status: var(--white);
+ 
+-  /* Categorical series scale — same hues, stepped for the dark surface */
++  /* Categorical series scale — Soft Daisy teal in brand-adjacent slots */
+   --series-1: 9 140 238;
+   --series-2: 217 87 35;
+-  --series-3: 6 158 152;
++  --series-3: 99 204 192;
+   --series-4: 200 133 12;
+   --series-5: 213 82 130;
+   --series-6: 171 104 254;
+-  --series-7: 80 167 49;
++  --series-7: 45 212 191;
+ 
+   --surface-inverted: var(--white);
+   --surface-inverted-hover: var(--gray-100);
+@@ -438,6 +441,11 @@ html {
+   text-overflow: ellipsis;
+ }
+ 
++/* Soft Daisy display face — mirrors OmicsBase1 font-display */
++.font-display {
++  font-family: var(--theme-font-display), ui-serif, Georgia, serif;
++}
++
+ @font-face {
+   font-display: swap;
+   font-family: Inter;
+@@ -742,6 +750,7 @@ pre {
+ }
+ .prose :where(h1):not(:where([class~='not-prose'] *)) {
+   color: var(--tw-prose-headings);
++  font-family: var(--theme-font-display), ui-serif, Georgia, serif;
+   font-size: 2.25em;
+   font-weight: 800;
+   line-height: 1;
+@@ -754,6 +763,7 @@ pre {
+ }
+ .prose :where(h2):not(:where([class~='not-prose'] *)) {
+   color: var(--tw-prose-headings);
++  font-family: var(--theme-font-display), ui-serif, Georgia, serif;
+   font-size: 1.5em;
+   font-weight: 700;
+   line-height: 1.1;
+@@ -766,6 +776,7 @@ pre {
+ }
+ .prose :where(h3):not(:where([class~='not-prose'] *)) {
+   color: var(--tw-prose-headings);
++  font-family: var(--theme-font-display), ui-serif, Georgia, serif;
+   font-size: 1.25em;
+   font-weight: 600;
+   line-height: 1.3;
+@@ -1160,6 +1171,58 @@ pre[class*='language-'] {
+   color: #f22c3d;
+ }
+ 
++/* OB1-parity R cell syntax colors (dark code pane on Soft Daisy) */
++.r-cell-code.code-theme-dark,
++.r-cell-code.code-theme-dark code.hljs {
++  color: #f1f5f9;
++  background: #0f172a !important;
++}
++.r-cell-code .hljs-comment,
++.r-cell-code .hljs-meta {
++  color: #64748b;
++}
++.r-cell-code .hljs-keyword,
++.r-cell-code .hljs-literal,
++.r-cell-code .hljs-doctag,
++.r-cell-code .hljs-formula {
++  color: #60a5fa;
++}
++.r-cell-code .hljs-string,
++.r-cell-code .hljs-addition,
++.r-cell-code .hljs-attribute,
++.r-cell-code .hljs-meta-string,
++.r-cell-code .hljs-regexp {
++  color: #2dd4bf;
++}
++.r-cell-code .hljs-number,
++.r-cell-code .hljs-attr,
++.r-cell-code .hljs-variable,
++.r-cell-code .hljs-template-variable,
++.r-cell-code .hljs-type {
++  color: #fbbf24;
++}
++.r-cell-code .hljs-built_in,
++.r-cell-code .hljs-title,
++.r-cell-code .hljs-section,
++.r-cell-code .hljs-name,
++.r-cell-code .hljs-selector-id,
++.r-cell-code .hljs-selector-class {
++  color: #f472b6;
++}
++.r-cell-code .hljs-function .hljs-title,
++.r-cell-code .hljs-title.function_ {
++  color: #f472b6;
++}
++.r-cell-code .hljs-symbol,
++.r-cell-code .hljs-bullet,
++.r-cell-code .hljs-link {
++  color: #fb7185;
++}
++.r-cell-code .hljs-operator,
++.r-cell-code .hljs-punctuation {
++  color: #a78bfa;
++}
++
+ [role='button'],
+ button {
+   cursor: pointer;
+@@ -1201,12 +1264,12 @@ button {
+ .btn-primary {
+   --tw-bg-opacity: 1;
+   --tw-text-opacity: 1;
+-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
++  background-color: rgba(28, 87, 87, var(--tw-bg-opacity)); /* Soft Daisy #1c5757 */
+   color: rgba(255, 255, 255, var(--tw-text-opacity));
+ }
+ .btn-primary:hover {
+   --tw-bg-opacity: 1;
+-  background-color: rgba(26, 127, 100, var(--tw-bg-opacity));
++  background-color: rgba(10, 67, 67, var(--tw-bg-opacity));
+ }
+ .btn-primary:focus {
+   --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width)
+@@ -1223,22 +1286,22 @@ button {
+ }
+ .btn-primary.focus-visible {
+   --tw-ring-opacity: 1;
+-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
++  --tw-ring-color: rgba(56, 126, 126, var(--tw-ring-opacity)); /* Soft Daisy ring */
+ }
+ .btn-primary:focus-visible {
+   --tw-ring-opacity: 1;
+-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
++  --tw-ring-color: rgba(56, 126, 126, var(--tw-ring-opacity));
+ }
+ .btn-primary:disabled:hover {
+   --tw-bg-opacity: 1;
+-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
++  background-color: rgba(28, 87, 87, var(--tw-bg-opacity));
+ }
+ .btn-secondary {
+   --tw-border-opacity: 1;
+   --tw-bg-opacity: 1;
+   --tw-text-opacity: 1;
+   background-color: transparent;
+-  background-color: rgba(16, 163, 156, var(--tw-bg-opacity));
++  background-color: rgba(56, 126, 126, var(--tw-bg-opacity));
+   color: rgba(255, 255, 255, var(--tw-text-opacity));
+ }
+ .btn-secondary:hover {
+@@ -2533,3 +2596,81 @@ html[data-input-modality='keyboard']
+ .sharepoint-picker-bg {
+   background-color: rgb(var(--surface-dialog));
+ }
++
++/* Soft Daisy atmosphere — OB1-like teal aurora on canvases */
++.omicsbase-aurora {
++  pointer-events: none;
++  position: absolute;
++  inset: 0;
++  z-index: 0;
++  overflow: hidden;
++  opacity: 0.85;
++}
++
++html.dark .omicsbase-aurora {
++  opacity: 0.95;
++}
++
++.omicsbase-aurora-glow {
++  position: absolute;
++  inset: -10%;
++  background:
++    radial-gradient(ellipse 55% 45% at 18% 30%, rgba(20, 184, 166, 0.35), transparent 62%),
++    radial-gradient(ellipse 50% 40% at 82% 22%, rgba(34, 211, 238, 0.26), transparent 58%),
++    radial-gradient(ellipse 60% 50% at 55% 70%, rgba(163, 230, 53, 0.12), transparent 65%),
++    radial-gradient(ellipse 40% 35% at 70% 55%, rgba(251, 191, 36, 0.1), transparent 60%);
++  filter: blur(8px);
++  animation: omicsbase-aurora-drift 18s ease-in-out infinite alternate;
++}
++
++html.dark .omicsbase-aurora-glow {
++  background:
++    radial-gradient(ellipse 55% 45% at 18% 30%, rgba(20, 184, 166, 0.38), transparent 62%),
++    radial-gradient(ellipse 50% 40% at 82% 22%, rgba(34, 211, 238, 0.28), transparent 58%),
++    radial-gradient(ellipse 60% 50% at 55% 70%, rgba(163, 230, 53, 0.12), transparent 65%),
++    radial-gradient(ellipse 40% 35% at 70% 55%, rgba(251, 191, 36, 0.1), transparent 60%);
++  filter: blur(8px);
++}
++
++.omicsbase-aurora-vignette {
++  position: absolute;
++  inset: 0;
++  background: radial-gradient(
++    ellipse at 50% 42%,
++    transparent 0%,
++    rgba(250, 250, 250, 0.12) 55%,
++    rgb(250, 250, 250) 100%
++  );
++}
++
++html.dark .omicsbase-aurora-vignette {
++  background: radial-gradient(
++    ellipse at 50% 42%,
++    transparent 0%,
++    rgba(5, 8, 12, 0.35) 55%,
++    rgb(5, 8, 12) 100%
++  );
++}
++
++@keyframes omicsbase-aurora-drift {
++  from {
++    transform: translate3d(-2%, -1%, 0) scale(1.02);
++  }
++  to {
++    transform: translate3d(2%, 2%, 0) scale(1.08);
++  }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .omicsbase-aurora-glow {
++    animation: none;
++  }
++}
++
++html:not(.dark) .bg-presentation {
++  background-color: rgb(250 250 250);
++}
++
++html.dark .bg-presentation {
++  background-color: rgb(5 8 12);
++}
+diff --git a/client/src/utils/__tests__/documentTitle.test.ts b/client/src/utils/__tests__/documentTitle.test.ts
+index 3cc0eacc7272decccbaada6d47740af64f7adc8d..442f6d81af01644780321c943674fff4557dc90a 100644
+--- a/client/src/utils/__tests__/documentTitle.test.ts
++++ b/client/src/utils/__tests__/documentTitle.test.ts
+@@ -35,14 +35,15 @@ describe('document title', () => {
+     expect(document.title).toBe('LibreChat');
+   });
+ 
+-  it('uses a conversation deliberately titled New Chat when enabled', () => {
+-    setDocumentTitle('New Chat', true);
++  it('uses a conversation deliberately titled New Note when enabled', () => {
++    setDocumentTitle('New Note', true);
+ 
+-    expect(document.title).toBe('New Chat');
++    expect(document.title).toBe('New Note');
+   });
+ 
+-  it('keeps rejecting the generated new chat placeholder as a real title', () => {
++  it('keeps rejecting the generated new note placeholder as a real title', () => {
+     expect(hasRealTitle('New Chat')).toBe(false);
++    expect(hasRealTitle('New Note')).toBe(false);
+   });
+ 
+   it('uses the default app title when no app title is stored', () => {
+diff --git a/client/src/utils/documentTitle.ts b/client/src/utils/documentTitle.ts
+index 322ade24bc4220d834e1fe60271e862e27d43e5c..106b4255af19b658b702cae223d96b7e1eacdeca 100644
+--- a/client/src/utils/documentTitle.ts
++++ b/client/src/utils/documentTitle.ts
+@@ -4,7 +4,7 @@ export const CHAT_TITLE_IN_TAB_KEY = 'chatTitleInTab';
+ export const DEFAULT_APP_TITLE = 'LibreChat';
+ 
+ export const hasRealTitle = (title?: string | null): title is string =>
+-  title != null && title !== '' && title !== 'New Chat';
++  title != null && title !== '' && title !== 'New Chat' && title !== 'New Note';
+ 
+ const getAppTitle = (): string => {
+   try {
+diff --git a/client/src/utils/groupToolCalls.ts b/client/src/utils/groupToolCalls.ts
+index f924a84a9ed5648a19b2a2219254e588535ab4e1..d2002d995f3af483414d47986a3f461ce33c90da 100644
+--- a/client/src/utils/groupToolCalls.ts
++++ b/client/src/utils/groupToolCalls.ts
+@@ -47,6 +47,10 @@ function isGroupableToolCall(part: TMessageContentParts): boolean {
+   if (isStandardToolCall && toolCall.name?.startsWith(Constants.LC_TRANSFER_TO_)) {
+     return false;
+   }
++  const name = toolCall.name ?? '';
++  if (name === 'execute_r_cell' || name.includes('execute_r_cell')) {
++    return false;
++  }
+   return true;
+ }
+ 
+diff --git a/client/src/utils/presets.ts b/client/src/utils/presets.ts
+index cf6933844b9f98f6d0d648dd04cb852a3518d199..b980192236cb15d0e502149ce30fd260e16b3b9f 100644
+--- a/client/src/utils/presets.ts
++++ b/client/src/utils/presets.ts
+@@ -29,7 +29,12 @@ export const getPresetTitle = (preset: TPreset, mention?: boolean) => {
+   ) {
+     title = label + ': ';
+     label = '';
+-  } else if (presetTitle != null && presetTitle && presetTitle.trim() !== 'New Chat') {
++  } else if (
++    presetTitle != null &&
++    presetTitle &&
++    presetTitle.trim() !== 'New Chat' &&
++    presetTitle.trim() !== 'New Note'
++  ) {
+     title = presetTitle + ': ';
+   }
+ 
+diff --git a/client/tailwind.config.cjs b/client/tailwind.config.cjs
+index 9c3d23cac11baa303353494c03d8408790266edc..f6653c4511d78f3b0ce3c072c2fa8b74fd8260db 100644
+--- a/client/tailwind.config.cjs
++++ b/client/tailwind.config.cjs
+@@ -17,6 +17,8 @@ module.exports = {
+   theme: {
+     fontFamily: {
+       sans: ['Inter', 'sans-serif'],
++      display: ['var(--theme-font-display)', 'Fraunces', 'ui-serif', 'Georgia', 'serif'],
++      heading: ['var(--theme-font-display)', 'Fraunces', 'ui-serif', 'Georgia', 'serif'],
+       mono: ['Roboto Mono', 'monospace'],
+     },
+     // fontFamily: {
+diff --git a/client/vite.config.ts b/client/vite.config.ts
+index 4f39f2653cc16b09eb22e797ef92ac0b8df8aacb..adda3f478bd21892f4d8ac965386c3e659c824aa 100644
+--- a/client/vite.config.ts
++++ b/client/vite.config.ts
+@@ -145,7 +145,7 @@ export default defineConfig(({ command }) => ({
+         short_name: 'LibreChat',
+         display: 'standalone',
+         background_color: '#000000',
+-        theme_color: '#009688',
++        theme_color: '#1c5757',
+         icons: [
+           {
+             src: 'assets/favicon-32x32.png',
+diff --git a/package-lock.json b/package-lock.json
+index 48b706ca9372269f5fe2199bb87021cda0293108..74d2431f678db651ea777b9983b281cfec2d2254 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -7240,7 +7240,6 @@
+       "version": "1.10.0",
+       "resolved": "https://registry.npmjs.org/@emnapi/core/-/core-1.10.0.tgz",
+       "integrity": "sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==",
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+@@ -7252,7 +7251,6 @@
+       "version": "1.10.0",
+       "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.10.0.tgz",
+       "integrity": "sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==",
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+@@ -7263,7 +7261,6 @@
+       "version": "1.2.1",
+       "resolved": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.1.tgz",
+       "integrity": "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==",
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+@@ -8710,9 +8707,6 @@
+       "cpu": [
+         "arm"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8729,9 +8723,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8748,9 +8739,6 @@
+       "cpu": [
+         "ppc64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8767,9 +8755,6 @@
+       "cpu": [
+         "riscv64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8786,9 +8771,6 @@
+       "cpu": [
+         "s390x"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8805,9 +8787,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8824,9 +8803,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8843,9 +8819,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "LGPL-3.0-or-later",
+       "optional": true,
+       "os": [
+@@ -8862,9 +8835,6 @@
+       "cpu": [
+         "arm"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -8887,9 +8857,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -8912,9 +8879,6 @@
+       "cpu": [
+         "ppc64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -8937,9 +8901,6 @@
+       "cpu": [
+         "riscv64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -8962,9 +8923,6 @@
+       "cpu": [
+         "s390x"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -8987,9 +8945,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -9012,9 +8967,6 @@
+       "cpu": [
+         "arm64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -9037,9 +8989,6 @@
+       "cpu": [
+         "x64"
+       ],
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+@@ -16993,9 +16942,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -17013,9 +16959,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -17033,9 +16976,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -17053,9 +16993,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -17073,9 +17010,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -17093,9 +17027,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -19145,7 +19076,6 @@
+       "version": "0.10.1",
+       "resolved": "https://registry.npmjs.org/@tybys/wasm-util/-/wasm-util-0.10.1.tgz",
+       "integrity": "sha512-9tTaPJLSiejZKx+Bmog4uSubteqTvFrVrURwkmHixBo0G4seD0zUxp98E1DzUBJxLQ3NPwXrGKDiVjwx/DpPsg==",
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+@@ -30649,9 +30579,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -30673,9 +30600,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -30697,9 +30621,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -30721,9 +30642,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+@@ -42883,9 +42801,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -42903,9 +42818,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -42923,9 +42835,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -42943,9 +42852,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -42963,9 +42869,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -42983,9 +42886,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43268,6 +43168,9 @@
+     "packages/client": {
+       "name": "@librechat/client",
+       "version": "0.4.77",
++      "dependencies": {
++        "unrun": "^0.2.39"
++      },
+       "devDependencies": {
+         "@babel/core": "^7.28.5",
+         "@babel/preset-env": "^7.29.5",
+@@ -43534,7 +43437,6 @@
+       "version": "1.1.4",
+       "resolved": "https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.1.4.tgz",
+       "integrity": "sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow==",
+-      "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+@@ -43559,6 +43461,20 @@
+         "url": "https://github.com/sponsors/Boshen"
+       }
+     },
++    "packages/client/node_modules/@pkgr/core": {
++      "version": "0.3.6",
++      "resolved": "https://registry.npmjs.org/@pkgr/core/-/core-0.3.6.tgz",
++      "integrity": "sha512-SEeaJLb3qBNF/OaXnaR1NmmBbFYk1zC0ZH/52fATcRPLFg/p791YrcyFFy44Bo9sLaGuSuLp5Q6axbb/O+v/RA==",
++      "license": "MIT",
++      "optional": true,
++      "peer": true,
++      "engines": {
++        "node": "^14.18.0 || >=16.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/pkgr"
++      }
++    },
+     "packages/client/node_modules/@rolldown/binding-android-arm64": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.1.0.tgz",
+@@ -43652,9 +43568,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43672,9 +43585,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43692,9 +43602,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43712,9 +43619,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43732,9 +43636,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -43752,9 +43653,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44285,6 +44183,23 @@
+         "@rolldown/binding-win32-x64-msvc": "1.1.0"
+       }
+     },
++    "packages/client/node_modules/synckit": {
++      "version": "0.11.13",
++      "resolved": "https://registry.npmjs.org/synckit/-/synckit-0.11.13.tgz",
++      "integrity": "sha512-eNRKgb3z66Yp3D2CixVujOUvXLFUTij/zVnV8KRyvFdQwpz7I5DS8UfRkTeLzb64u+dkzDSdelE24izu+zSSUg==",
++      "license": "MIT",
++      "optional": true,
++      "peer": true,
++      "dependencies": {
++        "@pkgr/core": "^0.3.6"
++      },
++      "engines": {
++        "node": "^14.18.0 || >=16.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/synckit"
++      }
++    },
+     "packages/client/node_modules/tsdown": {
+       "version": "0.22.2",
+       "resolved": "https://registry.npmjs.org/tsdown/-/tsdown-0.22.2.tgz",
+@@ -44402,6 +44317,322 @@
+         }
+       }
+     },
++    "packages/client/node_modules/unrun": {
++      "version": "0.2.39",
++      "resolved": "https://registry.npmjs.org/unrun/-/unrun-0.2.39.tgz",
++      "integrity": "sha512-h9FxYVpztY/wwq+bauLOh6Y3CWu2IVeRLq5lxzneBiIU9Tn86OGp9xiQrGhnYspAmg5dzdY0Cc8+Y70kuTARCg==",
++      "license": "MIT",
++      "dependencies": {
++        "rolldown": "1.0.0-rc.17"
++      },
++      "bin": {
++        "unrun": "dist/cli.mjs"
++      },
++      "engines": {
++        "node": ">=20.19.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/Gugustinette"
++      },
++      "peerDependencies": {
++        "synckit": "^0.11.11"
++      },
++      "peerDependenciesMeta": {
++        "synckit": {
++          "optional": true
++        }
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@oxc-project/types": {
++      "version": "0.127.0",
++      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.127.0.tgz",
++      "integrity": "sha512-aIYXQBo4lCbO4z0R3FHeucQHpF46l2LbMdxRvqvuRuW2OxdnSkcng5B8+K12spgLDj93rtN3+J2Vac/TIO+ciQ==",
++      "license": "MIT",
++      "funding": {
++        "url": "https://github.com/sponsors/Boshen"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-android-arm64": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.17.tgz",
++      "integrity": "sha512-s70pVGhw4zqGeFnXWvAzJDlvxhlRollagdCCKRgOsgUOH3N1l0LIxf83AtGzmb5SiVM4Hjl5HyarMRfdfj3DaQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-darwin-arm64": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.0.0-rc.17.tgz",
++      "integrity": "sha512-4ksWc9n0mhlZpZ9PMZgTGjeOPRu8MB1Z3Tz0Mo02eWfWCHMW1zN82Qz/pL/rC+yQa+8ZnutMF0JjJe7PjwasYw==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-darwin-x64": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.0.0-rc.17.tgz",
++      "integrity": "sha512-SUSDOI6WwUVNcWxd02QEBjLdY1VPHvlEkw6T/8nYG322iYWCTxRb1vzk4E+mWWYehTp7ERibq54LSJGjmouOsw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-freebsd-x64": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.0.0-rc.17.tgz",
++      "integrity": "sha512-hwnz3nw9dbJ05EDO/PvcjaaewqqDy7Y1rn1UO81l8iIK1GjenME75dl16ajbvSSMfv66WXSRCYKIqfgq2KCfxw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-arm-gnueabihf": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.0.0-rc.17.tgz",
++      "integrity": "sha512-IS+W7epTcwANmFSQFrS1SivEXHtl1JtuQA9wlxrZTcNi6mx+FDOYrakGevvvTwgj2JvWiK8B29/qD9BELZPyXQ==",
++      "cpu": [
++        "arm"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-arm64-gnu": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.0.0-rc.17.tgz",
++      "integrity": "sha512-e6usGaHKW5BMNZOymS1UcEYGowQMWcgZ71Z17Sl/h2+ZziNJ1a9n3Zvcz6LdRyIW5572wBCTH/Z+bKuZouGk9Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-arm64-musl": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.0.0-rc.17.tgz",
++      "integrity": "sha512-b/CgbwAJpmrRLp02RPfhbudf5tZnN9nsPWK82znefso832etkem8H7FSZwxrOI9djcdTP7U6YfNhbRnh7djErg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-ppc64-gnu": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.0.0-rc.17.tgz",
++      "integrity": "sha512-4EII1iNGRUN5WwGbF/kOh/EIkoDN9HsupgLQoXfY+D1oyJm7/F4t5PYU5n8SWZgG0FEwakyM8pGgwcBYruGTlA==",
++      "cpu": [
++        "ppc64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-s390x-gnu": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.0.0-rc.17.tgz",
++      "integrity": "sha512-AH8oq3XqQo4IibpVXvPeLDI5pzkpYn0WiZAfT05kFzoJ6tQNzwRdDYQ45M8I/gslbodRZwW8uxLhbSBbkv96rA==",
++      "cpu": [
++        "s390x"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-x64-gnu": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.0.0-rc.17.tgz",
++      "integrity": "sha512-cLnjV3xfo7KslbU41Z7z8BH/E1y5mzUYzAqih1d1MDaIGZRCMqTijqLv76/P7fyHuvUcfGsIpqCdddbxLLK9rA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-linux-x64-musl": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.0.0-rc.17.tgz",
++      "integrity": "sha512-0phclDw1spsL7dUB37sIARuis2tAgomCJXAHZlpt8PXZ4Ba0dRP1e+66lsRqrfhISeN9bEGNjQs+T/Fbd7oYGw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-openharmony-arm64": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.0.0-rc.17.tgz",
++      "integrity": "sha512-0ag/hEgXOwgw4t8QyQvUCxvEg+V0KBcA6YuOx9g0r02MprutRF5dyljgm3EmR02O292UX7UeS6HzWHAl6KgyhA==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-wasm32-wasi": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-wasm32-wasi/-/binding-wasm32-wasi-1.0.0-rc.17.tgz",
++      "integrity": "sha512-LEXei6vo0E5wTGwpkJ4KoT3OZJRnglwldt5ziLzOlc6qqb55z4tWNq2A+PFqCJuvWWdP53CVhG1Z9NtToDPJrA==",
++      "cpu": [
++        "wasm32"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@emnapi/core": "1.10.0",
++        "@emnapi/runtime": "1.10.0",
++        "@napi-rs/wasm-runtime": "^1.1.4"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-win32-arm64-msvc": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.0.0-rc.17.tgz",
++      "integrity": "sha512-gUmyzBl3SPMa6hrqFUth9sVfcLBlYsbMzBx5PlexMroZStgzGqlZ26pYG89rBb45Mnia+oil6YAIFeEWGWhoZA==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/binding-win32-x64-msvc": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.0.0-rc.17.tgz",
++      "integrity": "sha512-3hkiolcUAvPB9FLb3UZdfjVVNWherN1f/skkGWJP/fgSQhYUZpSIRr0/I8ZK9TkF3F7kxvJAk0+IcKvPHk9qQg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "packages/client/node_modules/unrun/node_modules/@rolldown/pluginutils": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-rc.17.tgz",
++      "integrity": "sha512-n8iosDOt6Ig1UhJ2AYqoIhHWh/isz0xpicHTzpKBeotdVsTEcxsSA/i3EVM7gQAj0rU27OLAxCjzlj15IWY7bg==",
++      "license": "MIT"
++    },
++    "packages/client/node_modules/unrun/node_modules/rolldown": {
++      "version": "1.0.0-rc.17",
++      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.0.0-rc.17.tgz",
++      "integrity": "sha512-ZrT53oAKrtA4+YtBWPQbtPOxIbVDbxT0orcYERKd63VJTF13zPcgXTvD4843L8pcsI7M6MErt8QtON6lrB9tyA==",
++      "license": "MIT",
++      "dependencies": {
++        "@oxc-project/types": "=0.127.0",
++        "@rolldown/pluginutils": "1.0.0-rc.17"
++      },
++      "bin": {
++        "rolldown": "bin/cli.mjs"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "optionalDependencies": {
++        "@rolldown/binding-android-arm64": "1.0.0-rc.17",
++        "@rolldown/binding-darwin-arm64": "1.0.0-rc.17",
++        "@rolldown/binding-darwin-x64": "1.0.0-rc.17",
++        "@rolldown/binding-freebsd-x64": "1.0.0-rc.17",
++        "@rolldown/binding-linux-arm-gnueabihf": "1.0.0-rc.17",
++        "@rolldown/binding-linux-arm64-gnu": "1.0.0-rc.17",
++        "@rolldown/binding-linux-arm64-musl": "1.0.0-rc.17",
++        "@rolldown/binding-linux-ppc64-gnu": "1.0.0-rc.17",
++        "@rolldown/binding-linux-s390x-gnu": "1.0.0-rc.17",
++        "@rolldown/binding-linux-x64-gnu": "1.0.0-rc.17",
++        "@rolldown/binding-linux-x64-musl": "1.0.0-rc.17",
++        "@rolldown/binding-openharmony-arm64": "1.0.0-rc.17",
++        "@rolldown/binding-wasm32-wasi": "1.0.0-rc.17",
++        "@rolldown/binding-win32-arm64-msvc": "1.0.0-rc.17",
++        "@rolldown/binding-win32-x64-msvc": "1.0.0-rc.17"
++      }
++    },
+     "packages/data-provider": {
+       "name": "librechat-data-provider",
+       "version": "0.8.522",
+@@ -44630,9 +44861,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44650,9 +44878,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44670,9 +44895,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44690,9 +44912,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44710,9 +44929,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -44730,9 +44946,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45240,9 +45453,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45260,9 +45470,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45280,9 +45487,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45300,9 +45504,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45320,9 +45521,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -45340,9 +45538,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+diff --git a/packages/api/package.json b/packages/api/package.json
+index 8bfdf28f9cbdfc611f6d5e2120bafa131a25e366..498bd7753caaa008951a984ce9c0c4756426c1e9 100644
+--- a/packages/api/package.json
++++ b/packages/api/package.json
+@@ -27,8 +27,8 @@
+   },
+   "scripts": {
+     "clean": "rimraf dist",
+-    "build": "npm run clean && tsdown",
+-    "build:dev": "npm run clean && tsdown",
++    "build": "npm run clean && tsdown --config-loader native",
++    "build:dev": "npm run clean && tsdown --config-loader native",
+     "build:watch": "tsdown --watch",
+     "build:watch:prod": "tsdown --watch",
+     "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
+diff --git a/packages/api/src/files/context.ts b/packages/api/src/files/context.ts
+index b16b498b354575a566a21daa21249f75cf436e28..fce43fdbdd138b872b2bfe52b5df5911fedfda10 100644
+--- a/packages/api/src/files/context.ts
++++ b/packages/api/src/files/context.ts
+@@ -1,3 +1,4 @@
++import path from 'path';
+ import { logger } from '@librechat/data-schemas';
+ import { FileSources, mergeFileConfig } from 'librechat-data-provider';
+ import type { IMongoFile } from '@librechat/data-schemas';
+@@ -30,9 +31,124 @@ export function getAttachmentTitleText(files?: TFile[] | null): string {
+   return filenames.length > 0 ? `Attached file(s): ${filenames.join(', ')}` : '';
+ }
+ 
++const DEFAULT_INLINE_TEXT_LIMIT_BYTES = 51200; // 50 KB
++
++const DEFAULT_DATA_EXTENSIONS = new Set([
++  '.csv',
++  '.tsv',
++  '.tab',
++  '.rds',
++  '.rda',
++  '.rdata',
++  '.parquet',
++  '.feather',
++  '.arrow',
++  '.h5ad',
++  '.h5',
++  '.hdf5',
++  '.xlsx',
++  '.xls',
++  '.fasta',
++  '.fa',
++  '.fna',
++  '.fastq',
++  '.fq',
++  '.bam',
++  '.sam',
++  '.cram',
++  '.vcf',
++  '.bcf',
++  '.gtf',
++  '.gff',
++  '.gff3',
++  '.bed',
++  '.wig',
++  '.bw',
++  '.bigwig',
++  '.mtx',
++  '.loom',
++  '.raw',
++  '.mzml',
++  '.mzxml',
++  '.mgf',
++  '.tar',
++  '.gz',
++  '.zip',
++  '.bz2',
++  '.xz',
++]);
++
++function getConfiguredDataExtensions(): Set<string> {
++  const envExts = process.env.NOTE_DATA_EXTENSIONS;
++  if (!envExts) {
++    return DEFAULT_DATA_EXTENSIONS;
++  }
++  const set = new Set(DEFAULT_DATA_EXTENSIONS);
++  for (const ext of envExts.split(',')) {
++    const trimmed = ext.trim().toLowerCase();
++    if (trimmed) {
++      set.add(trimmed.startsWith('.') ? trimmed : `.${trimmed}`);
++    }
++  }
++  return set;
++}
++
++function isTabularText(textSample?: string): boolean {
++  if (!textSample) {
++    return false;
++  }
++  const lines = textSample.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, 5);
++  if (lines.length < 2) {
++    return false;
++  }
++  for (const delimiter of ['\t', ',', ';']) {
++    const counts = lines.map((l) => l.split(delimiter).length);
++    if (counts[0] > 1 && counts.every((c) => c === counts[0])) {
++      return true;
++    }
++  }
++  return false;
++}
++
++/**
++ * Dynamically determines whether an uploaded attachment should be passed to the LLM
++ * as an R workspace data reference (data/<filename>) or inlined as raw document text.
++ */
++export function isDataFileAttachment(file: IMongoFile): boolean {
++  if (!file) {
++    return false;
++  }
++  const filename = file.filename || '';
++  const ext = filename ? path.extname(filename).toLowerCase() : '';
++  const dataExts = getConfiguredDataExtensions();
++
++  if (dataExts.has(ext)) {
++    return true;
++  }
++
++  // Size threshold: non-image files larger than 50 KB are treated as data files to save tokens
++  const limitBytes = Number(process.env.NOTE_DATA_MAX_INLINE_BYTES) || DEFAULT_INLINE_TEXT_LIMIT_BYTES;
++  if (file.bytes && file.bytes > limitBytes) {
++    return true;
++  }
++
++  // Non-text file sources (e.g. binary upload without text extraction)
++  if (file.source && file.source !== FileSources.text) {
++    return true;
++  }
++
++  // Tabular delimiter sniffing
++  if (file.text && isTabularText(file.text.slice(0, 2048))) {
++    return true;
++  }
++
++  return false;
++}
++
+ /**
+  * Extracts text context from attachments and returns formatted text.
+  * This handles text that was already extracted from files (OCR, transcriptions, document text, etc.)
++ * as well as data files bridged directly into the R NoteKernel workspace.
+  * @param params - The parameters object
+  * @param params.attachments - Array of file attachments
+  * @param params.req - Express request object for config access
+@@ -61,8 +177,14 @@ export async function extractFileContext({
+   }
+ 
+   let resultText = '';
++  let dataContext = '';
+ 
+   for (const file of attachments) {
++    if (isDataFileAttachment(file)) {
++      dataContext += `- \`data/${file.filename}\` (Name: "${file.filename}")\n`;
++      continue;
++    }
++
+     const source = file.source ?? FileSources.local;
+     if (source === FileSources.text && file.text) {
+       const { text: limitedText, wasTruncated } = await processTextWithTokenLimit({
+@@ -77,14 +199,23 @@ export async function extractFileContext({
+         );
+       }
+ 
+-      resultText += `${!resultText ? 'Attached document(s):\n```md' : '\n\n---\n\n'}# "${file.filename}"\n${limitedText}\n`;
++      resultText += `${!resultText ? 'Attached document(s):\n```md\n' : '\n\n---\n\n'}# "${file.filename}"\n${limitedText}\n`;
+     }
+   }
+ 
+-  if (resultText) {
++  if (resultText && !dataContext) {
+     resultText += '\n```';
+     return resultText;
+   }
+ 
++  if (dataContext) {
++    const noteGuidance = `\n[Attached Data Files in R Workspace]\nThe following dataset(s) have been uploaded and placed into your R NoteKernel workspace (\`data/\`):\n${dataContext}\n**Analysis Instructions for Agent:**\n- The datasets are ready on disk in your working directory. Do NOT ask the user to re-upload them.\n- Load them directly in R using appropriate functions (e.g. \`read.csv("data/<filename>")\` or \`readRDS("data/<filename>")\`).\n- Inspect dimensions and data summaries, then proceed with the requested omics analysis.\n`;
++    if (resultText) {
++      return resultText + '\n```\n' + noteGuidance;
++    }
++    return noteGuidance;
++  }
++
+   return undefined;
+ }
++
+diff --git a/packages/api/src/index.ts b/packages/api/src/index.ts
+index f78709aca835c1e7a78e9bd8171b9fea9568a0ce..8f9059ea5fd159168a18bf8ac0758d6740a62d95 100644
+--- a/packages/api/src/index.ts
++++ b/packages/api/src/index.ts
+@@ -111,3 +111,4 @@ export * from './rum/proxy';
+ export type * from './mcp/types';
+ export type * from './flow/types';
+ export type * from './types';
++export { createNoteAgentLifecycle, buildNoteArtifacts } from './notes/agent';
+diff --git a/packages/api/src/mcp/MCPManager.ts b/packages/api/src/mcp/MCPManager.ts
+index f3f703faa1b931535a5dcaf281f87a8d8d352752..b370c7838334031579b5861b0945e415c53e8286 100644
+--- a/packages/api/src/mcp/MCPManager.ts
++++ b/packages/api/src/mcp/MCPManager.ts
+@@ -851,6 +851,13 @@ Please follow these instructions when using tools from the respective MCP server
+     upstreamTokenProvider?: UpstreamTokenProvider;
+     oboIdentityContext?: AuthIdentityContext;
+   }): Promise<t.FormattedToolResponse> {
++    if (
++      serverName === 'notethreads' &&
++      toolName === 'execute_r_cell' &&
++      requestBody?.conversationId
++    ) {
++      toolArguments = { ...toolArguments, thread_id: requestBody.conversationId };
++    }
+     const userId = user?.id;
+     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
+     this.bindRequestScopedConnectionStore(requestScopedConnections);
+diff --git a/packages/api/src/mcp/__tests__/MCPManager.test.ts b/packages/api/src/mcp/__tests__/MCPManager.test.ts
+index df42a7bdb145b30303643ec935b6b3cc87242acf..ea601e6a7836f0ec8edc7ed1eb5221b77e11d23f 100644
+--- a/packages/api/src/mcp/__tests__/MCPManager.test.ts
++++ b/packages/api/src/mcp/__tests__/MCPManager.test.ts
+@@ -777,6 +777,39 @@ describe('MCPManager', () => {
+       );
+     });
+ 
++    it.each([
++      ['notethreads', 'execute_r_cell', 'current-chat'],
++      ['another-server', 'execute_r_cell', 'model-supplied'],
++      ['notethreads', 'another-tool', 'model-supplied'],
++    ])(
++      'binds only NoteThreads R execution to its chat: %s/%s',
++      async (name, toolName, expectedThread) => {
++        const manager = new MCPManager();
++        const connection = createConnection();
++        jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
++        await manager.callTool({
++          user: mockUser,
++          serverName: name,
++          serverConfig,
++          toolName,
++          toolArguments: { code: 'print(42)', thread_id: 'model-supplied' },
++          requestBody: { conversationId: 'current-chat' },
++          provider: 'openai',
++          flowManager: mockFlowManager,
++        });
++        expect(connection.client.request).toHaveBeenCalledWith(
++          expect.objectContaining({
++            params: {
++              name: toolName,
++              arguments: { code: 'print(42)', thread_id: expectedThread },
++            },
++          }),
++          expect.anything(),
++          expect.anything(),
++        );
++      },
++    );
++
+     it('updates activity when a cached connection is replaced during an in-flight call', async () => {
+       const manager = new MCPManager();
+       const activeConnection = createConnection();
+diff --git a/packages/api/src/projects/index.ts b/packages/api/src/projects/index.ts
+index 6c6f862d0182ae7ddc34e84f71e730ae642374e9..aa5b84388282c7cbec9d560a4f5529df5cdfa836 100644
+--- a/packages/api/src/projects/index.ts
++++ b/packages/api/src/projects/index.ts
+@@ -1 +1,2 @@
+ export * from './handlers';
++export * from './workspace';
+diff --git a/packages/api/src/protection/title.ts b/packages/api/src/protection/title.ts
+index 6dffda9b243e88c37ad357b86a07f6c1f0d98d41..4b20c6f80f451019d26e488447c08e69dfd19c84 100644
+--- a/packages/api/src/protection/title.ts
++++ b/packages/api/src/protection/title.ts
+@@ -2,7 +2,7 @@ import type { FiltersConfig } from 'librechat-data-provider';
+ import { extractConversationTitleContent } from './adapters/submissions';
+ import { inspectContent } from './runtime';
+ 
+-export const SAFE_CONVERSATION_TITLE = 'New Chat';
++export const SAFE_CONVERSATION_TITLE = 'New Note';
+ 
+ export interface ResolveConversationTitleOptions {
+   readonly filters?: FiltersConfig;
+diff --git a/packages/api/src/stream/GenerationJobManager.ts b/packages/api/src/stream/GenerationJobManager.ts
+index a2d7c91ca3a00d38b2c4792990b3dd287dca37e9..34083fd1d073da1e86b9eab4343bae4b96a5f0ef 100644
+--- a/packages/api/src/stream/GenerationJobManager.ts
++++ b/packages/api/src/stream/GenerationJobManager.ts
+@@ -4438,7 +4438,7 @@ class GenerationJobManagerClass {
+         final: true,
+         // Don't include conversation for early aborts - it doesn't exist in DB
+         conversation: isEarlyAbort ? null : { conversationId: jobData.conversationId },
+-        title: 'New Chat',
++        title: 'New Note',
+         requestMessage: jobData.userMessage
+           ? {
+               messageId: userMessageId,
+diff --git a/packages/client/package.json b/packages/client/package.json
+index faf16e8e5b177e5470de140f17702bce5f4d9812..1c9e04f5c5680c59a46efef34c9fe9bca9c58ef8 100644
+--- a/packages/client/package.json
++++ b/packages/client/package.json
+@@ -120,5 +120,8 @@
+     "tailwindcss-radix": "^2.8.0",
+     "tsdown": "^0.22.2",
+     "typescript": "^5.9.3"
++  },
++  "dependencies": {
++    "unrun": "^0.2.39"
+   }
+ }
+diff --git a/packages/client/src/theme/themes/dark.ts b/packages/client/src/theme/themes/dark.ts
+index b2e377f76c1e57b22146e8f592f591646a84138b..e0da53fee2eb6d3a2fdda770697d71e1a7eab525 100644
+--- a/packages/client/src/theme/themes/dark.ts
++++ b/packages/client/src/theme/themes/dark.ts
+@@ -1,105 +1,103 @@
+ import { IThemeRGB } from '../types';
+ 
+ /**
+- * Dark theme
+- * RGB values extracted from the existing dark mode CSS variables
++ * Dark theme — Soft Daisy atmosphere (OmicsBase1)
++ * Teal-tinted near-blacks + bright cyan accents (not ChatGPT flat grey)
+  */
+ export const darkTheme: IThemeRGB = {
+   // Text colors
+-  'rgb-text-primary': '236 236 236', // #ececec (gray-100)
+-  'rgb-text-secondary': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-text-secondary-alt': '153 150 150', // #999696 (gray-400)
+-  'rgb-text-tertiary': '153 150 150', // #999696 (gray-400)
+-  'rgb-text-warning': '245 158 11', // #f59e0b (amber-500)
+-  'rgb-text-destructive': '248 113 113', // #f87171 (red-400)
+-  'rgb-shimmer-base': '255 255 255', // #ffffff, carried at 0.8 alpha
+-  'rgb-shimmer-dip': '179 179 179', // #b3b3b3
++  'rgb-text-primary': '246 246 243', // #f6f6f3 Soft Daisy warm white
++  'rgb-text-secondary': '203 213 225', // #cbd5e1
++  'rgb-text-secondary-alt': '148 163 184', // #94a3b8
++  'rgb-text-tertiary': '148 163 184', // #94a3b8
++  'rgb-text-warning': '245 158 11', // #f59e0b
++  'rgb-text-destructive': '248 113 113', // #f87171
++  'rgb-shimmer-base': '255 255 255',
++  'rgb-shimmer-dip': '179 179 179',
+ 
+   // Link and accent colors
+-  'rgb-link': '96 165 250', // #60a5fa (blue-400)
+-  'rgb-link-hover': '147 197 253', // #93c5fd (blue-300)
+-  'rgb-link-visited': '192 132 252', // #c084fc (purple-400)
+-  'rgb-accent-primary': '65 167 157', // #41a79d
+-  'rgb-accent-primary-hover': '109 200 185', // #6dc8b9
++  'rgb-link': '96 165 250', // #60a5fa
++  'rgb-link-hover': '147 197 253', // #93c5fd
++  'rgb-link-visited': '192 132 252', // #c084fc
++  'rgb-accent-primary': '99 204 192', // #63ccc0 Soft Daisy primary
++  'rgb-accent-primary-hover': '133 225 213', // #85e1d5
+ 
+-  // Ring colors (not defined in dark mode, using default)
+-  'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
++  // Ring colors
++  'rgb-ring-primary': '45 212 191', // #2dd4bf teal-400
+ 
+-  // Header colors
+-  'rgb-header-primary': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-header-hover': '66 66 66', // #424242 (gray-600)
+-  'rgb-header-button-hover': '47 47 47', // #2f2f2f (gray-700)
++  // Header colors — teal-charcoal
++  'rgb-header-primary': '12 18 22', // #0c1216
++  'rgb-header-hover': '18 28 32', // #121c20
++  'rgb-header-button-hover': '18 28 32', // #121c20
+ 
+-  // Surface colors
+-  'rgb-surface-active': '89 89 89', // #595959 (gray-500)
+-  'rgb-surface-active-alt': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-surface-hover': '57 57 57', // #393939 (gray-650)
+-  'rgb-surface-hover-alt': '66 66 66', // #424242 (gray-600)
+-  'rgb-surface-composer-hover': '66 66 66', // #424242 (gray-600)
+-  'rgb-surface-primary': '13 13 13', // #0d0d0d (gray-900)
+-  'rgb-surface-primary-alt': '23 23 23', // #171717 (gray-850)
+-  'rgb-surface-primary-contrast': '23 23 23', // #171717 (gray-850)
+-  'rgb-surface-secondary': '33 33 33', // #212121 (gray-800)
+-  'rgb-surface-secondary-alt': '33 33 33', // #212121 (gray-800)
+-  'rgb-surface-tertiary': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-surface-tertiary-alt': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-surface-dialog': '18 18 18', // #121212 (legacy dark dialog)
+-  'rgb-surface-overlay': '0 0 0', // #000 (black)
+-  'rgb-surface-submit': '4 120 87', // #047857 (green-700)
+-  'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
+-  'rgb-surface-destructive': '153 27 27', // #991b1b (red-800)
+-  'rgb-surface-destructive-hover': '127 29 29', // #7f1d1d (red-900)
+-  'rgb-surface-chat': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-surface-inverted': '255 255 255', // #fff (white)
+-  'rgb-surface-inverted-hover': '236 236 236', // #ececec (gray-100)
+-  'rgb-text-inverted': '23 23 23', // #171717 (gray-850)
+-  'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
+-  'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
+-  'rgb-text-fixed': '33 33 33', // #212121 (gray-800) — same in light + dark
++  // Surface colors — teal-black hierarchy (OB1 #05080c family)
++  'rgb-surface-active': '28 87 87', // #1c5757 Soft Daisy teal
++  'rgb-surface-active-alt': '22 50 51', // #163233
++  'rgb-surface-hover': '18 36 38', // #122426
++  'rgb-surface-hover-alt': '22 50 51', // #163233
++  'rgb-surface-composer-hover': '23 25 36', // #171924
++  'rgb-surface-primary': '5 8 12', // #05080c Soft Daisy hero base
++  'rgb-surface-primary-alt': '12 18 22', // #0c1216 sidebar/card
++  'rgb-surface-primary-contrast': '18 28 32', // #121c20
++  'rgb-surface-secondary': '12 18 22', // #0c1216
++  'rgb-surface-secondary-alt': '18 28 32', // #121c20
++  'rgb-surface-tertiary': '22 40 42', // #16282a
++  'rgb-surface-tertiary-alt': '22 40 42', // #16282a
++  'rgb-surface-dialog': '18 20 28', // #12141c Soft Daisy composer
++  'rgb-surface-overlay': '0 0 0',
++  'rgb-surface-submit': '28 87 87', // #1c5757
++  'rgb-surface-submit-hover': '45 212 191', // #2dd4bf
++  'rgb-surface-destructive': '153 27 27',
++  'rgb-surface-destructive-hover': '127 29 29',
++  'rgb-surface-chat': '12 18 22', // #0c1216
++  'rgb-surface-inverted': '255 255 255',
++  'rgb-surface-inverted-hover': '237 247 246',
++  'rgb-text-inverted': '5 8 12',
++  'rgb-surface-fixed': '255 255 255',
++  'rgb-surface-fixed-hover': '237 247 246',
++  'rgb-text-fixed': '21 27 33',
+ 
+-  // Border colors
+-  'rgb-border-light': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-border-medium': '66 66 66', // #424242 (gray-600)
+-  'rgb-border-medium-alt': '66 66 66', // #424242 (gray-600)
+-  'rgb-border-heavy': '89 89 89', // #595959 (gray-500)
+-  'rgb-border-xheavy': '153 150 150', // #999696 (gray-400)
+-  'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
++  // Border colors — teal-tinted
++  'rgb-border-light': '22 40 42', // #16282a
++  'rgb-border-medium': '28 60 58', // #1c3c3a
++  'rgb-border-medium-alt': '28 60 58',
++  'rgb-border-heavy': '45 90 88', // #2d5a58
++  'rgb-border-xheavy': '99 204 192', // #63ccc0
++  'rgb-border-destructive': '239 68 68',
+ 
+   // Status colors
+-  'rgb-status-success': '110 231 183', // #6ee7b7 (green-300)
+-  'rgb-status-success-subtle': '2 44 34', // #022c22 (green-950)
+-  'rgb-status-success-border': '6 95 70', // #065f46 (green-800)
+-  'rgb-status-success-strong': '6 95 70', // #065f46 (green-800)
+-  'rgb-status-info': '147 197 253', // #93c5fd (blue-300)
+-  'rgb-status-info-subtle': '23 37 84', // #172554 (blue-950)
+-  'rgb-status-info-border': '30 64 175', // #1e40af (blue-800)
+-  'rgb-status-info-strong': '66 66 66', // #424242 (gray-600)
+-  'rgb-status-warning': '252 211 77', // #fcd34d (amber-300)
+-  'rgb-status-warning-subtle': '69 26 3', // #451a03 (amber-950)
+-  'rgb-status-warning-border': '146 64 14', // #92400e (amber-800)
+-  'rgb-status-warning-strong': '146 64 14', // #92400e (amber-800)
+-  'rgb-status-error': '252 165 165', // #fca5a5 (red-300)
+-  'rgb-status-error-subtle': '69 10 10', // #450a0a (red-950)
+-  'rgb-status-error-border': '153 27 27', // #991b1b (red-800)
+-  'rgb-status-error-strong': '153 27 27', // #991b1b (red-800)
+-  'rgb-status-neutral': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-status-neutral-subtle': '33 33 33', // #212121 (gray-800)
+-  'rgb-status-neutral-border': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-text-on-status': '255 255 255', // #fff (white)
++  'rgb-status-success': '99 204 192',
++  'rgb-status-success-subtle': '5 26 21',
++  'rgb-status-success-border': '10 67 67',
++  'rgb-status-success-strong': '28 87 87',
++  'rgb-status-info': '147 197 253',
++  'rgb-status-info-subtle': '23 37 84',
++  'rgb-status-info-border': '30 64 175',
++  'rgb-status-info-strong': '66 66 66',
++  'rgb-status-warning': '252 211 77',
++  'rgb-status-warning-subtle': '69 26 3',
++  'rgb-status-warning-border': '146 64 14',
++  'rgb-status-warning-strong': '146 64 14',
++  'rgb-status-error': '252 165 165',
++  'rgb-status-error-subtle': '69 10 10',
++  'rgb-status-error-border': '153 27 27',
++  'rgb-status-error-strong': '153 27 27',
++  'rgb-status-neutral': '203 213 225',
++  'rgb-status-neutral-subtle': '12 18 22',
++  'rgb-status-neutral-border': '22 40 42',
++  'rgb-text-on-status': '255 255 255',
+ 
+   // Brand colors
+-  'rgb-brand-purple': '171 104 255', // #ab68ff
++  'rgb-brand-purple': '171 104 255',
+ 
+-  /** Categorical series scale — the same seven hues stepped for the #212121
+-   *  surface: worst adjacent CVD ΔE 13.0, normal-vision ΔE 19.0, all ≥ 3:1. */
+-  'rgb-series-1': '9 140 238', // #098cee (cerulean)
+-  'rgb-series-2': '217 87 35', // #d95723 (orange)
+-  'rgb-series-3': '6 158 152', // #069e98 (aqua)
+-  'rgb-series-4': '200 133 12', // #c8850c (amber)
+-  'rgb-series-5': '213 82 130', // #d55282 (magenta)
+-  'rgb-series-6': '171 104 254', // #ab68fe (violet)
+-  'rgb-series-7': '80 167 49', // #50a731 (green)
++  'rgb-series-1': '9 140 238',
++  'rgb-series-2': '217 87 35',
++  'rgb-series-3': '99 204 192',
++  'rgb-series-4': '200 133 12',
++  'rgb-series-5': '213 82 130',
++  'rgb-series-6': '171 104 254',
++  'rgb-series-7': '45 212 191',
+ 
+-  // Presentation
+-  'rgb-presentation': '33 33 33', // #212121 (gray-800)
++  // Presentation — Soft Daisy hero base (teal-black, not flat #0a0a0a)
++  'rgb-presentation': '5 8 12', // #05080c
+ };
+diff --git a/packages/client/src/theme/themes/default.ts b/packages/client/src/theme/themes/default.ts
+index 3d3949cc8b6e3f979b40529baccca00c66871c4a..c7fba3f3400170d01ba2c395b856b262cce98c7e 100644
+--- a/packages/client/src/theme/themes/default.ts
++++ b/packages/client/src/theme/themes/default.ts
+@@ -1,91 +1,91 @@
+ import { IThemeRGB } from '../types';
+ 
+ /**
+- * Default light theme
+- * RGB values extracted from the existing CSS variables
++ * Default light theme — Soft Daisy–aligned (OmicsBase1)
++ * Cool teal brand on soft off-white surfaces
+  */
+ export const defaultTheme: IThemeRGB = {
+-  // Text colors
+-  'rgb-text-primary': '33 33 33', // #212121 (gray-800)
+-  'rgb-text-secondary': '66 66 66', // #424242 (gray-600)
+-  'rgb-text-secondary-alt': '89 89 89', // #595959 (gray-500)
+-  'rgb-text-tertiary': '89 89 89', // #595959 (gray-500)
++  // Text colors (cool blue-greys, hue ~250)
++  'rgb-text-primary': '21 27 33', // #151b21
++  'rgb-text-secondary': '35 42 48', // #232a30
++  'rgb-text-secondary-alt': '87 94 102', // #575e66
++  'rgb-text-tertiary': '87 94 102', // #575e66
+   'rgb-text-warning': '180 83 9', // #b45309 (amber-700)
+   'rgb-text-destructive': '220 38 38', // #dc2626 (red-600)
+-  'rgb-shimmer-base': '33 33 33', // #212121 (gray-800), matching text-primary
++  'rgb-shimmer-base': '21 27 33', // #151b21
+   'rgb-shimmer-dip': '129 130 134', // #818286
+ 
+   // Link and accent colors
+   'rgb-link': '37 99 235', // #2563eb (blue-600)
+   'rgb-link-hover': '29 78 216', // #1d4ed8 (blue-700)
+   'rgb-link-visited': '147 51 234', // #9333ea (purple-600)
+-  'rgb-accent-primary': '18 110 107', // #126e6b
+-  'rgb-accent-primary-hover': '10 79 83', // #0a4f53
++  'rgb-accent-primary': '28 87 87', // #1c5757 Soft Daisy primary
++  'rgb-accent-primary-hover': '10 67 67', // #0a4343
+ 
+   // Ring colors
+-  'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
++  'rgb-ring-primary': '56 126 126', // #387e7e Soft Daisy ring
+ 
+   // Header colors
+-  'rgb-header-primary': '255 255 255', // #fff (white)
+-  'rgb-header-hover': '247 247 248', // #f7f7f8 (gray-50)
+-  'rgb-header-button-hover': '247 247 248', // #f7f7f8 (gray-50)
++  'rgb-header-primary': '255 255 255', // #fff
++  'rgb-header-hover': '237 247 246', // #edf7f6 Soft Daisy accent
++  'rgb-header-button-hover': '237 247 246', // #edf7f6
+ 
+   // Surface colors
+-  'rgb-surface-active': '236 236 236', // #ececec (gray-100)
+-  'rgb-surface-active-alt': '227 227 227', // #e3e3e3 (gray-200)
+-  'rgb-surface-hover': '227 227 227', // #e3e3e3 (gray-200)
+-  'rgb-surface-hover-alt': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-surface-composer-hover': '227 227 227', // #e3e3e3 (gray-200)
+-  'rgb-surface-primary': '255 255 255', // #fff (white)
+-  'rgb-surface-primary-alt': '247 247 248', // #f7f7f8 (gray-50)
+-  'rgb-surface-primary-contrast': '236 236 236', // #ececec (gray-100)
+-  'rgb-surface-secondary': '247 247 248', // #f7f7f8 (gray-50)
+-  'rgb-surface-secondary-alt': '227 227 227', // #e3e3e3 (gray-200)
+-  'rgb-surface-tertiary': '236 236 236', // #ececec (gray-100)
+-  'rgb-surface-tertiary-alt': '255 255 255', // #fff (white)
+-  'rgb-surface-dialog': '255 255 255', // #fff (white)
+-  'rgb-surface-overlay': '89 89 89', // #595959 (gray-500)
+-  'rgb-surface-submit': '4 120 87', // #047857 (green-700)
+-  'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
++  'rgb-surface-active': '237 247 246', // #edf7f6 Soft Daisy accent
++  'rgb-surface-active-alt': '220 240 237', // #dcf0ed stronger Soft Daisy wash
++  'rgb-surface-hover': '237 247 246', // #edf7f6 Soft Daisy accent
++  'rgb-surface-hover-alt': '220 240 237', // #dcf0ed
++  'rgb-surface-composer-hover': '237 247 246', // #edf7f6
++  'rgb-surface-primary': '255 255 255', // #fff cards
++  'rgb-surface-primary-alt': '244 244 246', // #f4f4f6
++  'rgb-surface-primary-contrast': '237 247 246', // #edf7f6
++  'rgb-surface-secondary': '244 244 246', // #f4f4f6
++  'rgb-surface-secondary-alt': '237 247 246', // #edf7f6
++  'rgb-surface-tertiary': '237 247 246', // #edf7f6
++  'rgb-surface-tertiary-alt': '255 255 255', // #fff
++  'rgb-surface-dialog': '255 255 255', // #fff
++  'rgb-surface-overlay': '87 94 102', // #575e66
++  'rgb-surface-submit': '28 87 87', // #1c5757 Soft Daisy primary
++  'rgb-surface-submit-hover': '10 67 67', // #0a4343
+   'rgb-surface-destructive': '185 28 28', // #b91c1c (red-700)
+   'rgb-surface-destructive-hover': '153 27 27', // #991b1b (red-800)
+-  'rgb-surface-chat': '255 255 255', // #fff (white)
+-  'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
+-  'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
+-  'rgb-text-inverted': '255 255 255', // #fff (white)
+-  'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
+-  'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
+-  'rgb-text-fixed': '33 33 33', // #212121 (gray-800) — same in light + dark
++  'rgb-surface-chat': '255 255 255', // #fff
++  'rgb-surface-inverted': '23 23 23', // #171717
++  'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f
++  'rgb-text-inverted': '255 255 255', // #fff
++  'rgb-surface-fixed': '255 255 255', // #fff — same in light + dark
++  'rgb-surface-fixed-hover': '237 247 246', // #edf7f6
++  'rgb-text-fixed': '21 27 33', // #151b21 — same in light + dark
+ 
+-  // Border colors
+-  'rgb-border-light': '227 227 227', // #e3e3e3 (gray-200)
+-  'rgb-border-medium': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-border-medium-alt': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-border-heavy': '153 150 150', // #999696 (gray-400)
+-  'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
+-  'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
++  // Border colors — soft teal-grey (Soft Daisy)
++  'rgb-border-light': '220 232 230', // #dce8e6
++  'rgb-border-medium': '196 216 214', // #c4d8d6
++  'rgb-border-medium-alt': '196 216 214', // #c4d8d6
++  'rgb-border-heavy': '148 180 176', // #94b4b0
++  'rgb-border-xheavy': '87 94 102', // #575e66
++  'rgb-border-destructive': '220 38 38', // #dc2626
+ 
+-  // Status colors
+-  'rgb-status-success': '4 120 87', // #047857 (green-700)
+-  'rgb-status-success-subtle': '236 253 245', // #ecfdf5 (green-50)
+-  'rgb-status-success-border': '110 231 183', // #6ee7b7 (green-300)
+-  'rgb-status-success-strong': '2 133 94', // #02855e
+-  'rgb-status-info': '37 99 235', // #2563eb (blue-600)
+-  'rgb-status-info-subtle': '239 246 255', // #eff6ff (blue-50)
+-  'rgb-status-info-border': '147 197 253', // #93c5fd (blue-300)
+-  'rgb-status-info-strong': '89 89 89', // #595959 (gray-500)
+-  'rgb-status-warning': '180 83 9', // #b45309 (amber-700)
+-  'rgb-status-warning-subtle': '255 251 235', // #fffbeb (amber-50)
+-  'rgb-status-warning-border': '252 211 77', // #fcd34d (amber-300)
++  // Status colors (success in Soft Daisy teal family)
++  'rgb-status-success': '28 87 87', // #1c5757
++  'rgb-status-success-subtle': '237 247 246', // #edf7f6
++  'rgb-status-success-border': '121 189 180', // #79bdb4
++  'rgb-status-success-strong': '10 67 67', // #0a4343
++  'rgb-status-info': '37 99 235', // #2563eb
++  'rgb-status-info-subtle': '239 246 255', // #eff6ff
++  'rgb-status-info-border': '147 197 253', // #93c5fd
++  'rgb-status-info-strong': '87 94 102', // #575e66
++  'rgb-status-warning': '180 83 9', // #b45309
++  'rgb-status-warning-subtle': '255 251 235', // #fffbeb
++  'rgb-status-warning-border': '252 211 77', // #fcd34d
+   'rgb-status-warning-strong': '199 82 9', // #c75209
+-  'rgb-status-error': '185 28 28', // #b91c1c (red-700)
+-  'rgb-status-error-subtle': '254 242 242', // #fef2f2 (red-50)
+-  'rgb-status-error-border': '252 165 165', // #fca5a5 (red-300)
++  'rgb-status-error': '185 28 28', // #b91c1c
++  'rgb-status-error-subtle': '254 242 242', // #fef2f2
++  'rgb-status-error-border': '252 165 165', // #fca5a5
+   'rgb-status-error-strong': '224 47 31', // #e02f1f
+-  'rgb-status-neutral': '66 66 66', // #424242 (gray-600)
+-  'rgb-status-neutral-subtle': '236 236 236', // #ececec (gray-100)
+-  'rgb-status-neutral-border': '205 205 205', // #cdcdcd (gray-300)
+-  'rgb-text-on-status': '255 255 255', // #fff (white)
++  'rgb-status-neutral': '35 42 48', // #232a30
++  'rgb-status-neutral-subtle': '244 244 246', // #f4f4f6
++  'rgb-status-neutral-border': '205 205 205', // #cdcdcd
++  'rgb-text-on-status': '255 255 255', // #fff
+ 
+   // Brand colors
+   'rgb-brand-purple': '126 34 206', // #7e22ce (purple-700)
+@@ -99,8 +99,8 @@ export const defaultTheme: IThemeRGB = {
+   'rgb-series-4': '182 123 5', // #b67b05 (amber)
+   'rgb-series-5': '216 90 142', // #d85a8e (magenta)
+   'rgb-series-6': '126 35 205', // #7e23cd (violet)
+-  'rgb-series-7': '1 131 1', // #018301 (green)
++  'rgb-series-7': '28 87 87', // #1c5757 Soft Daisy teal
+ 
+-  // Presentation
+-  'rgb-presentation': '255 255 255', // #fff (white)
++  // Presentation — Soft Daisy background (#fafafa)
++  'rgb-presentation': '250 250 250', // #fafafa
+ };
+diff --git a/packages/client/src/theme/utils/createTailwindColors.js b/packages/client/src/theme/utils/createTailwindColors.js
+index 00f82ba2e07f9b9f7ab76f0052b1c371c489cbfe..b2700d53743279dffa2e2a4ea22659209aa2b4db 100644
+--- a/packages/client/src/theme/utils/createTailwindColors.js
++++ b/packages/client/src/theme/utils/createTailwindColors.js
+@@ -34,18 +34,20 @@ const palette = {
+     850: '#171717',
+     900: '#0d0d0d',
+   },
++  // Soft Daisy teal family (OmicsBase1) — replaces ChatGPT #10a37f green
+   green: {
+-    50: '#f1f9f7',
+-    100: '#def2ed',
+-    200: '#a6e5d6',
+-    300: '#6dc8b9',
+-    400: '#41a79d',
+-    500: '#10a37f',
+-    550: '#349072',
+-    600: '#126e6b',
+-    700: '#0a4f53',
+-    800: '#06373e',
+-    900: '#031f29',
++    50: '#edf7f6',
++    100: '#d5efec',
++    200: '#a8dbd6',
++    300: '#79bdb4',
++    400: '#43a196',
++    500: '#387e7e',
++    550: '#2a6b6b',
++    600: '#1c5757',
++    700: '#0a4343',
++    800: '#0f3536',
++    900: '#082022',
++    950: '#051a15',
+   },
+ };
+ 
+diff --git a/packages/client/tailwind.preset.cjs b/packages/client/tailwind.preset.cjs
+index a25b41b8b0d61164c4c4c279eda69ebc5a823c52..05d8018fb38afdbc6e8a5dca84d4810e8efeb494 100644
+--- a/packages/client/tailwind.preset.cjs
++++ b/packages/client/tailwind.preset.cjs
+@@ -4,6 +4,9 @@ module.exports = {
+     extend: {
+       fontFamily: {
+         'theme-ui': ['var(--theme-font-family, Inter, sans-serif)'],
++        'theme-display': [
++          'var(--theme-font-display, Fraunces, ui-serif, Georgia, serif)',
++        ],
+       },
+       height: {
+         'theme-control': 'var(--theme-control-height, 2.25rem)',
+diff --git a/packages/data-provider/src/schemas.ts b/packages/data-provider/src/schemas.ts
+index 79162848580d6336819d40c29360f19c740f10b0..edc7e5197aa584d22dc99fe2d31e7cfc8082b560 100644
+--- a/packages/data-provider/src/schemas.ts
++++ b/packages/data-provider/src/schemas.ts
+@@ -852,7 +852,7 @@ export const tMessageSchema = z.object({
+   overrideParentMessageId: z.string().nullable().optional(),
+   bg: z.string().nullable().optional(),
+   model: z.string().nullable().optional(),
+-  title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
++  title: z.string().nullable().or(z.literal('New Chat')).or(z.literal('New Note')).default('New Note'),
+   sender: z.string().optional(),
+   text: z.string(),
+   /** @deprecated */
+@@ -1080,7 +1080,7 @@ export const tConversationSchema = z.object({
+   pinned: z.boolean().optional(),
+   /** Server-derived: an active shared link exists for this conversation. Not persisted. */
+   isShared: z.boolean().optional(),
+-  title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
++  title: z.string().nullable().or(z.literal('New Chat')).or(z.literal('New Note')).default('New Note'),
+   user: z.string().optional(),
+   messages: z.array(z.string()).optional(),
+   tools: z.union([z.array(tPluginSchema), z.array(z.string())]).optional(),
+diff --git a/packages/data-schemas/src/methods/conversation.ts b/packages/data-schemas/src/methods/conversation.ts
+index 036cf31d46f64ff450b48067c59bebccf8b46360..d3ad9ed24d4c0347ce71c03b25d2aeaa1007fa01 100644
+--- a/packages/data-schemas/src/methods/conversation.ts
++++ b/packages/data-schemas/src/methods/conversation.ts
+@@ -2893,7 +2893,7 @@ export function createConversationMethods(
+   }
+ 
+   /**
+-   * Gets conversation title, returning 'New Chat' as default.
++   * Gets conversation title, returning 'New Note' as default.
+    */
+   async function getConvoTitle(user: string, conversationId: string) {
+     try {
+@@ -2901,7 +2901,7 @@ export function createConversationMethods(
+       if (convo && !convo.title) {
+         return null;
+       } else {
+-        return convo?.title || 'New Chat';
++        return convo?.title || 'New Note';
+       }
+     } catch (error) {
+       logger.error('[getConvoTitle] Error getting conversation title', error);
+diff --git a/packages/data-schemas/src/schema/convo.ts b/packages/data-schemas/src/schema/convo.ts
+index c853b1b1606d9f6771bc07c2e7d5ff8c1261a669..a81020cd8a457c22e0686017ef7ce674563e4bb6 100644
+--- a/packages/data-schemas/src/schema/convo.ts
++++ b/packages/data-schemas/src/schema/convo.ts
+@@ -27,7 +27,7 @@ const convoSchema: Schema<IConversation> = new Schema(
+     },
+     title: {
+       type: String,
+-      default: 'New Chat',
++      default: 'New Note',
+       meiliIndex: true,
+     },
+     user: {
+diff --git a/packages/data-schemas/src/schema/preset.ts b/packages/data-schemas/src/schema/preset.ts
+index adb49d2ae93b2631df4a4cf4f6ca20c7513b79da..cd95eea05d4414d34dfcea66950197c2b5acd047 100644
+--- a/packages/data-schemas/src/schema/preset.ts
++++ b/packages/data-schemas/src/schema/preset.ts
+@@ -69,7 +69,7 @@ const presetSchema: Schema<IPreset> = new Schema(
+     },
+     title: {
+       type: String,
+-      default: 'New Chat',
++      default: 'New Note',
+       meiliIndex: true,
+     },
+     user: {

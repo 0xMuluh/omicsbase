@@ -1,0 +1,85 @@
+services:
+  api:
+    environment:
+      - OMICSBASE_AUTH_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - NOTEKERNEL_URL=http://engine:8001
+      - PROJECTS_DIR=/app/projects
+    volumes:
+      - ./api/server/controllers/auth/LogoutController.js:/app/api/server/controllers/auth/LogoutController.js:ro
+      - ./api/server/routes/projects.js:/app/api/server/routes/projects.js:ro
+      - ./api/server/routes/notes.js:/app/api/server/routes/notes.js:ro
+      - ./api/server/routes/index.js:/app/api/server/routes/index.js:ro
+      - ./api/server/index.js:/app/api/server/index.js:ro
+      - ./api/server/experimental.js:/app/api/server/experimental.js:ro
+      - ./api/server/services/Files/process.js:/app/api/server/services/Files/process.js:ro
+      - ./api/server/services/NoteCells:/app/api/server/services/NoteCells:ro
+      - ../projects:/app/projects:rw
+      - ./packages/api/dist:/app/packages/api/dist:ro
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - type: bind
+        source: ./client/dist
+        target: /app/client/dist
+    depends_on:
+      - engine
+
+  engine:
+    image: omicsbase3-engine:dev
+    container_name: omicsbase-engine
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - PROJECTS_DIR=/app/projects
+      - BASE_URL=http://localhost:8001
+      - OMICSBASE_AUTH_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - LIBRECHAT_INTERNAL_URL=http://api:3080
+    volumes:
+      - ../engine:/app/engine
+      - ../projects:/app/projects
+    command: ["python3", "-m", "engine.server"]
+
+  openhands:
+    image: ghcr.io/all-hands-ai/openhands@sha256:00968de77a7b36546413e1f3b5c6b4e2c387d19ade54de7926e10f5b3d265fa6
+    container_name: openhands-engine
+    restart: always
+    ports:
+      - "3001:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OPENHANDS_CONFIG_CLS=omicsbase_shared.config.OmicsBaseConfig
+      - OPENHANDS_CONVERSATION_VALIDATOR_CLS=omicsbase_shared.validator.OmicsBaseConversationValidator
+      - RUNTIME=omicsbase_shared.runtime.UserRuntime
+      - PYTHONPATH=/app
+      - OMICSBASE_AUTH_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - SANDBOX_USER_ID=0
+      - WORKSPACE_BASE=/opt/workspace_base
+      - SANDBOX_BASE_CONTAINER_IMAGE=omicsbase3-engine:dev
+      - SANDBOX_RUNTIME_CONTAINER_IMAGE=ghcr.io/all-hands-ai/runtime:oh_v0.59.0_u7xrcdon3571uhle_5doq70abc44uwfa1
+      - LOG_ALL_EVENTS=true
+      - RUN_AS_OPENHANDS=false
+      - LLM_MODEL=openai/glm-5.3-flash
+      - LLM_BASE_URL=${BAI_BASE_URL:-https://api.b.ai/v1}
+      - LLM_API_KEY=${BAI_API_KEY}
+      - ENABLE_VSCODE=false
+      - FILE_STORE_PATH=/.openhands
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/.openhands
+      - ../projects:/opt/workspace_base
+      - ./patches/omicsbase_shared:/app/omicsbase_shared:ro
+      - ./patches/files.py:/app/openhands/server/routes/files.py
+      - ./patches/system_prompt.j2:/app/openhands/agenthub/codeact_agent/prompts/system_prompt.j2
+      - ./patches/fn_call_converter.py:/app/openhands/llm/fn_call_converter.py
+      - ./patches/vscode-settings.json:/app/openhands/runtime/plugins/vscode/settings.json:ro
+    command:
+      - /bin/bash
+      - -c
+      - |
+        rm -rf /root/.openhands && ln -s /.openhands /root/.openhands
+        python3 -c "import os, json; f='/.openhands/settings.json'; s=json.load(open(f)) if os.path.exists(f) else {'language':'en','agent':'CodeActAgent'}; s['llm_model']=os.environ.get('LLM_MODEL',s.get('llm_model')); s['llm_base_url']=os.environ.get('LLM_BASE_URL',s.get('llm_base_url')); s['llm_api_key']=os.environ.get('LLM_API_KEY',s.get('llm_api_key')); json.dump(s, open(f,'w'), indent=2)"
+        exec uvicorn omicsbase_shared.app:app --host 0.0.0.0 --port 3000
+
+

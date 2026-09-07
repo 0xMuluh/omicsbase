@@ -1,0 +1,22 @@
+# Development checkouts are preserved through upstream patches and additions.
+/librechat/
+/openhands/
+/projects/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+build/
+*.log
+*.db
+*.db-*
+*.sqlite*
+.Rhistory
+.RData
+.DS_Store

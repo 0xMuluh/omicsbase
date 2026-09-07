@@ -1,0 +1,52 @@
+{
+  "librechat": {
+    "url": "https://github.com/danny-avila/LibreChat.git",
+    "commit": "f9f1b2fb951a99e1fd01ee7291304a0370ea6132",
+    "patch_sha256": "2f9c2a04051009fc823f39825f67ec9db72788bbbdc46e69e7e84837b98e6ffe",
+    "addition_sha256": {
+      "api/server/routes/notes.js": "6602fb463d924e88928d4f59648385d4bb7b30ab66b51a821ce6e05fd976e675",
+      "api/server/services/NoteCells/engineClient.js": "ce97cc67c186c446d560025ca6c6c38d7c81ed95d5abf71961b47d2fcb2520ec",
+      "api/server/services/NoteCells/models.js": "dc7d860bfd659b2ef1f004f20aed99208b95b09e85335380cd833cfb35d3869e",
+      "api/server/services/NoteCells/noteDataBridge.js": "f31d89241e62473ea8fcae277673682c561ccad5874a4558197b63652c2187a6",
+      "api/server/services/NoteCells/service.js": "bdb118fb8c7cfc61e59ab43a3a2b9fbf7411f3d9af17b54a2b0771fe99b87202",
+      "client/src/components/Chat/Input/AddRCellButton.tsx": "f4066433dec794237ece0566eac545ae306670e1e59c3ba60f196a35bcab5915",
+      "client/src/components/Chat/Input/ComposerPlusMenu.tsx": "c06776af54591620ce6b44aeebcd9e095cd2e289a411ce286cf2a444853a88c6",
+      "client/src/components/Messages/Content/RCellBlock.tsx": "9847f0a2653b5166e97fa751cd3cacb490ad87bdc365b20be5190cc141c9e110",
+      "client/src/components/Projects/WorkspaceCanvas.tsx": "c54656192c724412d816ab567f5ea0211e2698defdef6934d4def7255e046162",
+      "client/src/components/Projects/useEmbeddedTheme.ts": "30999046359f4e50a6d998b622cce2e7a2e3c6aa592a98f565273466d227bf18",
+      "client/src/data-provider/Notes/notesCellsApi.ts": "dd3bc9dfbeeef747458f2ab5d23a6960a75f418d3fd7991700126691a9bc5507",
+      "packages/api/src/notes/agent.spec.ts": "df82e3493eb5c67372480df054c300f3b432bf5fab76c945df3573aaabb6c59d",
+      "packages/api/src/notes/agent.ts": "2cd4ff7d14e280d9a700673d26d4af37c1fbb69871d0c21772d96681ae61ba1e",
+      "packages/api/src/projects/workspace.spec.ts": "3a73b7af8ab7ca4d09600ee77630161ee27d713850f6b6300881a0c62cfc4a0f",
+      "packages/api/src/projects/workspace.ts": "6ce3af5d4fdecbb00adc923e19c956fe697f9de17e93bd8a7d3a261a4da0fcbd",
+      "patches/action_execution_server.py": "786c36e91674ca4203afe8d05c8502b0f2d96afb1d6beda2eb0f14dbc3f68e08",
+      "patches/files.py": "f9055e62338c4931e3c20247279014979c0884be05f4156ab213eb354d0c71a6",
+      "patches/fn_call_converter.py": "66291fc9afa3b7d69681c5e815f33fe2d711c0531b6b6e48ab13cc19cae4e030",
+      "patches/omicsbase_shared/__init__.py": "7833893bbcdd053929f502ae9a300782fc6c175507d99da92597abb2b3b84632",
+      "patches/omicsbase_shared/app.py": "e97cb93f4dc1ca2efa28780de3c1c9560103732f949c303e83705059c5c4d357",
+      "patches/omicsbase_shared/auth.py": "6ff91706a4d8fc8f9d2b96baaa47df0c05c849fb0752a680f0b466acaddfb115",
+      "patches/omicsbase_shared/config.py": "2d5989518c8571ae70a5bc6819c04dfa7da1c4fdfcc3b743673d54f402904d6c",
+      "patches/omicsbase_shared/editor.html": "458f2a4ec562a007214a5d4517dd06e7d77c0c1f49785f2b11704a4d12f3755d",
+      "patches/omicsbase_shared/identity.py": "3fea404b9e6126a1991ee4d0def665f07912773de1f1d48031f5ef80bcd8fb5c",
+      "patches/omicsbase_shared/prism.min.js": "99114b6de390085957ebd215d873c205119b328daa769c51a72fc2e5941c8282",
+      "patches/omicsbase_shared/registry.py": "df97b32ae1b34c6032bb7c5e9ee3677af51417368a8a91d400c912924845d11a",
+      "patches/omicsbase_shared/report.html": "4dd78451d5078e06366aea65829fa98e66a3f2e7450d462c05d631d3aeafea19",
+      "patches/omicsbase_shared/runtime.py": "88f02a6656beeb1a9a43dcd0b429af042db0abdfe634284951053cf1e9696e4e",
+      "patches/omicsbase_shared/stores.py": "a525962cef7d4be587fd549a0c6e9f64472d42376e57275e7019b776e44940a3",
+      "patches/omicsbase_shared/theme.js": "94fc80d8d7cb1c1f5ff147e8a22cb10eca55b41a4da258dba94a2a1eebaa6c8f",
+      "patches/omicsbase_shared/validator.py": "6a0dd8406217141c86cf4184321cc603e12062845d4f2daffa938ae41f0e8363",
+      "patches/system_prompt.j2": "1d717f8723abe40a8efd220d377fff474949427cf8ba5159c9d7b3a897118c1f",
+      "patches/tests/auth_integration.py": "26720dfec8678597ce55b16f0dd8050c97889c1bbc739b42383560b51183e9b9",
+      "patches/tests/launch_integration.py": "4b34f6f87009ba36a928da3940db3cb1ec4b1126bb58fed5ae44f8a96ebde755",
+      "patches/tests/runtime_integration.py": "e2ae9fd125c5e9e54855bad984b4453cc3fa321b8bc6bfae6eb78aaa6f31c503",
+      "patches/tests/test_identity.py": "58124faa878ed57fa913c9e1f11e04e78faba1236d2a01db529b4ec4f8331d0d",
+      "patches/vscode-settings.json": "ce321bc3714d7156c64566d3f68f2dd00ea6b1ffbd807b14aa138e90fd5e3651"
+    }
+  },
+  "openhands": {
+    "url": "https://github.com/all-hands-ai/OpenHands.git",
+    "commit": "fe09f319b0e66dbbcd2779e6b44c928d8516b44d",
+    "patch_sha256": "441edd56c48e2c17d607eb3a842672c636317ff72e0e5f30effca3c0d8976717",
+    "addition_sha256": {}
+  }
+}

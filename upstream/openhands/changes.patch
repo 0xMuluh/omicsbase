@@ -1,0 +1,30 @@
+diff --git a/src/utils/file-validation.ts b/src/utils/file-validation.ts
+index 0f3736af3a21a4260f774fabc15dacc1fbd698bd..0b26c71088ada5cb51a0092748aae10b4d8197a7 100644
+--- a/src/utils/file-validation.ts
++++ b/src/utils/file-validation.ts
+@@ -1,5 +1,5 @@
+-const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB maximum file size
+-const MAX_TOTAL_SIZE = 3 * 1024 * 1024; // 3MB maximum total size for all files combined
++const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB maximum file size (omics data uploads)
++const MAX_TOTAL_SIZE = 20 * 1024 * 1024; // 20MB maximum total size for all files combined
+ 
+ export interface FileValidationResult {
+   isValid: boolean;
+@@ -19,7 +19,7 @@ export function validateIndividualFileSizes(
+     const fileNames = oversizedFiles.map((f) => f.name);
+     return {
+       isValid: false,
+-      errorMessage: `Files exceeding 3MB are not allowed: ${fileNames.join(", ")}`,
++      errorMessage: `Files exceeding 20MB are not allowed: ${fileNames.join(", ")}`,
+       oversizedFiles: fileNames,
+     };
+   }
+@@ -45,7 +45,7 @@ export function validateTotalFileSize(
+     const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(1);
+     return {
+       isValid: false,
+-      errorMessage: `Total file size would be ${totalSizeMB}MB, exceeding the 3MB limit. Please select fewer or smaller files.`,
++      errorMessage: `Total file size would be ${totalSizeMB}MB, exceeding the 20MB limit. Please select fewer or smaller files.`,
+     };
+   }
+ 

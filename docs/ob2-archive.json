@@ -1,0 +1,7 @@
+{
+  "archive_relative_to_workspace": "retired/omicsbase2-source-20260907T082131Z",
+  "vscode_url": "https://github.com/microsoft/vscode.git",
+  "vscode_commit": "34488796bc6a96cb1dc71fb6f8148b271645482d",
+  "source_files": 412,
+  "excluded": "Dependencies, generated output, user/project data, local credentials and upstream VS Code tree. Original directory and Git history retained in place."
+}

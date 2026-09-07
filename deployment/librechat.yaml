@@ -1,0 +1,64 @@
+version: 1.2.0
+
+cache: true
+
+interface:
+  appTitle: "OmicsBase"
+  customFooter: ""
+
+mcpSettings:
+  allowedDomains:
+    - 'engine'
+    - 'http://engine:8001'
+    - 'host.docker.internal'
+    - 'localhost'
+  allowedAddresses:
+    - 'engine:8001'
+
+mcpServers:
+  notethreads:
+    type: sse
+    url: http://engine:8001/sse
+
+endpoints:
+  custom:
+    - name: "Qwen"
+      apiKey: "${DASHSCOPE_API_KEY}"
+      baseURL: "${QWEN_BASE_URL}"
+      models:
+        default: ["qwen-plus"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "Qwen (DashScope)"
+    - name: "z.ai"
+      apiKey: "${ZAI_API_KEY}"
+      baseURL: "${ZAI_BASE_URL}"
+      models:
+        default: ["glm-4"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "z.ai (GLM)"
+    - name: "ZenMux"
+      apiKey: "${ZENMUX_API_KEY}"
+      baseURL: "${ZENMUX_BASE_URL}"
+      models:
+        default: ["glm-5.3-flash"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "ZenMux"
+    - name: "GMI Cloud"
+      apiKey: "${GMI_API_KEY}"
+      baseURL: "${GMI_BASE_URL}"
+      models:
+        default: ["default"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "GMI Cloud"
+    - name: "BAI"
+      apiKey: "${BAI_API_KEY}"
+      baseURL: "${BAI_BASE_URL}"
+      models:
+        default: ["glm-5.3-flash"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "BAI (b.ai)"

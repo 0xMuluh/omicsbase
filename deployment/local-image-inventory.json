@@ -1,0 +1,21 @@
+{
+  "LibreChat": {
+    "configured_image": "registry.librechat.ai/danny-avila/librechat-dev:latest",
+    "image_id": "sha256:f529e59cb5f2374b9eecfa3f421a42b14a97aba7fc4bd6b194f26d51dc769a95",
+    "repo_digests": [
+      "registry.librechat.ai/danny-avila/librechat-dev@sha256:e7b1cbd605639496a533b92cf4f04bece0f43755e4e68e1dbc631dae126d3484"
+    ]
+  },
+  "omicsbase-engine": {
+    "configured_image": "omicsbase3-engine:dev",
+    "image_id": "sha256:7ff6c3022772d882df9b0f3afee94306fcd75646915e2960066bf4c98e108adf",
+    "repo_digests": []
+  },
+  "openhands-engine": {
+    "configured_image": "ghcr.io/all-hands-ai/openhands@sha256:00968de77a7b36546413e1f3b5c6b4e2c387d19ade54de7926e10f5b3d265fa6",
+    "image_id": "sha256:a77e6e65cb6d4945f04cb1bfa940a895a4447b70884304383becfd4d426db4ab",
+    "repo_digests": [
+      "ghcr.io/all-hands-ai/openhands@sha256:00968de77a7b36546413e1f3b5c6b4e2c387d19ade54de7926e10f5b3d265fa6"
+    ]
+  }
+}
