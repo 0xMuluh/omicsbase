@@ -1,0 +1,166 @@
+---
+title: "Study overview"
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+
+analysis_data <- extract_analysis_data("../data/MAE_original.rds")
+mae <- analysis_data$mae
+df_long <- analysis_data$data
+metabolite_features_count <- length(analysis_data$metabolite_cols)
+
+visit_label <- function(v) {
+  dplyr::case_when(
+    v == 4 ~ "6 Months",
+    v == 5 ~ "1 Year",
+    v == 6 ~ "2 Years",
+    v == 7 ~ "5-6 Years (Follow-up)",
+    TRUE ~ paste0("Visit ", v)
+  )
+}
+```
+
+## Research aim
+
+The objective of this study is to investigate the associations between early-life circulating metabolomic profiles and neurocognitive function in childhood. 
+
+Specifically, the study aims to:
+
+1. Examine if circulating serum metabolites at **6 months of age** (`visit_4`) predict neurocognitive development at **2 years of age**.
+2. Examine if circulating serum metabolites at **1 year of age** (`visit_5`) predict neurocognitive development at **2 years of age**.
+3. Evaluate concurrent associations between serum metabolites and neurocognitive development at **2 years of age** (`visit_6`).
+
+```{r}
+#| label: research-questions-table
+
+question_tbl <- tibble::tibble(
+  Question = c("Q1", "Q2", "Q3"),
+  Analysis = c("Predictive 6-month metabolites", "Predictive 1-year metabolites", "Concurrent 2-year metabolites"),
+  `Exposure panel` = c("visit_4 serum NMR metabolites", "visit_5 serum NMR metabolites", "visit_6 serum NMR metabolites"),
+  `Outcome panel` = rep("2-year Bayley-III and HINE outcomes", 3),
+  Role = c("Primary", "Primary", "Secondary")
+)
+
+make_table(question_tbl, caption = "Planned analysis questions", table_mode = "compact")
+```
+
+---
+
+## Visit mapping and analytic panels
+
+Visit mapping and matched metabolomics sample counts are pulled from the `MultiAssayExperiment` dataset.
+
+```{r}
+#| label: analytic-panels-table
+
+panel_tbl <- df_long %>%
+  distinct(StudyID, visit_num) %>%
+  count(visit_num, name = "n_children") %>%
+  mutate(
+    mae_visit = paste0("visit_", visit_num),
+    child_age = visit_label(visit_num),
+    data_collected = dplyr::case_when(
+      visit_num %in% c(4L, 5L) ~ "Serum NMR metabolites",
+      visit_num == 6L ~ "Serum NMR metabolites; Bayley-III; HINE",
+      visit_num == 7L ~ "Later follow-up panel; excluded from primary analysis",
+      TRUE ~ "Serum NMR metabolites"
+    ),
+    metabolite_features = metabolite_features_count
+  ) %>%
+  transmute(
+    Visit = mae_visit,
+    Age = child_age,
+    `Data collected` = data_collected,
+    `Children, n` = n_children,
+    `Metabolite features, n` = metabolite_features
+  )
+
+make_table(panel_tbl, caption = "Analytic child-age panels from MAE", table_mode = "compact")
+```
+
+---
+
+## Clinical outcomes availability
+
+Available neurocognitive outcomes are summarized below for both the full unmatched clinical cohort and the matched analysis samples (Visits 4, 5, and 6).
+
+### Unmatched clinical cohort
+
+The table below summarizes the total available neurocognitive measurements in the raw clinical database ($N = 439$), regardless of metabolomics sample matching.
+
+```{r}
+#| label: raw-clinical-outcomes-summary
+
+raw_clinical <- haven::read_sav("../data/FOPP_clinical_variables_child_cognition_20260617.sav")
+
+# Derive HINE_optimal following the study protocol (preterm excluded)
+prem_raw <- as.numeric(raw_clinical$Premature)
+ham_raw <- as.numeric(raw_clinical$Hammersmith6)
+raw_is_premature <- !is.na(prem_raw) & prem_raw == 2
+raw_clinical$HINE_optimal <- ifelse(raw_is_premature, NA_character_,
+                                    ifelse(ham_raw >= 74, "Optimal", "Suboptimal"))
+
+outcome_vars <- c(
+  CCognition_indexpoints6 = "Bayley composite cognitive",
+  CLanguage_indexpoints6 = "Bayley composite language",
+  CExpressivelanguage_standardpoints6 = "Bayley expressive language",
+  CReceptivelanguage_standardpoints6 = "Bayley receptive language",
+  CMotor_indexpoints6 = "Bayley composite motor",
+  CFinemotor_standardpoints6 = "Bayley fine motor",
+  CGrossmotor_standardpoints6 = "Bayley gross motor",
+  Hammersmith6 = "HINE global score",
+  HINE_optimal = "HINE optimal/suboptimal, preterm excluded"
+)
+
+raw_outcomes_tbl <- tibble(
+  Variable = names(outcome_vars),
+  Outcome = unname(outcome_vars),
+  Family = ifelse(Variable == "HINE_optimal", "Binary", "Continuous"),
+  `Available, n` = vapply(Variable, function(v) sum(!is.na(raw_clinical[[v]])), integer(1)),
+  `Missing, n` = vapply(Variable, function(v) sum(is.na(raw_clinical[[v]])), integer(1))
+)
+
+make_table(raw_outcomes_tbl, caption = "Availability of 2-year neurocognitive outcome measurements in raw clinical database (unmatched)", table_mode = "compact")
+```
+
+### Matched analysis samples (Visits 4, 5, and 6)
+
+The table below summarizes the available measurements for the subsets of children who have both clinical outcomes and matched metabolomics data at Visit 4 (6 months, $N = 258$), Visit 5 (1 year, $N = 257$), or Visit 6 (2 years, $N = 239$).
+
+```{r}
+#| label: clinical-outcomes-summary-all-visits
+
+v4_tse <- experiments(mae)[["visit_4"]]
+v4_clinical <- as.data.frame(colData(v4_tse))
+
+v5_tse <- experiments(mae)[["visit_5"]]
+v5_clinical <- as.data.frame(colData(v5_tse))
+
+v6_tse <- experiments(mae)[["visit_6"]]
+v6_clinical <- as.data.frame(colData(v6_tse))
+
+outcomes_tbl_all <- tibble(
+  Variable = names(outcome_vars),
+  Outcome = unname(outcome_vars),
+  Family = ifelse(Variable == "HINE_optimal", "Binary", "Continuous"),
+  `Visit 4 Available (6mo), n` = vapply(Variable, function(v) sum(!is.na(v4_clinical[[v]])), integer(1)),
+  `Visit 5 Available (1y), n` = vapply(Variable, function(v) sum(!is.na(v5_clinical[[v]])), integer(1)),
+  `Visit 6 Available (2y), n` = vapply(Variable, function(v) sum(!is.na(v6_clinical[[v]])), integer(1))
+)
+
+make_table(outcomes_tbl_all, caption = "Availability of 2-year neurocognitive outcome measurements in matched metabolomics samples across child visits", table_mode = "compact")
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::
+
+

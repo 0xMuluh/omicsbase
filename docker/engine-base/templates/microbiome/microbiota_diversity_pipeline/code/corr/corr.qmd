@@ -1,0 +1,693 @@
+---
+title: "Correlation analysis"
+author: ""
+params: 
+  tax.level: default
+---
+
+```{r setup}
+# Source group-assignment
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse_delta.Rds")
+
+# Define variables and formulas
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+tax.level <- params$tax.level
+
+if (tax.level == "phylum_prevalent") {
+    tse <- tse
+} else {
+    tse <- altExp(tse, tax.level)
+}
+tse_O <- tse[, tse$diet == "oat"]
+tse_R <- tse[, tse$diet == "rice"]
+```
+
+
+# Taxonomic level: `r tax.level`
+
+Taxa that are less prevalent than this (in relabundance) have been agglomerated:
+
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+-   Number of taxonomic groups: `r nrow(tse)`
+-   Transformation: _clr_
+
+```{r}
+scfa_vars <- c("acetic_delta", "propionic_delta", "butyric_delta", 
+                 "isobutyr_delta", "succinic_delta",
+                 "valeric_delta", "isovaler_delta", "lactic_delta", 
+                 "indolelactic_delta", "indolebutyric_delta",
+                 "indolepropionic_delta", "heptanoic_delta")
+  
+  inflamm_markers <- c("IL1B_delta", "MMP12_delta", 
+                       "TNFSF12_delta", "EGF_delta")
+  
+  diet_vars <- c("fat_delta", "carb_delta", "prot_delta", "fiber_delta", 
+                 "SFA_delta", "MUFA_delta", "PUFA_delta")
+  diet_vars <- c(
+  # Macronutrients (absolute)
+  "fat_delta", "carb_delta", "prot_delta", "fiber_delta",
+  # Fatty acids (absolute)
+  "SFA_delta", "MUFA_delta", "PUFA_delta",
+  # Macronutrient percentages
+  "fat_p_delta", "carb_p_delta", "prot_p_delta",
+  # Fatty acid percentages
+  "SFA_p_delta", "MUFA_p_delta", "PUFA_p_delta",
+  # Fiber subtype
+  "fiber_e_delta",
+  # Micronutrients
+  "Mg_delta", "Fe_delta", "Zn_delta"
+)
+  
+  bio_vars <- c("waist_delta", "Kol_delta", "LDLkol_delta", 
+                "HDLkol_delta", "Trigly_delta")
+```
+
+
+## microbiota vs. Short-chain fatty acids (12 SCFAs in total)
+### Table Oat
+
+```{r}
+#| label: tbl-table-of-scfa_sum-O
+result1O <- getCrossAssociation(
+    tse_O, assay.type1 = "clr_delta",
+    col.var2 = scfa_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE) 
+
+result <- result1O %>%
+    select(-pval) %>%
+    dplyr::rename(SCFAs = "Var2", microbes = "Var1")
+
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of Short-chain fatty acids - Oat",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-scfa-O
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = SCFAs, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+
+top_bottom_corr <- result1O %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result1O %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Oat",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+### Table Rice
+```{r}
+result1R <- getCrossAssociation(
+    tse_R, assay.type1 = "clr_delta",
+    col.var2 = scfa_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE) 
+
+result <- result1R %>%
+    select(-pval) %>%
+    dplyr::rename(SCFAs = "Var2", microbes = "Var1")
+
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of Short-chain fatty acids - Rice",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-scfa-R
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = SCFAs, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+
+top_bottom_corr <- result1R %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result1R %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Rice",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+
+## microbiota vs. significant inflammation markers (IL-1B, MMP12, TNSF-12, EGF)
+### Table Oat
+
+```{r}
+#| label: tbl-table-of-inflamm_sum_O
+result2O <- getCrossAssociation(
+    tse_O, assay.type1 = "clr_delta",
+    col.var2 = inflamm_markers,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result2O %>%
+    select(-pval) %>%
+    dplyr::rename(`Inflammation markers` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of significant inflammation markers - Oat",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-inf-O
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `Inflammation markers`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+top_bottom_corr <- result2O %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result2O %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Oat",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+### Table Rice
+```{r}
+#| label: tbl-table-of-inflamm_sum_R
+result2R <- getCrossAssociation(
+    tse_R, assay.type1 = "clr_delta",
+    col.var2 = inflamm_markers,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result2R %>%
+    select(-pval) %>%
+    dplyr::rename(`Inflammation markers` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of significant inflammation markers - Rice",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-inf-R
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `Inflammation markers`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+top_bottom_corr <- result2R %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result2R %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Rice",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+## microbiota vs. dietary intake (total fat, carbohydrates, protein, fiber, SFA, MUFA, PUFA)
+### Table Oat
+
+```{r}
+#| label: tbl-table-of-diet_sum_O
+result3O <- getCrossAssociation(
+    tse_O, assay.type1 = "clr_delta",
+    col.var2 = diet_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result3O %>%
+    select(-pval) %>%
+    dplyr::rename(`Dietary fats` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of dietary intake - Oat",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-diet-O
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `Dietary fats`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+top_bottom_corr <- result3O %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result3O %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Oat",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+### Table Rice
+```{r}
+#| label: tbl-table-of-diet_sum_R
+result3R <- getCrossAssociation(
+    tse_R, assay.type1 = "clr_delta",
+    col.var2 = diet_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result3R %>%
+    select(-pval) %>%
+    dplyr::rename(`Dietary fats` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of dietary intake - Rice",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-diet-R
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `Dietary fats`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+top_bottom_corr <- result3R %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result3R %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Rice",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```
+
+## microbiota vs. biochem/antrop. (waist circumference, total cholesterol, LDL, HDL, Triglycerides)
+### Table Oat
+
+```{r}
+#| label: tbl-table-of-bio_sum_O
+result4O <- getCrossAssociation(
+    tse_O, assay.type1 = "clr_delta",
+    col.var2 = bio_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result4O %>%
+    select(-pval) %>%
+    dplyr::rename(`biochem/antrop` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of biochem/antrop - Oat",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-biochem-O
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `biochem/antrop`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+
+top_bottom_corr <- result4O %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result4O %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Oat",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("red", "blue"), labels = c("Positive", "Negative")) +
+  theme_minimal()
+```
+
+### Table Rice
+```{r}
+#| label: tbl-table-of-bio_sum_R
+result4R <- getCrossAssociation(
+    tse_R, assay.type1 = "clr_delta",
+    col.var2 = bio_vars,
+    test.signif = TRUE, show.warnings = FALSE, verbose = FALSE)
+result <- result4R %>%
+    select(-pval) %>%
+    dplyr::rename(`biochem/antrop` = "Var2", microbes = "Var1")
+datatable(
+  result,
+  options = list(pageLength = 10, dom = 'Bfrtip'),
+  caption = "Correlation table of biochem/antrop - Rice",
+  rownames = FALSE
+)  %>%
+      formatSignif(columns = c("cor", "p_adj"), digits = 3)
+```
+
+#### Heatmap
+
+```{r}
+#| label: fig-figure-heat-biochem-R
+#| fig-width: 8
+#| fig-height: 8
+result <- result %>%
+  mutate(
+    signif_label = case_when(
+      p_adj < 0.05 ~ "*",
+      p_adj < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(cor), paste0(round(cor, 4), signif_label), "")
+  )
+
+result <- result[result$p_adj < 0.25, ]
+
+# Plot
+ggplot(result, aes(x = `biochem/antrop`, y = microbes, fill = cor)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Correlation"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+#### Scatterplot
+
+```{r}
+
+top_bottom_corr <- result4R %>%
+  arrange(desc(cor)) %>%
+  slice_head(n = 5) %>%
+  bind_rows(
+    result4R %>%
+      arrange(cor) %>%
+      slice_head(n = 5)
+  )
+
+ggplot(top_bottom_corr, aes(x = cor, y = reorder(paste(Var1, Var2, sep = " vs "), cor))) +
+  geom_point(aes(color = cor > 0), size = 3) +
+  labs(
+    title = "Top 5 and Bottom 5 Correlations - Rice",
+    x = "Correlation",
+    y = "Microbe vs Variable"
+  ) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Negative", "Positive")) +
+  theme_minimal()
+```

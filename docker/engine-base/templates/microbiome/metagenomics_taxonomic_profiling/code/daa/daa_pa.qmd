@@ -1,0 +1,253 @@
+---
+title: "DAA Metacyc"
+---
+
+# Interaction Model
+
+```{r setup}
+library(maaslin3)
+
+source("../funct.R")
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+pa_tse <- altExp(tse, "pathabundance")
+
+variable <- "Intervention" 
+formula_used <- "~ Intervention * time + (1 | sbject)"
+```
+
+-   Group variable: **`r variable`**
+-   Formula used: **`r formula_used`**
+
+```{r data_prep}
+# Create output directory for results
+output_base_dir <- "../../output/daa/daa_pa"
+dir.create(output_base_dir, showWarnings = FALSE)
+# Keep paired cases that have both time points
+paired.cases <- names(which(table(colData(pa_tse)$subject) == 2))
+pa_tse <- pa_tse[, pa_tse$subject %in% paired.cases]
+```
+
+```{r maaslin all}
+# Run Maaslin3
+run_maaslin3 <- function(taxa_tse, formula_used, dir) {
+  # Keep only paired cases (individuals with both timepoint points)
+  # paired.cases <- names(which(table(taxa_tse$subject) == 2))
+  # taxa_tse <- taxa_tse[, taxa_tse$subject %in% paired.cases]
+  # taxa_tse$treat <- taxa_tse$group
+
+  # Run MaAsLin3
+  fit <- maaslin3(
+    taxa_tse, 
+    output = dir,
+    formula = formula_used,
+    normalization = 'TSS',
+    transform = 'LOG',
+    augment = TRUE,
+    standardize = TRUE,
+    max_significance = 0.25,
+    plot_associations = FALSE,
+    median_comparison_abundance = TRUE,
+    median_comparison_prevalence = FALSE,
+    verbosity = "WARN"
+  )
+  
+  return(fit)
+}
+```
+
+```{r}
+file_path <- file.path("../../output/daa/daa_pa/interaction/significant_results.tsv")
+ if (!file.exists(file_path)) {
+    formula_used_int <- '~ Intervention * time + (1 | subject)'
+    # Create output directory for this fxnomic level
+    output_dir <- file.path(output_base_dir, "interaction")
+    dir.create(output_dir, showWarnings = FALSE)
+    fit <- run_maaslin3(pa_tse, formula_used_int, output_dir)
+}
+```
+
+```{r print_table}
+#| label: table-of-significant-results
+file_path <- file.path("../../output/daa/daa_pa/interaction/all_results.tsv")
+total_features <- nrow(pa_tse)
+
+daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+    filter(!is.na(feature)) %>%
+    select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+
+table_caption <- paste("Table of features for metacyc- Total features analyzed:", total_features)
+  
+# Split the results by model
+daa_tab_split <- split(daa_tab, daa_tab$model)
+# Filter for qval_joint between 0 and 0.25
+daa_tab_split <- lapply(daa_tab_split, function(df) {
+  df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+  df
+})
+daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+    rename(metadata = "variable", value = "term") %>%
+      select(-model)
+
+# Format output for HTML or LaTeX
+datatable(
+  daa_tab_split$abundance,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 20,
+    dom = 'Bfrtip',
+    buttons = c("copy", "csv", "excel")
+  ),
+  caption = table_caption,
+  rownames = FALSE
+) %>%
+ formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+
+```
+
+# Post-Hoc Analysis
+
+## Within-Group Comparisons
+```{r run_maaslin_o}
+tse_4 <- pa_tse[, pa_tse$Treatment == "4"]
+tse_B <- pa_tse[, pa_tse$Treatment == "B"]
+tse_C <- pa_tse[, pa_tse$Treatment == "C"]
+
+formula_used_int <- '~ time + (1 | subject)'
+tse_list = list(tse_4, tse_B, tse_C)
+lapply(tse_list, function(tse){
+  diet_dir <- file.path(output_base_dir, unique(tse$Treatment))
+  target_file <- file.path(diet_dir, "all_results.tsv")
+  if (!file.exists(target_file)) {
+    dir.create(diet_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, formula_used_int, diet_dir)
+  }
+})
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_pa", unique(tse$Treatment), "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of metabolic pathways within group", unique(tse$Intervention),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    # Filter for qval_joint between 0 and 0.25
+    daa_tab_split <- lapply(daa_tab_split, function(df) {
+      df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+      df
+    })
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>%
+      select(c(-model, -metadata, -value))
+    
+      datatable(
+        daa_tab_split$abundance,
+        extensions = c("Buttons"),
+        options = list(
+          pageLength = 20,
+          dom = 'Bfrtip',
+          buttons = c("copy", "csv", "excel")
+        ),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Intervention Control
+```{r}
+tabs[[1]]
+```
+
+### Intervention HWP
+```{r}
+tabs[[2]]
+```
+
+### Intervention HWP + LGG
+```{r}
+tabs[[3]]
+```
+
+## Across-Group Comparisons
+```{r}
+tse_after <- pa_tse[, pa_tse$timepoint == "after"]
+tse_before <- pa_tse[, pa_tse$timepoint == "before"]
+
+formula_used_int <- '~ Intervention'
+tse_list = list(tse_after, tse_before)
+lapply(tse_list, function(tse){
+  timepoint_dir <- file.path(output_base_dir, unique(tse$timepoint))
+  target_file <- file.path(timepoint_dir, "all_results.tsv")
+  if (!file.exists(target_file)) {
+    dir.create(timepoint_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, formula_used_int, timepoint_dir)
+  }
+})
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_pa", unique(tse$timepoint), "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of metabolic pathways at", unique(tse$duration),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    # Filter for qval_joint between 0 and 0.25
+    daa_tab_split <- lapply(daa_tab_split, function(df) {
+      df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+      df
+    })
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+      rename(value = "term") %>%
+      select(c(-model, -metadata))
+  
+      datatable(
+        daa_tab_split$abundance,
+        extensions = c("Buttons"),
+        options = list(
+          pageLength = 20,
+          dom = 'Bfrtip',
+          buttons = c("copy", "csv", "excel")
+        ),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Before Intervention - Week 0
+```{r}
+tabs[[1]]
+```
+
+### Post Intervention - Week 8
+```{r}
+tabs[[2]]
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::

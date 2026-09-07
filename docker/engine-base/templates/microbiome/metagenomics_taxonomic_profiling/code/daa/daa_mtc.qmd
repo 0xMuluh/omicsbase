@@ -1,0 +1,368 @@
+---
+title: "DAA Metacyc"
+---
+
+# Interaction Model
+
+```{r setup}
+library(maaslin3)
+
+source("../funct.R")
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+metacyc_tse <- altExp(tse, "metacyc")
+
+variable <- "Intervention" 
+formula_used <- "~ Intervention * time + (1 | sbject)"
+```
+
+-   Group variable: **`r variable`**
+-   Formula used: **`r formula_used`**
+
+```{r data_prep}
+# Create output directory for results
+output_base_dir <- "../../output/daa/daa_mtc"
+dir.create(output_base_dir, showWarnings = FALSE)
+# Keep paired cases that have both time points
+paired.cases <- names(which(table(colData(metacyc_tse)$subject) == 2))
+metacyc_tse <- metacyc_tse[, metacyc_tse$subject %in% paired.cases]
+```
+
+```{r maaslin all}
+# Run Maaslin3
+run_maaslin3 <- function(taxa_tse, formula_used, dir) {
+  # Keep only paired cases (individuals with both timepoint points)
+  # paired.cases <- names(which(table(taxa_tse$subject) == 2))
+  # taxa_tse <- taxa_tse[, taxa_tse$subject %in% paired.cases]
+  # taxa_tse$treat <- taxa_tse$group
+
+  # Run MaAsLin3
+  fit <- maaslin3(
+    taxa_tse, 
+    output = dir,
+    formula = formula_used,
+    normalization = 'TSS',
+    transform = 'LOG',
+    augment = TRUE,
+    standardize = TRUE,
+    max_significance = 0.25,
+    plot_associations = FALSE,
+    median_comparison_abundance = TRUE,
+    median_comparison_prevalence = FALSE,
+    verbosity = "WARN"
+  )
+  
+  return(fit)
+}
+```
+
+```{r}
+file_path <- file.path("../../output/daa/daa_mtc/interaction/significant_results.tsv")
+ if (!file.exists(file_path)) {
+    formula_used_int <- '~ Intervention * time + (1 | subject)'
+    # Create output directory for this fxnomic level
+    output_dir <- file.path(output_base_dir, "interaction")
+    dir.create(output_dir, showWarnings = FALSE)
+    fit <- run_maaslin3(metacyc_tse, formula_used_int, output_dir)
+}
+```
+
+```{r print_table}
+#| label: table-of-significant-results
+file_path <- file.path("../../output/daa/daa_mtc/interaction/all_results.tsv2")
+total_features <- nrow(metacyc_tse)
+
+daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+    filter(!is.na(feature)) %>%
+    select(EnzymeName, metadata, value, coef, qval_individual, qval_joint, model)
+
+table_caption <- paste("Table of features for metacyc- Total features analyzed:", total_features)
+  
+# Split the results by model
+daa_tab_split <- split(daa_tab, daa_tab$model)
+# Filter for qval_joint between 0 and 0.25
+daa_tab_split <- lapply(daa_tab_split, function(df) {
+  df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+  df
+})
+daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+    rename(metadata = "variable", value = "term") %>%
+      select(-model)
+
+# Format output for HTML or LaTeX
+datatable(
+  daa_tab_split$abundance,
+  options = list(pageLength = 20, dom = 'Bfrtip'),
+  caption = table_caption,
+  rownames = FALSE
+) %>%
+ formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+
+```
+
+# Post-Hoc Analysis
+
+## Within-Group Comparisons
+```{r run_maaslin_o}
+tse_4 <- metacyc_tse[, metacyc_tse$Treatment == "4"]
+tse_B <- metacyc_tse[, metacyc_tse$Treatment == "B"]
+tse_C <- metacyc_tse[, metacyc_tse$Treatment == "C"]
+
+formula_used_int <- '~ time + (1 | subject)'
+file_path <- file.path("../../output/daa/daa_mtc/4/significant_results.tsv")
+tse_list = list(tse_4, tse_B, tse_C)
+if (!file.exists(file_path)) {
+  lapply(tse_list, function(tse){
+    diet_dir <- file.path(output_base_dir, unique(tse$Treatment))
+    dir.create(diet_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, formula_used_int, diet_dir)
+  }
+    )
+}
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_mtc", unique(tse$Treatment), "all_results.tsv2")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(EnzymeName, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of features for path coverage within group", unique(tse$Intervention),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    # Filter for qval_joint between 0 and 0.25
+    daa_tab_split <- lapply(daa_tab_split, function(df) {
+      df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+      df
+    })
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>%
+      select(c(-model, -metadata, -value))
+    
+      datatable(
+        daa_tab_split$abundance,
+        options = list(pageLength = 20, dom = 'Bfrtip'),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Intervention Control
+```{r}
+tabs[[1]]
+```
+
+### Intervention HWP
+```{r}
+tabs[[2]]
+```
+
+### Intervention HWP + LGG
+```{r}
+tabs[[3]]
+```
+
+## Across-Group Comparisons
+```{r}
+tse_after <- metacyc_tse[, metacyc_tse$timepoint == "after"]
+tse_before <- metacyc_tse[, metacyc_tse$timepoint == "before"]
+
+formula_used_int <- '~ Intervention'
+file_path <- file.path("../../output/daa/daa_mtc", unique(tse_before$timepoint), "all_results.tsv")
+tse_list = list(tse_after, tse_before)
+if (!file.exists(file_path)) {
+lapply(tse_list, function(tse){
+  timepoint_dir <- file.path(output_base_dir, unique(tse$timepoint))
+  dir.create(timepoint_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  run_maaslin3(tse, formula_used_int, timepoint_dir)
+}
+  )
+}
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_mtc", unique(tse$timepoint), "all_results.tsv2")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(EnzymeName, metadata, value, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Table of features for metacyc at", unique(tse$duration),
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    # Filter for qval_joint between 0 and 0.25
+    daa_tab_split <- lapply(daa_tab_split, function(df) {
+      df <- df[df$qval_joint >= 0 & df$qval_joint <= 0.25, ]
+      df
+    })
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+      rename(value = "term") %>%
+      select(c(-model, -metadata))
+  
+      datatable(
+        daa_tab_split$abundance,
+        options = list(pageLength = 20, dom = 'Bfrtip'),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+### Before Intervention - Week 0
+```{r}
+tabs[[1]]
+```
+
+### Post Intervention - Week 8
+```{r}
+tabs[[2]]
+```
+
+```{r setup_m}
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Intervention" 
+formula_used <- "~ Intervention * time + (1 | id)"
+correction <- "Benjamini-Hochberg FDR adjustment"
+
+```
+
+## Maaslin3 significant hits
+
+This section highlights significant taxa from maaslin3.
+
+Analysis information:
+
+-   Method: maaslin3
+-   Group variable: `r variable`
+-   Formula used: **`r formula_used`**
+-   Correction: **`r correction`**
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+```{r tsesub_m}
+file_path1 <- file.path("../../output/daa/daa_mtc/interaction/significant_results.tsv")
+file_path2 <- file.path("../../output/daa/daa_mtc/interaction/all_results.tsv")
+daa_tab1 <- read_tsv(file_path1, col_names = TRUE, show_col_types = FALSE)
+daa_tab1 <- na.omit(daa_tab1)
+significant_fxns1 <- unique(daa_tab1$feature)
+significant_fxns <- sub("^X", "", significant_fxns1)
+enzymenames <- read_tsv("../../output/daa/daa_mtc/enzymenames.tsv")
+
+daa_tab <- read_tsv(file_path2, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      filter(model == "abundance") %>%
+      filter(feature %in% significant_fxns1) %>%
+      select(feature,metadata, value, qval_joint) %>%
+      mutate(qval_joint = signif(qval_joint, digits = 3)) 
+```
+
+```{r before-after_m}
+df <- as.data.frame(colData(metacyc_tse))
+
+plot_fxn <- function(fxn) {
+  rownames(metacyc_tse) <- rowData(metacyc_tse)$Feature
+  df$signal <- as.vector(assay(metacyc_tse, "relabundance")[fxn,])
+  df$signal <- unlist(df$signal)
+  
+  enzyme_name <- enzymenames$EnzymeName[enzymenames$feature == fxn]
+    
+    # daa_tab_tax <- daa_tab %>%
+    #   filter(feature == fxn)
+    # 
+    # anot_tax <- daa_tab_tax %>% 
+    #     filter(metadata == "intervention")
+    # 
+    # anot_tax$pval_color <- ifelse(anot_tax$qval_joint <= 0.25, "red", "blue")
+    # Subset for before and after
+    df_before <- df %>% filter(timepoint == "before")
+    df_after <- df %>% filter(timepoint == "after")
+    
+    # Prepare data for plotting
+        vars <- c("subject", "timepoint", "signal", "time")
+        dfm <- melt(df[, vars])
+        colnames(dfm) <- vars
+        
+        # Filter and mutate for paired design
+        df <- df %>%
+          filter(paired == "yes") %>%
+          group_by(subject) %>%
+          mutate(
+            change = if_else(timepoint == "after", signal - signal[timepoint == "before"], 0),
+            change = if_else(timepoint == "before", change[timepoint == "after"], change)
+          ) %>%
+          ungroup() %>%
+          as.data.frame(check.names = FALSE)
+        
+          min_change <- min(df$change, na.rm = TRUE)
+          max_change <- max(df$change, na.rm = TRUE)
+          median_change <- median(df$change, na.rm = TRUE)
+    
+    p12 <- ggplot(df, aes(x = Intervention, y = signal)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_point() + 
+      scale_y_log10(labels = scales::percent) + 
+      theme(text = element_text(size = 15), legend.position = "none") +
+      labs(title = enzyme_name, y = "Abundance (%)", x = "Intervention") +
+      facet_wrap(~ time, nrow = 1)
+    
+    p3 <- ggplot(df, aes(x = time, y = signal)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_point() + 
+      geom_line(aes(group = subject, color = change)) +
+      scale_color_gradient2(midpoint = median_change, low = "blue", mid = "white", high = "red", space = "Lab", limits = c(min_change, max_change)) +
+      facet_wrap(~ Intervention) +
+      scale_y_log10(labels = scales::percent) + 
+      theme(text = element_text(size = 15), legend.position = "right") +
+      labs(x = "Time", y = "Abundance (%)")
+    
+    # Combine the before and after plots
+    return(wrap_plots(p12, p3, axes = "collect")
+  )
+  }
+
+```
+
+```{r}
+plots_list <- list()
+name_vec <- enzymenames$EnzymeName[match(significant_fxns, enzymenames$feature)]
+plots_list <- setNames(lapply(significant_fxns, plot_fxn),
+                      name_vec)
+```
+
+```{r hits_m}
+#| layout-ncol: 1
+#| fig-width: 18 
+#| fig-height: 5 
+
+ordered_plots <- plots_list[order(names(plots_list))]
+
+for (plot_name in names(ordered_plots)) {
+  print(ordered_plots[[plot_name]])
+}
+
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::

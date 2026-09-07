@@ -21,7 +21,7 @@ No references to OB2 or absolute old OB3 paths were found in the inspected custo
 
 Keep the symlink until a planned migration recreates all affected containers and user runtimes with the new paths. Database/project data and named volumes must be preserved. Changing Compose metadata alone does not update existing containers. No containers or volumes were deleted or restarted for this checkpoint.
 
-The tag `omicsbase3-engine:dev` is an existing image name, not an obsolete filesystem reference. It is retained intentionally. Its Dockerfile and requirements were subsequently recovered from the image and restored under `engine/`. Both older projects contain the identical shared backend Dockerfile. The exact backend image used by their containers is also the engine image’s base; see `ENGINE_IMAGE.md`. The base build inputs still reside in the older projects, and the local knowledge database is excluded. Bringing those inputs into the primary repository and specifying knowledge provisioning remain prerequisites for a self-contained clean-machine deployment.
+The tag `omicsbase3-engine:dev` is an existing image name, not an obsolete filesystem reference. It is retained intentionally. Its Dockerfile and requirements were subsequently recovered from the image and restored under `engine/`. Both older projects contain the identical shared backend Dockerfile. The exact backend image used by their containers is also the engine image’s base; see `ENGINE_IMAGE.md`. The base build inputs have now been imported into `docker/engine-base/`, and both images build using only repository-local contexts. The local knowledge database remains excluded; knowledge provisioning is still separate from source and image builds.
 
 ## OB2 retirement
 

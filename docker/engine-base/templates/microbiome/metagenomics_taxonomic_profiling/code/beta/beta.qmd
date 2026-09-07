@@ -1,0 +1,601 @@
+---
+title: "Beta diversity"
+---
+
+## Community composition
+
+```{r data}
+# Set Cairo to enable transparency in all devices
+knitr::opts_chunk$set(dev = "png", 
+                      dev.args = list(type = "cairo"))
+source("../funct.R")
+# devtools::load_all("~/Rpackages/microbiome/miaverse/miaViz")
+tse <- readRDS("../../data/tse.Rds")
+```
+
+### Phylum
+
+```{r community-composition-phyla}
+#| label: fig-figure-of-composition-phyla
+#| fig-width: 10
+#| fig-height: 2
+#| out.width: "100%"
+#| fig.align: "center"
+
+ top_taxa <- getTop(altExp(tse, "phylum"), top = 5, assay.type = "relabundance")
+ phylum_renamed <- lapply(rowData(altExp(tse, "phylum"))$phylum, function(x){
+     if (x %in% top_taxa) {x} else {"Other"}})
+ rowData(altExp(tse, "phylum"))$phylum_sub <- as.character(phylum_renamed)
+ altExp(tse, "phylum") <- agglomerateByVariable(altExp(tse, "phylum"), 
+                                    by = "rows", 
+                                    f = "phylum_sub")
+
+tse_p <- altExp(tse, "phylum")
+
+plots <- lapply(unique(tse_p$time), function(time_point) {
+  tse_filtered <- tse_p[, tse_p$time == time_point]
+    
+    time_plots <- lapply(sort(unique(tse_filtered$Intervention)), function(t_id) {
+        tse_t <- tse_filtered[, tse_filtered$Intervention == t_id]
+
+        # Plot abundance for the filtered tse
+        plotAbundance(
+            tse_t,
+            assay.type = "relabundance",
+            color.by = "phylum_sub",
+            group = "phylum_sub",
+            order.row.by = "name",
+            order.col.by = "Firmicutes"
+        ) +
+            theme(
+              axis.text.y = element_text(face = "bold", size = 12),
+              axis.title.x = element_text(face = "bold", size = 14),
+              axis.title.y = element_text(face = "bold", size = 14),
+              legend.text = element_text(face = "bold", size = 14),
+              legend.title = element_text(face = "bold", size = 14),
+              plot.title = element_text(face = "bold", size = 14),
+               strip.text = element_text(size = 12, face = "bold")
+            ) + scale_y_continuous(label=scales::percent) +
+          labs(ylab = "Abundance(%)") + facet_wrap( Intervention ~ time, nrow = 1, drop = TRUE )  })
+     return(time_plots)
+})
+
+plots_flat <- unlist(plots, recursive = FALSE)
+
+# Create the combined plot
+bar_plot <- wrap_plots(plots_flat, nrow = 1, guides = "collect", axes = "collect")
+bar_plot
+
+```
+
+### Genus
+
+```{r community-composition-genus}
+#| label: fig-figure-of-composition-genus
+#| fig-width: 14
+#| fig-height: 3
+#| out.width: "100%"
+#| fig.align: "center"
+#| 
+top_taxa <- getTop(altExp(tse, "genus"), top = 5, assay.type = "relabundance")
+genus_renamed <- lapply(rowData(altExp(tse, "genus"))$genus, function(x){
+    if (x %in% top_taxa) {x} else {"Other"}})
+rowData(altExp(tse, "genus"))$genus_sub <- as.character(genus_renamed)
+altExp(tse, "genus") <- agglomerateByVariable(altExp(tse, "genus"), 
+                                   by = "rows", 
+                                   f = "genus_sub")
+
+tse_g <- altExp(tse, "genus")
+
+plots <- lapply(unique(tse_g$time), function(time_point) {
+  tse_filtered <- tse_g[, tse_g$time == time_point]
+    
+    time_plots <- lapply(sort(unique(tse_filtered$Intervention)), function(t_id) {
+        tse_t <- tse_filtered[, tse_filtered$Intervention == t_id]
+
+        # Plot abundance for the filtered tse
+        plotAbundance(
+            tse_t,
+            assay.type = "relabundance",
+            color.by = "genus_sub",
+            group = "genus_sub",
+            order.row.by = "name",
+            order.col.by = "Blautia"
+        ) +
+            theme(
+              axis.text.y = element_text(face = "bold", size = 12),
+              axis.title.x = element_text(face = "bold", size = 14),
+              axis.title.y = element_text(face = "bold", size = 14),
+              legend.text = element_text(face = "bold", size = 14),
+              legend.title = element_text(face = "bold", size = 14),
+              plot.title = element_text(face = "bold", size = 14),
+               strip.text = element_text(size = 14, face = "bold")
+            ) + scale_y_continuous(label=scales::percent) +
+          labs(ylab = "Abundance(%)") + facet_wrap( Intervention ~ time, nrow = 1, drop = TRUE )  })
+     return(time_plots)
+})
+
+plots_flat <- unlist(plots, recursive = FALSE)
+
+# Create the combined plot
+bar_plot <- wrap_plots(plots_flat, nrow = 1, guides = "collect", axes = "collect") 
+bar_plot
+
+```
+
+### Heatmap
+
+```{r heatmap}
+#| label: fig-figure-of-composition-heat
+#| fig.width: 14
+#| fig.height: 2
+#| out.width: "100%"
+#| fig.align: "center"
+tse_heat <-  altExp(tse, "genus")
+tse_heat <- transformAssay(tse_heat, assay.type = "relabundance", method = "clr", pseudocount = TRUE)
+
+tse_heat <- transformAssay(
+    tse_heat, assay.type = "clr", MARGIN = "rows", method = "standardize",
+    name = "clr_z")
+
+order_indices <- order(tse_heat$Intervention, tse_heat$time)
+tse_heat <- tse_heat[, order_indices]
+
+sechm(
+            tse_heat, assayName = "clr_z", features = rownames(tse_heat),
+            show_rownames = TRUE, show_colnames = FALSE, do.scale = TRUE, name = "clr_z", top_annotation="time", gaps_at=c("Intervention", "time"), show_annotation_legend = F, hmcols = c("blue", "white", "red"), cluster_rows = T, cluster_cols = F, na_col = "black", column_gap = unit(4, "mm")
+)
+```
+
+## Unsupervised analysis
+
+### Community dissimilarity
+
+This document presents the results of a microbiota project, focusing on beta diversity analysis. Specifically, in this section, we employed Principal Coordinates Analysis (PCoA) to assess community dissimilarity among microbiota samples.
+
+```{r setup, include=FALSE}
+# #STEP2: PCoA
+# Define variables
+tax.level <- "species"
+dissimilarity.index <- "bray"
+variable <- "group"  
+adjust.method <- "fdr"
+test <- "Wilcoxon"
+index <- "divergence"
+```
+
+-   **Taxonomic level:** `r tax.level`
+-   **Dissimilarity index:** `r dissimilarity.index`
+-   **Group variable:** `r variable`
+-   **Multiple testing correction:** `r adjust.method`
+-   **Statistical test** `r test`
+
+### PCoA plot
+
+```{r pcoa-plot, fig.show="hold"}
+#| label: fig-figure-of-pcoa-plot-b
+#| fig-width: 8 
+#| fig-height: 3 
+#| fig.align: "center"
+##| layout-ncol: 3
+tse <- runMDS(
+        tse,
+        FUN = getDissimilarity,
+        method = "bray",
+        assay.type = "relabundance",
+        name = "PCoA_BC"
+    )
+tse <- transformAssay(tse, assay.type = "relabundance", method = "clr", pseudocount = TRUE)
+# Calculate explained variance
+e <- attr(reducedDim(tse, "PCoA_BC"), "eig")
+rel_eig <- e / sum(e[e > 0])
+# Create the PCoA plot
+p <- plotReducedDim(tse, "PCoA_BC", 
+                    colour_by = "time", 
+                    other_fields = c("Intervention", "group", "timepoint")) + facet_wrap(~Intervention)
+# Add explained variance for axes
+p1 <- p + labs(
+  x = paste("PCoA 1 (", round(100 * rel_eig[[1]], 1), "%)", sep = ""),
+  y = paste("PCoA 2 (", round(100 * rel_eig[[2]], 1), "%)", sep = "")
+) 
+# Add ellipses for groups
+p_ellipse <- p1 + 
+  theme(
+      legend.position = "right",
+      legend.box.margin = margin(-10, 0, 0, 0)
+  ) 
+
+p_ellipse
+```
+
+### Permanova analysis
+
+```{r}
+tse <- altExp(tse, "species_prevalent")
+taxa_level <- "species_prevalent"
+assay <- "relabundance"
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+variable <- "Intervention" 
+formula_used_within <- 'X ~ group'
+```
+
+
+-   Dissimilarity index: `r dissimilarity.index`
+-   Group variable: `r variable`
+-   Formula: `r formula_used_within`
+-   assay: `r assay``
+-   taxonomic level: `r taxa_level`
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+**Interpretation**
+
+-   Homogeneity \< 0.05: The assumption of homogeneity of variance is violated (i.e., the variances are significantly different across groups).
+
+-   Homogeneity ≥ 0.05: The assumption of homogeneity of variance is not violated (i.e., the variances are similar across groups).
+
+```{r run_rdba_tests}
+# Function to perform dbRDA and permanova analysis
+perform_dbrda_permanova <- function(tse, variable, comparison) {
+    tse_subset <- tse[, colData(tse)$group %in% comparison]
+    valid_indices <- complete.cases(colData(tse_subset)[, variable])
+    tse_rda <- tse_subset[, valid_indices]
+    
+    # Restrict permutations within subject blocks for paired/repeated measures
+    if (any(duplicated(tse_rda$subject))) {
+      perm_ctrl <- permute::how(plots = permute::Plots(strata = factor(tse_rda$subject), type = "free"))
+    } else {
+      perm_ctrl <- 999
+    }
+    
+    perm_res <- getPERMANOVA(tse_rda, assay.type = "relabundance", 
+                          formula = X ~ group, 
+                          permutations = perm_ctrl)
+    
+    # Extract only the 'group' row and relevant columns
+    perm_df <- as.data.frame(perm_res)
+    group_row <- perm_df[rownames(perm_df) == "group", ]
+    
+    result <- data.frame(
+        Group1 = comparison[1],
+        Group2 = comparison[2],
+        P_value = group_row$"permanova.Pr..F.",
+        Homogeneity = signif(tail(perm_df$homogeneity.Pr..F., 1), 3)
+        #P_value_adjusted = p.adjust(group_row$"permanova.Pr..F.", method = "fdr")
+    )
+    
+    return(result)
+}
+
+# Function to apply the test over all comparisons and combine results
+run_rdba_tests <- function(tse, comparisons, variable) {
+    all_results <- list()
+    
+    for (comp in comparisons) {
+        result <- perform_dbrda_permanova(tse, variable, comp)
+        all_results[[length(all_results) + 1]] <- result
+    }
+    
+    # Combine all results into a single data frame
+    combined_results <- do.call(rbind, all_results)
+    return(combined_results)
+}
+```
+
+```{r permanova_before-after}
+# For the before treatment comparisons
+final_results_permanova <- run_rdba_tests(tse, comparisons_before, variable)
+final_results_permanova$p.adj <- p.adjust(final_results_permanova$P_value, method = "fdr")
+# For the after treatment comparisons
+final_results_permanova_after <- run_rdba_tests(tse, comparisons_after, variable)
+final_results_permanova_after$p.adj <- p.adjust(final_results_permanova_after$P_value, method = "fdr")
+
+final_results_permanova[] <- lapply(final_results_permanova, function(x) gsub(".before|.after", "", x))
+final_results_permanova_after[] <- lapply(final_results_permanova_after, function(x) gsub(".before|.after", "", x))
+
+final_results_permanova$group1 <- ifelse(final_results_permanova$Group1  == "4", "Control", 
+                    ifelse(final_results_permanova$Group1  == "B", "HWP", "HWP + LGG"))
+final_results_permanova_after$Group2 <- ifelse(final_results_permanova_after$Group2  == "4", "Control", 
+                    ifelse(final_results_permanova_after$Group2  == "B", "HWP", "HWP + LGG"))
+```
+
+```{r permanova_paired}
+# For the paired treatment comparisons
+final_results_permanova_paired <- run_rdba_tests(tse, comparisons_paired, variable)
+final_results_permanova_paired$p.adj <- p.adjust(final_results_permanova_paired$P_value, method = "fdr")
+```
+
+#### Across-group
+
+##### Before treatment
+
+```{r permanova_res_before}
+#| label: tbl-permanova_res_before
+
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova,
+            extensions = c("Buttons"),
+            options = list(
+              pageLength = 3,
+              dom = 'Bfrtip',
+              buttons = c("copy", "csv", "excel")
+            ),
+            caption = "PERMANOVA Results - berfore treatment")
+} else {
+  library(kableExtra)
+  final_results_permanova %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - before treatment",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+##### After treatment
+
+```{r permanova_res_after}
+#| label: tbl-permanova_res_after
+
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova_after,
+            extensions = c("Buttons"),
+            options = list(
+              pageLength = 3,
+              dom = 'Bfrtip',
+              buttons = c("copy", "csv", "excel")
+            ),
+            caption = "PERMANOVA Results - after treatment")
+} else {
+  library(kableExtra)
+  final_results_permanova_after %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - after treatment",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova_after)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+#### Within-group
+
+##### Paired treatment between timepoint(1 and 2)
+
+```{r permanova_paired_tab}
+#| label: tbl-permanova_paired_tab
+Intervention <- c("Control", "HWP", "HWP + LGG")
+final_results_permanova_paired <- data.frame(Intervention = Intervention, final_results_permanova_paired)
+final_results_permanova_paired$Group1 <- NULL
+final_results_permanova_paired$Group2 <- NULL
+if (knitr::is_html_output()) {
+  datatable(final_results_permanova_paired,
+            extensions = c("Buttons"),
+            options = list(
+              pageLength = 3,
+              dom = 'Bfrtip',
+              buttons = c("copy", "csv", "excel")
+            ),
+            caption = "PERMANOVA Results - Paired between timepoint(1 and 2)")
+} else {
+  library(kableExtra)
+  final_results_permanova_paired %>%
+    mutate(across(where(is.numeric), ~round(., 3))) %>%
+    kbl(caption = "PERMANOVA Results - Paired",
+        booktabs = TRUE,
+        align = c('l', rep('r', ncol(final_results_permanova_paired)-1))) %>%
+    row_spec(0, bold = TRUE)
+}
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+```
+
+### Average abundance and 95 percentile of prevalent species
+
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+```{r}
+tse <- readRDS("../../data/tse.Rds")
+tabs_species <- NULL 
+tse_g <- altExp(tse, "species_prevalent")
+for (g in unique(tse_g$Intervention)) {
+    tseg <- tse_g[, tse_g$Intervention==g] 
+    df <- as.data.frame(colData(tseg)) 
+    for (tax in na.omit(rowData(tseg)$species)) {
+      df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      df_before <- df[df$timepoint == "before", ]
+      df_after <- df[df$timepoint == "after", ]
+      
+      # Sort by subject to align vectors perfectly
+      df_before <- df_before[order(df_before$subject), ]
+      df_after <- df_after[order(df_after$subject), ]
+
+      tabs_species <-
+        rbind(tabs_species,
+        c(
+          Intervention = g,
+          Taxon = tax,
+          mean1 = mean(df_before$signal, na.rm = TRUE),
+          mean2 = mean(df_after$signal, na.rm = TRUE),
+          iqr95_1 = quantile(df_before$signal, 0.95, na.rm = TRUE),
+          iqr95_2 = quantile(df_after$signal, 0.95, na.rm = TRUE),
+          logFC.rel = mean(df_after$signal - df_before$signal, na.rm = TRUE)
+        ))
+    }
+}
+tabs_species <- as.data.frame(tabs_species)
+tabs_species$mean.rel1 <- round(100 * as.numeric(tabs_species$mean1), 3); tabs_species$mean1 <- NULL
+tabs_species$mean.rel2 <- round(100 * as.numeric(tabs_species$mean2), 3); tabs_species$mean2 <- NULL
+tabs_species$iqr95_1 <- round(100 * as.numeric(tabs_species$iqr95_1), 3); tabs_species$`iqr95_1.95%` <- NULL
+tabs_species$iqr95_2 <- round(100 * as.numeric(tabs_species$iqr95_2), 3); tabs_species$`iqr95_2.95%` <- NULL
+tabs_species$logFC.rel <- round(100 * as.numeric(tabs_species$logFC.rel), 3); 
+```
+
+
+```{r}
+tabs_genus <- NULL 
+tse_g <- altExp(tse, "genus_prevalent")
+for (g in unique(tse_g$Intervention)) {
+    tseg <- tse_g[, tse_g$Intervention==g] 
+    df <- as.data.frame(colData(tseg)) 
+    for (tax in na.omit(rowData(tseg)$genus)) {
+      df$signal <- as.vector(assay(tseg, "relabundance")[tax,])
+      df_before <- df[df$timepoint == "before", ]
+      df_after <- df[df$timepoint == "after", ]
+      
+      # Sort by subject to align vectors perfectly
+      df_before <- df_before[order(df_before$subject), ]
+      df_after <- df_after[order(df_after$subject), ]
+
+      tabs_genus <-
+        rbind(tabs_genus,
+        c(
+          Intervention = g,
+          Taxon = tax,
+          mean1 = mean(df_before$signal, na.rm = TRUE),
+          mean2 = mean(df_after$signal, na.rm = TRUE),
+          iqr95_1 = quantile(df_before$signal, 0.95, na.rm = TRUE),
+          iqr95_2 = quantile(df_after$signal, 0.95, na.rm = TRUE),
+          logFC.rel = mean(df_after$signal - df_before$signal, na.rm = TRUE)
+        ))
+    }
+}
+tabs_genus <- as.data.frame(tabs_genus)
+tabs_genus$mean.rel1 <- round(100 * as.numeric(tabs_genus$mean1), 3); tabs_genus$mean1 <- NULL
+tabs_genus$mean.rel2 <- round(100 * as.numeric(tabs_genus$mean2), 3); tabs_genus$mean2 <- NULL
+tabs_genus$iqr95_1 <- round(100 * as.numeric(tabs_genus$iqr95_1), 3); tabs_genus$`iqr95_1.95%` <- NULL
+tabs_genus$iqr95_2 <- round(100 * as.numeric(tabs_genus$iqr95_2), 3); tabs_genus$`iqr95_2.95%` <- NULL
+tabs_genus$logFC.rel <- round(100 * as.numeric(tabs_genus$logFC.rel), 3); 
+```
+
+```{r}
+#| label: tbl-tablespecies
+if (knitr::is_html_output()) {
+  datatable(tabs_species,
+            extensions = c("Buttons"),
+            options = list(
+              pageLength = 10,
+              dom = 'Bfrtip',
+              buttons = c("copy", "csv", "excel")
+            ),
+            caption = "Table of average relative abundance and 95th percentile - Species")
+} else {
+  kable(tabs_species)
+}
+```
+
+```{r}
+#| label: tbl-tablegenus
+if (knitr::is_html_output()) {
+  datatable(tabs_genus,
+            extensions = c("Buttons"),
+            options = list(
+              pageLength = 10,
+              dom = 'Bfrtip',
+              buttons = c("copy", "csv", "excel")
+            ),
+            caption = "Table of average relative abundance and 95th percentile - Genus")
+} else {
+  kable(tabs_genus)
+}
+```
+
+## Supervised analysis
+
+### Significant variables
+
+-   **Formula** assay ~ Treatment + timepoint
+
+```{r significant variables}
+tse <- readRDS("../../data/tse.Rds")
+# Perform RDA
+tse_4 <- tse[, tse$Treatment == "4"]
+tse_B <- tse[, tse$Treatment == "B"]
+tse_C <- tse[, tse$Treatment == "C"]
+
+tse <- addRDA(
+    tse,
+    assay.type = "relabundance",
+    formula = assay ~ Intervention + time,
+    distance = dissimilarity.index,
+    na.action = na.exclude)
+
+tse_4 <- addRDA(
+    tse_4,
+    assay.type = "relabundance",
+    formula = assay ~ time,
+    distance = dissimilarity.index,
+    na.action = na.exclude)
+tse_B <- addRDA(
+    tse_B,
+    assay.type = "relabundance",
+    formula = assay ~ time,
+    distance = dissimilarity.index,
+    na.action = na.exclude)
+tse_C <- addRDA(
+    tse_C,
+    assay.type = "relabundance",
+    formula = assay ~ time,
+    distance = dissimilarity.index,
+    na.action = na.exclude)
+
+tse_list <- list(tse_4, tse_B, tse_C)
+
+# Calculate explained variance
+e_rda <- attr(reducedDim(tse, "RDA"), "eig")
+rel_eig_rda <- e_rda / sum(e_rda[e_rda > 0])
+
+```
+
+```{r}
+#| label: fig-figure-of-pRDA
+plotRDA(tse, "RDA", color.by = "timepoint", add.ellipse = "fill") + 
+  labs(
+    x = paste("RDA 1 (", round(100 * rel_eig_rda[[1]], 1), "%)", sep = ""),
+    y = paste("RDA 2 (", round(100 * rel_eig_rda[[2]], 1), "%)", sep = "")
+  ) +
+  labs(color = "Treatment group") +
+  theme(legend.position = "top", legend.title = element_text(size = 12), legend.text = element_text(size = 10))
+```
+
+
+
+### Significant taxa
+
+
+
+-   **RDA - Estimates for species that exhibit the largest differences between the Treatments**
+
+```{r significant-taxa-4}
+#| label: fig-figure-of-RDA-dignificant
+#| fig-width: 10
+#| fig-height: 3
+lapply(tse_list, function(tse) {
+loadings_matrix <- attr(reducedDim(tse, "RDA"), "species")
+#rownames(loadings_matrix) <- rowData(tse)$genus
+rownames(loadings_matrix) <- apply(rowData(tse)[, c("genus", "species")], 1, function (x) {paste(x, collapse=":")})
+plotLoadings(loadings_matrix, ncomponents = 2, n = 10) + 
+  labs(
+    title = unique(tse$Treatment)
+  )
+})
+```
+
+
+## Data Summary
+
+```{r data-summary}
+tse
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::

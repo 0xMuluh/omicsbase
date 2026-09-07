@@ -1,0 +1,326 @@
+---
+title: "Primary results: maternal diet and child metabolites"
+---
+
+Maternal prenatal diet is related to child metabolomics from 6 months to 5-6 years. The age-specific and mutual-timing models carry the main inferential weight; the longitudinal component now returns coefficient-level output across all attempted exposures but remains more warning-prone and assumption-sensitive.
+
+```{r}
+#| label: setup
+#| include: false
+source("report_utils.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DT)
+
+# Override datatable locally to add Excel/CSV export buttons by default
+datatable <- function(data, ..., options = list(), extensions = character(0)) {
+  options$dom <- "Blfrtip"
+  options$buttons <- c("copy", "csv", "excel")
+  DT::datatable(data, ..., extensions = c(extensions, "Buttons"), options = options)
+}
+
+results <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+age_res <- results$age_specific
+long_res <- results$longitudinal
+age_res_sens <- results$age_specific_sensitivity
+long_res_sens <- results$longitudinal_sensitivity
+model_status <- results$model_status
+
+early_res <- flatten_age(age_res, "early")
+late_res <- flatten_age(age_res, "late")
+mutual_res <- flatten_age(age_res, "mutual")
+early_res_sens <- if (!is.null(age_res_sens)) flatten_age(age_res_sens, "early") else data.frame()
+late_res_sens <- if (!is.null(age_res_sens)) flatten_age(age_res_sens, "late") else data.frame()
+mutual_res_sens <- if (!is.null(age_res_sens)) flatten_age(age_res_sens, "mutual") else data.frame()
+mutual_early_res <- flatten_mutual_term(mutual_res, "early")
+mutual_late_res <- flatten_mutual_term(mutual_res, "late")
+mutual_early_res_sens <- flatten_mutual_term(mutual_res_sens, "early")
+mutual_late_res_sens <- flatten_mutual_term(mutual_res_sens, "late")
+
+show_table_prenatal_diet <- function(df, title = NULL) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  
+  df_display <- df %>%
+    mutate(
+      estimate = round(estimate, 3),
+      Conf_Interval = if (all(c("conf.low", "conf.high") %in% names(.))) {
+        paste0("[", round(conf.low, 3), ", ", round(conf.high, 3), "]")
+      } else {
+        NA_character_
+      },
+      p.value = formatC(p.value, format = "e", digits = 2),
+      q.value = formatC(q.value, format = "e", digits = 2)
+    ) %>%
+    mutate(age = visit_label(visit)) %>%
+    select(exposure, feature, age, n, Beta = estimate, `95% CI` = Conf_Interval, P = p.value, Q = q.value)
+  
+  datatable(
+    df_display,
+    caption = title,
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+
+clean_label <- function(x) {
+  gsub("_", " ", as.character(x), fixed = TRUE)
+}
+
+signal_summary_tbl <- build_signal_summary_prenatal_diet(results)
+
+q7_yield_tbl <- model_status %>%
+  filter(question == "Q7") %>%
+  count(timing, name = "attempted_exposures") %>%
+  mutate(returned_rows = if (!is.null(long_res) && "timing" %in% names(long_res)) {
+    vapply(timing, function(t0) sum(long_res$timing == t0, na.rm = TRUE), integer(1))
+  } else {
+    0L
+  })
+```
+
+## Signal summary
+
+This table shows how much result volume and FDR-significant signal the main model components contribute before the detailed tables below.
+
+```{r}
+#| label: tbl-signal-summary
+datatable(
+  signal_summary_tbl,
+  caption = "Question-level signal summary",
+  options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+)
+```
+
+## Q1 Early-pregnancy diet associations across child visits
+
+Associations between early-pregnancy diet and child metabolites across 4 ages. Complete-case `n` across fitted models: `r sample_n_label(early_res)`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-early-nutrients
+show_table_prenatal_diet(early_res %>% filter(!grepl("DietaryPatterns|DII|IDQ", exposure)), "Early Pregnancy Diet Associations - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-early-diet-quality-continuous
+show_table_prenatal_diet(early_res %>% filter(grepl("IDQ|DII", exposure) & !grepl("categorized", exposure)), "Early Pregnancy Diet Associations - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes / Patterns (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-early-diet-quality-categorical
+show_table_prenatal_diet(early_res %>% filter(grepl("DietaryPatterns|categorized", exposure)), "Early Pregnancy Diet Associations - Diet Quality Classes / Patterns (Categorical)")
+```
+
+## Q2 Late-pregnancy diet associations across child visits
+
+Associations between late-pregnancy diet and child metabolites across 4 ages. Complete-case `n` across fitted models: `r sample_n_label(late_res)`.
+
+### Nutrients {.unnumbered}
+
+```{r}
+#| label: tbl-late-nutrients
+show_table_prenatal_diet(late_res %>% filter(!grepl("DietaryPatterns|DII|IDQ", exposure)), "Late Pregnancy Diet Associations - Nutrients")
+```
+
+### Diet Quality Score (Continuous) {.unnumbered}
+
+```{r}
+#| label: tbl-late-diet-quality-continuous
+show_table_prenatal_diet(late_res %>% filter(grepl("IDQ|DII", exposure) & !grepl("categorized", exposure)), "Late Pregnancy Diet Associations - Diet Quality Score (Continuous)")
+```
+
+### Diet Quality Classes / Patterns (Categorical) {.unnumbered}
+
+```{r}
+#| label: tbl-late-diet-quality-categorical
+show_table_prenatal_diet(late_res %>% filter(grepl("DietaryPatterns|categorized", exposure)), "Late Pregnancy Diet Associations - Diet Quality Classes / Patterns (Categorical)")
+```
+
+## Q3 Timing comparison: early vs late pregnancy
+
+Direct evaluation of whether early and late pregnancy diet windows have independent effects. Complete-case `n` across fitted models: `r sample_n_label(mutual_res)`.
+
+The saved mutual-adjustment output reports paired early and late coefficients, 95% confidence intervals, p-values, and q-values.
+
+```{r}
+#| label: tbl-mutual
+if (!is.null(mutual_res)) {
+  mutual_display <- mutual_res %>%
+    mutate(
+      estimate_early = round(estimate_early, 3),
+      early_ci = paste0("(", round(conf.low_early, 3), ", ", round(conf.high_early, 3), ")"),
+      p_early = formatC(p_early, format = "e", digits = 2),
+      q_early = formatC(q_early, format = "e", digits = 2),
+      estimate_late = round(estimate_late, 3),
+      late_ci = paste0("(", round(conf.low_late, 3), ", ", round(conf.high_late, 3), ")"),
+      p_late = formatC(p_late, format = "e", digits = 2),
+      q_late = formatC(q_late, format = "e", digits = 2)
+    ) %>%
+    transmute(
+      `Exposure Pair` = clean_label(exposure_pair),
+      Metabolite = feature,
+      Age = visit_label(visit),
+      n = n,
+      `Early Beta` = estimate_early,
+      `Early 95% CI` = early_ci,
+      `Early P` = p_early,
+      `Early Q` = q_early,
+      `Late Beta` = estimate_late,
+      `Late 95% CI` = late_ci,
+      `Late P` = p_late,
+      `Late Q` = q_late
+    )
+  
+  datatable(
+    mutual_display,
+    caption = "Mutually Adjusted Timing Models",
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+```
+
+## Q4 Longitudinal diet-by-age interaction models across childhood
+
+Evaluation of whether prenatal diet is associated with metabolite **trajectories** across childhood (Diet $\times$ Age interaction). Complete-case `n` across fitted models: `r sample_n_label(long_res, 'n_obs')`.
+
+This is still the most warning-prone component. The saved longitudinal result object contains `r nrow(long_res)` coefficient rows from `r sum(model_status$question == "Q7", na.rm = TRUE)` attempted longitudinal exposure runs, and the executed models generated substantial warnings. This primary-results section intentionally displays the `Diet x Age` interaction coefficients, because those are the direct Q4 longitudinal estimand in this report. The full longitudinal coefficient set, including the main exposure terms from the same mixed-effects models, is available in the exposure atlas.
+
+```{r}
+#| label: tbl-q7-yield
+datatable(
+  q7_yield_tbl,
+  caption = "Q4 longitudinal output coverage by timing window",
+  options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+)
+```
+
+```{r}
+#| label: tbl-interaction
+if (!is.null(long_res) && "term" %in% names(long_res)) {
+  interaction_display <- long_res %>%
+    filter(grepl(":", term)) %>% # Focus on interaction terms
+    mutate(
+      estimate = round(estimate, 3),
+      conf.low = round(estimate - 1.96 * std.error, 3),
+      conf.high = round(estimate + 1.96 * std.error, 3),
+      Conf_Interval = paste0("[", conf.low, ", ", conf.high, "]"),
+      p.value = formatC(p.value, format = "e", digits = 2),
+      q.value = formatC(q.value, format = "e", digits = 2)
+    ) %>%
+    select(exposure, feature, term, n_obs, n_ind, Beta = estimate, `95% CI` = Conf_Interval, P = p.value, Q = q.value)
+  
+  datatable(
+    interaction_display,
+    caption = "Q4 longitudinal interaction effects (primary estimand)",
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+} else {
+  message("No longitudinal interaction rows are available in the saved result object.")
+}
+```
+
+## Sensitivity summary
+
+```{r}
+#| label: tbl-sensitivity-summary
+age_comp <- bind_rows(
+  compare_primary_sensitivity(early_res, early_res_sens, c("exposure", "feature", "visit")) %>% mutate(window = "Early"),
+  compare_primary_sensitivity(late_res, late_res_sens, c("exposure", "feature", "visit")) %>% mutate(window = "Late"),
+  compare_primary_sensitivity(mutual_early_res, mutual_early_res_sens, c("exposure_pair", "feature", "visit")) %>% mutate(window = "Q3 mutual timing: early term"),
+  compare_primary_sensitivity(mutual_late_res, mutual_late_res_sens, c("exposure_pair", "feature", "visit")) %>% mutate(window = "Q3 mutual timing: late term")
+)
+
+if (nrow(age_comp) > 0) {
+  age_summary <- age_comp %>%
+    group_by(window, exposure, visit) %>%
+    summarise(
+      pairs_compared = n(),
+      median_abs_delta = median(abs_delta, na.rm = TRUE),
+      p90_abs_delta = as.numeric(quantile(abs_delta, 0.90, na.rm = TRUE, names = FALSE)),
+      direction_flip_fraction = mean(direction_flip, na.rm = TRUE),
+      q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      median_abs_delta = round(median_abs_delta, 3),
+      p90_abs_delta = round(p90_abs_delta, 3),
+      direction_flip_fraction = round(direction_flip_fraction, 3),
+      q_reclassification_fraction = round(q_reclassification_fraction, 3)
+    )
+
+  datatable(
+    age_summary,
+    caption = "Primary-vs-sensitivity estimate stability",
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+} else {
+  message("Sensitivity comparison unavailable until sensitivity outputs are generated.")
+}
+```
+
+```{r}
+#| label: tbl-sensitivity-longitudinal
+if (!is.null(long_res) && !is.null(long_res_sens) && nrow(long_res) > 0 && nrow(long_res_sens) > 0 && all(c("exposure", "feature", "term", "estimate") %in% names(long_res)) && all(c("exposure", "feature", "term", "estimate") %in% names(long_res_sens))) {
+  long_comp <- compare_primary_sensitivity(long_res, long_res_sens, c("exposure", "feature", "term"))
+  if (nrow(long_comp) > 0) {
+    long_summary <- long_comp %>%
+      group_by(exposure, term) %>%
+      summarise(
+        pairs_compared = n(),
+        median_abs_delta = median(abs_delta, na.rm = TRUE),
+        p90_abs_delta = as.numeric(quantile(abs_delta, 0.90, na.rm = TRUE, names = FALSE)),
+        direction_flip_fraction = mean(direction_flip, na.rm = TRUE),
+        q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        median_abs_delta = round(median_abs_delta, 3),
+        p90_abs_delta = round(p90_abs_delta, 3),
+        direction_flip_fraction = round(direction_flip_fraction, 3),
+        q_reclassification_fraction = round(q_reclassification_fraction, 3)
+      )
+
+    datatable(
+      long_summary,
+      caption = "Longitudinal primary-vs-sensitivity estimate stability",
+      filter = "top",
+      options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+    )
+  }
+}
+```
+
+## Execution status
+
+This status table records execution status only. `ok` means an exposure-question combination produced saved output rows; it does not mean the underlying model family was warning-free or numerically stable.
+
+```{r}
+#| label: tbl-model-status
+if (!is.null(model_status) && nrow(model_status) > 0) {
+  status_display <- model_status %>%
+    mutate(
+      n_complete = ifelse(
+        is.na(n_complete_min),
+        NA_character_,
+        ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+      )
+    ) %>%
+    select(question, analysis, timing, visit, exposure, status, reason, n_complete, n_features_tested)
+
+  datatable(
+    status_display,
+    caption = "Executed model status summary",
+    filter = "top",
+    options = list(pageLength = 10, scrollX = FALSE, autoWidth = FALSE)
+  )
+}
+```

@@ -1,0 +1,427 @@
+---
+title: "Exposure atlas: maternal diet"
+---
+
+Exposure-family reporting across the primary question set.
+
+- Every maternal exposure family is shown across the early-pregnancy, late-pregnancy, and mutual-timing age-specific components when available.
+- The longitudinal component is shown with coefficient-level output and execution status when those rows are available.
+- Each age-specific or mutual component includes a concise summary table, an overview plot, a raw-`p` top-hits forest plot, and a searchable full result table.
+- The full result tables are the exhaustive record. The overview plots are summaries.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+source("shared/circular_manhattan_helper.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(knitr)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+results <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+age_res <- results$age_specific
+long_res <- results$longitudinal
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_4", "visit_5", "visit_6", "visit_7")
+)
+mae <- analysis_obj$mae
+
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+feature_meta$feature_group <- if ("Group" %in% names(feature_meta)) as.character(feature_meta$Group) else "Unknown"
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group")], by = "feature")
+}
+
+base_exposure_prenatal_diet <- function(x) sub("[12]$", "", x)
+
+pretty_exposure <- function(x) {
+  x <- base_exposure_prenatal_diet(x)
+  x <- gsub("^M", "", x)
+  x <- gsub("DietaryPatterns", "Dietary Patterns ", x)
+  x <- gsub("DIINormalDiet", "Dietary Inflammatory Index ", x)
+  x <- gsub("DIIDensityDiet", "Dietary Inflammatory Index Density ", x)
+  x <- gsub("^IDQ$", "IDQ", x)
+  x <- gsub("EPercent", "Percent ", x)
+  x <- gsub("Fiball", "Fibre ", x)
+  x <- gsub("CHO", "Carbohydrate", x)
+  x <- gsub("Pro", "Protein", x)
+  x <- gsub("Fat", "Fat", x)
+  x <- gsub("SFA", "SFA", x)
+  x <- gsub("MUFA", "MUFA", x)
+  x <- gsub("PUFA", "PUFA", x)
+  x <- gsub("FAn3", "n-3 fatty acids", x)
+  x <- gsub("FAn6", "n-6 fatty acids", x)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+
+component_label <- function(x) dplyr::case_when(
+  x == "Early age-specific" ~ "Q1: Early-Pregnancy Age-Specific Models",
+  x == "Late age-specific" ~ "Q2: Late-Pregnancy Age-Specific Models",
+  x == "Mutual early term" ~ "Q3: Mutual Timing: Early-Pregnancy Term",
+  x == "Mutual late term" ~ "Q3: Mutual Timing: Late-Pregnancy Term",
+  x == "Longitudinal mixed-effects models" ~ "Q4: Longitudinal Mixed-Effects Models",
+  x == "Longitudinal status" ~ "Q4: Longitudinal Output Status",
+  TRUE ~ x
+)
+
+longitudinal_term_label <- function(term, exposure) dplyr::case_when(
+  term == exposure ~ "Main exposure effect",
+  term == paste0(exposure, ":visit_num") ~ "Exposure-by-age interaction",
+  term == paste0("visit_num:", exposure) ~ "Exposure-by-age interaction",
+  TRUE ~ as.character(term)
+)
+
+summary_tbl <- function(df, n_col = NULL) {
+  out <- tibble(
+    result_rows = nrow(df),
+    significant_rows = sum(df$q.value < 0.10, na.rm = TRUE),
+    significant_fraction = if (nrow(df) > 0) mean(df$q.value < 0.10, na.rm = TRUE) else NA_real_
+  )
+  if (!is.null(n_col) && n_col %in% names(df)) {
+    vals <- suppressWarnings(as.numeric(df[[n_col]]))
+    vals <- vals[is.finite(vals)]
+    out$n_range <- if (length(vals) == 0) NA_character_ else paste0(min(vals), "-", max(vals))
+  }
+  out
+}
+
+emit_static_table <- function(tbl, caption = NULL, digits = 3) {
+  if (is.null(tbl) || nrow(tbl) == 0) {
+    cat("<p>No rows available.</p>\n")
+    return(invisible(NULL))
+  }
+
+  tbl_out <- tbl
+  num_cols <- vapply(tbl_out, is.numeric, logical(1))
+  if (any(num_cols)) {
+    tbl_out[num_cols] <- lapply(tbl_out[num_cols], function(x) {
+      if (all(is.na(x))) return(x)
+      if (all(abs(x[is.finite(x)] - round(x[is.finite(x)])) < 1e-8)) {
+        round(x, 0)
+      } else {
+        round(x, digits)
+      }
+    })
+  }
+
+  html <- knitr::kable(
+    tbl_out,
+    format = "html",
+    row.names = FALSE,
+    caption = caption,
+    table.attr = 'class="table table-sm table-striped table-hover atlas-table"'
+  )
+  cat(as.character(html), "\n")
+  invisible(NULL)
+}
+
+forest_plot <- function(df, title_text) {
+  top_df <- df %>%
+    slice_min(p.value, n = min(20L, nrow(df)), with_ties = FALSE) %>%
+    mutate(feature_lab = paste0(feature_group, " | ", feature))
+
+  if (nrow(top_df) == 0) {
+    return(NULL)
+  }
+
+  ggplot(top_df, aes(x = estimate, y = fct_reorder(feature_lab, estimate), color = feature_group)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey45") +
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, color = "grey55") +
+    geom_point(size = 2) +
+    labs(
+      x = "Standardized beta (95% CI)",
+      y = NULL,
+      title = title_text,
+      subtitle = "Top 20 rows ranked by raw p-value",
+      color = "Metabolite group"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+flatten_age_specific <- function(age_res, timing_label) {
+  bind_rows(lapply(names(age_res), function(v) {
+    age_res[[v]][[timing_label]] %>%
+      mutate(
+        visit = as.integer(v),
+        component = paste(timing_label, "age-specific"),
+        base_exposure = base_exposure_prenatal_diet(exposure)
+      )
+  }))
+}
+
+flatten_mutual <- function(age_res, term = c("early", "late")) {
+  term <- match.arg(term)
+  bind_rows(lapply(names(age_res), function(v) {
+    dat <- age_res[[v]]$mutual %>% mutate(visit = as.integer(v), base_exposure = exposure_pair)
+    if (term == "early") {
+      dat %>%
+        transmute(
+          feature,
+          estimate = estimate_early,
+          conf.low = conf.low_early,
+          conf.high = conf.high_early,
+          p.value = p_early,
+          q.value = q_early,
+          visit,
+          base_exposure,
+          component = "Mutual early term",
+          n = n
+        )
+    } else {
+      dat %>%
+        transmute(
+          feature,
+          estimate = estimate_late,
+          conf.low = conf.low_late,
+          conf.high = conf.high_late,
+          p.value = p_late,
+          q.value = q_late,
+          visit,
+          base_exposure,
+          component = "Mutual late term",
+          n = n
+        )
+    }
+  }))
+}
+
+early_all <- flatten_age_specific(age_res, "early") %>% add_feature_meta()
+late_all <- flatten_age_specific(age_res, "late") %>% add_feature_meta()
+mutual_early_all <- flatten_mutual(age_res, "early") %>% add_feature_meta()
+mutual_late_all <- flatten_mutual(age_res, "late") %>% add_feature_meta()
+long_all <- long_res %>%
+  add_ci() %>%
+  mutate(
+    base_exposure = base_exposure_prenatal_diet(exposure),
+    component = "Longitudinal mixed-effects models",
+    term_label = longitudinal_term_label(term, exposure)
+  ) %>%
+  add_feature_meta()
+
+all_primary <- bind_rows(early_all, late_all, mutual_early_all, mutual_late_all) %>%
+  mutate(
+    conf.low = if ("conf.low" %in% names(.)) conf.low else NA_real_,
+    conf.high = if ("conf.high" %in% names(.)) conf.high else NA_real_
+  )
+
+all_exposure_families <- unique(c(
+  early_all$base_exposure,
+  late_all$base_exposure,
+  mutual_early_all$base_exposure,
+  mutual_late_all$base_exposure,
+  long_all$base_exposure
+))
+all_exposure_families <- all_exposure_families[order(pretty_exposure(all_exposure_families))]
+component_order <- c("Early age-specific", "Late age-specific", "Mutual early term", "Mutual late term", "Longitudinal mixed-effects models")
+```
+
+## Exposure-by-exposure atlas
+
+```{r}
+#| label: atlas-loop
+#| results: asis
+#| echo: false
+#| fig-width: 14
+#| fig-height: 14
+
+for (exp_base in all_exposure_families) {
+  cat("\n\n### Exposure Family: ", pretty_exposure(exp_base), "{.unnumbered}\n\n", sep = "")
+  cat("Raw variable family: `", exp_base, "`\n\n", sep = "")
+
+  exp_primary <- all_primary %>% filter(base_exposure == exp_base)
+  long_coef <- long_all %>% filter(base_exposure == exp_base)
+  long_model_status <- model_status %>%
+    mutate(base_exposure = base_exposure_prenatal_diet(exposure)) %>%
+    filter(question == "Q7", base_exposure == exp_base)
+
+  available_components <- component_order[component_order %in% unique(c(exp_primary$component, if (nrow(long_coef) > 0 || nrow(long_model_status) > 0) "Longitudinal mixed-effects models"))]
+
+  cat("::: {.panel-tabset}\n")
+
+  for (component_i in available_components) {
+    cat("\n#### ", component_label(component_i), "\n\n", sep = "")
+
+    if (component_i == "Longitudinal mixed-effects models") {
+      yield_tbl <- tibble(
+        timing = c("Early", "Late"),
+        attempted_exposures = c(
+          sum(long_model_status$timing == "Early", na.rm = TRUE),
+          sum(long_model_status$timing == "Late", na.rm = TRUE)
+        ),
+        returned_rows = c(
+          sum(long_coef$timing == "Early", na.rm = TRUE),
+          sum(long_coef$timing == "Late", na.rm = TRUE)
+        ),
+        returned_term_families = c(
+          dplyr::n_distinct(long_coef$term_label[long_coef$timing == "Early"]),
+          dplyr::n_distinct(long_coef$term_label[long_coef$timing == "Late"])
+        )
+      )
+      emit_static_table(yield_tbl, caption = "Q4 longitudinal output yield")
+
+      if (nrow(long_model_status) > 0) {
+        detail_tbl <- long_model_status %>%
+          transmute(
+            timing,
+            status,
+            reason,
+            n_complete_min,
+            n_complete_max,
+            n_features_tested
+          )
+        cat("\n**Model status details**\n\n")
+        emit_static_table(detail_tbl, caption = "Q4 longitudinal model-status details")
+      }
+
+      if (nrow(long_coef) == 0) {
+        cat("\nNo coefficient-level longitudinal rows are available for this exposure family.\n\n")
+        next
+      }
+
+      cat("\n**Coefficient-level longitudinal results**\n\n")
+      cat("These rows come from the mixed-effects panel and are split below by pregnancy timing and coefficient family.\n\n")
+      cat("::: {.panel-tabset}\n")
+
+      long_view_tbl <- tibble(
+        timing = rep(c("Early", "Late"), each = 2),
+        term_label = rep(c("Main exposure effect", "Exposure-by-age interaction"), times = 2)
+      ) %>%
+        filter(paste(timing, term_label) %in% paste(long_coef$timing, long_coef$term_label))
+
+      for (view_i in seq_len(nrow(long_view_tbl))) {
+        timing_i <- long_view_tbl$timing[[view_i]]
+        term_i <- long_view_tbl$term_label[[view_i]]
+        cat("\n##### ", timing_i, " | ", term_i, "\n\n", sep = "")
+
+        view_df <- long_coef %>% filter(timing == timing_i, term_label == term_i)
+        if (nrow(view_df) == 0) {
+          cat("No rows available for this longitudinal view.\n\n")
+          next
+        }
+
+        summary_out <- tibble(
+          result_rows = nrow(view_df),
+          significant_rows = sum(view_df$q.value < 0.10, na.rm = TRUE),
+          significant_fraction = if (nrow(view_df) > 0) mean(view_df$q.value < 0.10, na.rm = TRUE) else NA_real_,
+          n_obs_range = paste0(min(view_df$n_obs, na.rm = TRUE), "-", max(view_df$n_obs, na.rm = TRUE)),
+          n_ind_range = paste0(min(view_df$n_ind, na.rm = TRUE), "-", max(view_df$n_ind, na.rm = TRUE))
+        )
+        emit_static_table(summary_out, caption = paste0(component_label(component_i), " | ", timing_i, " | ", term_i, " summary"))
+
+        cat("\n**Metabolome-wide overview plot**\n\n")
+        cat("::: {.column-screen-inset-right}\n")
+        plot_circular_manhattan(view_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i), " | ", timing_i, " | ", term_i))
+        cat("\n:::\n\n")
+
+        cat("**Top 20 rows by raw p-value**\n\n")
+        p_forest <- forest_plot(view_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i), " | ", timing_i, " | ", term_i))
+        if (!is.null(p_forest)) {
+          print(p_forest)
+        } else {
+          cat("No rows available for the top-ranked forest plot.\n\n")
+        }
+
+        cat("**Full result table**\n\n")
+        cat("This table is the exhaustive longitudinal result set for this exposure family, timing window, and coefficient family.\n\n")
+        display_df <- view_df %>%
+          arrange(p.value, feature) %>%
+          transmute(
+            feature_group,
+            feature,
+            estimate,
+            conf.low,
+            conf.high,
+            p.value,
+            q.value,
+            n_obs,
+            n_ind
+          )
+        emit_static_table(display_df, caption = paste0(component_label(component_i), " | ", timing_i, " | ", term_i, " full results"))
+        cat("\n\n")
+      }
+
+      cat(":::\n\n")
+      next
+    }
+
+    comp_df <- exp_primary %>% filter(component == component_i)
+    visit_levels <- c(4L, 5L, 6L, 7L)
+    visit_levels <- visit_levels[visit_levels %in% unique(comp_df$visit)]
+
+    if (nrow(comp_df) == 0) {
+      cat("No rows available for this component.\n\n")
+      next
+    }
+
+    cat("::: {.panel-tabset}\n")
+
+    for (visit_i in visit_levels) {
+      cat("\n##### ", visit_label(visit_i), "\n\n", sep = "")
+
+      visit_df <- comp_df %>% filter(visit == visit_i)
+      if (nrow(visit_df) == 0) {
+        cat("No rows available for this visit.\n\n")
+        next
+      }
+
+      summary_out <- summary_tbl(visit_df, n_col = "n")
+      emit_static_table(summary_out, caption = paste0(component_label(component_i), " | ", visit_label(visit_i), " summary"))
+
+      cat("\n**Metabolome-wide overview plot**\n\n")
+      cat("::: {.column-screen-inset-right}\n")
+      plot_circular_manhattan(visit_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i), " | ", visit_label(visit_i)))
+      cat("\n:::\n\n")
+
+      cat("**Top 20 rows by raw p-value**\n\n")
+      if (!all(c("conf.low", "conf.high") %in% names(visit_df)) || all(is.na(visit_df$conf.low)) || all(is.na(visit_df$conf.high))) {
+        cat("Confidence intervals are not stored for this component, so the forest plot is omitted. Use the full table below for exhaustive estimates and q-values.\n\n")
+      } else {
+        p_forest <- forest_plot(visit_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i), " | ", visit_label(visit_i)))
+        if (!is.null(p_forest)) {
+          print(p_forest)
+        } else {
+          cat("No rows available for the top-ranked forest plot.\n\n")
+        }
+      }
+
+      cat("**Full result table**\n\n")
+      cat("This table is the exhaustive result set for this exposure family, component, and child age.\n\n")
+      display_df <- visit_df %>%
+        arrange(p.value, feature) %>%
+        transmute(
+          feature_group,
+          feature,
+          estimate,
+          conf.low,
+          conf.high,
+          p.value,
+          q.value,
+          n
+        )
+      emit_static_table(display_df, caption = paste0(component_label(component_i), " | ", visit_label(visit_i), " full results"))
+      cat("\n\n")
+    }
+
+    cat(":::\n\n")
+  }
+
+  cat(":::\n\n")
+  cat("\n\n---\n\n")
+}
+```

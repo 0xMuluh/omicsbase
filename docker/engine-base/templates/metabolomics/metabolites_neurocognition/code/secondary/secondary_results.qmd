@@ -1,0 +1,516 @@
+---
+title: "Exploratory sensitivity checks"
+---
+
+These exploratory sensitivity analyses are restricted to five secondary outcomes: Bayley Cognitive, Bayley Language, Bayley Motor, HINE global score, and HINE optimality status. They do not replace the primary Benjamini-Hochberg FDR screen, which remains the reference analysis for individual-metabolite discovery.
+
+::: {.callout-note title="How to read these checks"}
+These analyses test whether the primary null result changes under predefined summaries or sensitivity models: official NMR group scores, MSEA, HINE-specific models, correlation-aware thresholds, permutation FDR, and multivariable prediction. Treat nominal signals here as context unless the stated secondary threshold is met and the model note says the fit is interpretable.
+:::
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+library(dplyr)
+library(tidyr)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+res_path <- "../output/results/neurocognition_secondary_results.rds"
+if (!file.exists(res_path)) {
+  stop("Required secondary result object not found: ", res_path)
+}
+results_obj <- readRDS(res_path)
+required_objects <- c(
+  "cluster_results", "mixed_design_audit", "mixed_results", "tobit_results",
+  "firth_results", "elastic_net", "pls", "msea_results", "m_eff",
+  "m_eff_hits", "perm_fdr_results", "rf_results", "analysis_manifest",
+  "secondary_outcomes", "secondary_continuous_outcomes", "covariates_used",
+  "hine_reduced_covars", "metabolites", "timestamp"
+)
+missing_objects <- setdiff(required_objects, names(results_obj))
+if (length(missing_objects) > 0) {
+  stop("Secondary result object missing required element(s): ", paste(missing_objects, collapse = ", "))
+}
+
+cluster_df <- results_obj[["cluster_results"]]
+mixed_design_check <- results_obj[["mixed_design_audit"]]
+tobit_df <- results_obj[["tobit_results"]]
+firth_df <- results_obj[["firth_results"]]
+enet_df <- results_obj[["elastic_net"]]
+pls_df <- results_obj[["pls"]]
+msea_df <- results_obj[["msea_results"]]
+m_eff_df <- results_obj[["m_eff"]]
+m_eff_hits <- results_obj[["m_eff_hits"]]
+perm_fdr_df <- results_obj[["perm_fdr_results"]]
+rf_df <- results_obj[["rf_results"]]
+analysis_manifest <- results_obj[["analysis_manifest"]]
+secondary_outcomes <- results_obj[["secondary_outcomes"]]
+secondary_continuous_outcomes <- results_obj[["secondary_continuous_outcomes"]]
+
+pretty_outcome <- function(x) {
+  dplyr::case_when(
+    x == "CCognition_indexpoints6" ~ "Bayley Cognitive Score",
+    x == "CLanguage_indexpoints6" ~ "Bayley Language Score",
+    x == "CExpressivelanguage_standardpoints6" ~ "Bayley Expressive Language",
+    x == "CReceptivelanguage_standardpoints6" ~ "Bayley Receptive Language",
+    x == "CMotor_indexpoints6" ~ "Bayley Motor Score",
+    x == "CFinemotor_standardpoints6" ~ "Bayley Fine Motor",
+    x == "CGrossmotor_standardpoints6" ~ "Bayley Gross Motor",
+    x == "Hammersmith6" ~ "HINE Global Score",
+    x == "HINE_optimal" ~ "HINE Optimality Status",
+    TRUE ~ x
+  )
+}
+
+results_column_widths <- c(
+  Outcome = "220px",
+  Metabolite = "120px",
+  `Effect Type` = "130px",
+  Estimate = "105px",
+  `95% CI` = "125px",
+  `p-value` = "75px",
+  `q-value` = "75px",
+  N = "55px"
+)
+
+mae_path <- "../data/MAE.rds"
+if (!file.exists(mae_path)) {
+  stop("Required MAE object not found: ", mae_path)
+}
+mae <- readRDS(mae_path)
+cd_v6 <- as.data.frame(colData(experiments(mae)[["visit_6"]]), stringsAsFactors = FALSE)
+
+all_continuous_outcomes <- c(
+  "CCognition_indexpoints6", "CLanguage_indexpoints6",
+  "CExpressivelanguage_standardpoints6", "CReceptivelanguage_standardpoints6",
+  "CMotor_indexpoints6", "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6", "Hammersmith6"
+)
+missing_corr_cols <- setdiff(all_continuous_outcomes, names(cd_v6))
+if (length(missing_corr_cols) > 0) {
+  stop("Cannot compute outcome correlation table; missing column(s): ", paste(missing_corr_cols, collapse = ", "))
+}
+outcome_cor <- round(stats::cor(cd_v6[, all_continuous_outcomes], use = "pairwise.complete.obs"), 2)
+colnames(outcome_cor) <- pretty_outcome(colnames(outcome_cor))
+outcome_corr_tbl <- data.frame(Outcome = pretty_outcome(rownames(outcome_cor)), outcome_cor, check.names = FALSE)
+corr_threshold <- 0.80
+outcome_corr_display <- as.data.frame(
+  matrix("", nrow = nrow(outcome_cor), ncol = ncol(outcome_cor)),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+names(outcome_corr_display) <- colnames(outcome_cor)
+for (i in seq_len(nrow(outcome_cor))) {
+  for (j in seq_len(ncol(outcome_cor))) {
+    value <- outcome_cor[i, j]
+    cell <- sprintf("%.2f", value)
+    if (i != j && is.finite(value) && abs(value) >= corr_threshold) {
+      cell <- sprintf("<strong>%s</strong>", cell)
+    }
+    outcome_corr_display[i, j] <- cell
+  }
+}
+outcome_corr_display <- data.frame(
+  Outcome = pretty_outcome(rownames(outcome_cor)),
+  outcome_corr_display,
+  check.names = FALSE
+)
+
+hammersmith_values <- as.numeric(cd_v6[["Hammersmith6"]])
+hammersmith_values <- hammersmith_values[is.finite(hammersmith_values)]
+h_mean <- mean(hammersmith_values)
+h_sd <- stats::sd(hammersmith_values)
+h_skew <- mean((hammersmith_values - h_mean)^3) / h_sd^3
+h_kurt <- mean((hammersmith_values - h_mean)^4) / h_sd^4
+hammersmith_summary <- data.frame(
+  Statistic = c("Observations", "Mean", "SD", "Range", "Skewness", "Kurtosis", "% scoring >= 76", "% scoring exactly 78"),
+  Value = c(
+    length(hammersmith_values),
+    sprintf("%.2f", h_mean),
+    sprintf("%.2f", h_sd),
+    sprintf("%.1f to %.1f", min(hammersmith_values), max(hammersmith_values)),
+    sprintf("%.2f", h_skew),
+    sprintf("%.2f", h_kurt),
+    sprintf("%.1f", mean(hammersmith_values >= 76) * 100),
+    sprintf("%.1f", mean(hammersmith_values == 78) * 100)
+  ),
+  stringsAsFactors = FALSE
+)
+
+hine_counts <- as.data.frame(table(cd_v6[["HINE_optimal"]], useNA = "ifany"), stringsAsFactors = FALSE)
+names(hine_counts) <- c("HINE optimality", "N")
+```
+
+## Endpoint set and model inventory
+
+The secondary analyses below use three Bayley composite scores, HINE global score, and HINE optimality status. Bayley subscales remain part of the primary report and appear here only in the redundancy diagnostic.
+
+```{r}
+#| label: secondary-outcome-set
+outcome_scope <- data.frame(
+  Outcome = pretty_outcome(secondary_outcomes),
+  Role = ifelse(secondary_outcomes %in% secondary_continuous_outcomes, "Continuous", "Binary"),
+  stringsAsFactors = FALSE
+)
+make_table(outcome_scope, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: analysis-manifest
+manifest_tbl <- analysis_manifest %>%
+  mutate(
+    `Expected rows` = expected_rows,
+    `Observed rows` = observed_rows,
+    `Interpretable rows` = interpretable_rows,
+    Note = note
+  ) %>%
+  select(Analysis = analysis, `Expected rows`, `Observed rows`, `Interpretable rows`, Note)
+make_table(manifest_tbl, page_len = 10, export = TRUE)
+```
+
+## Outcome redundancy
+
+This diagnostic uses Visit 6 outcome data to show redundancy between Bayley composite scores and their component subscales. The component subscales are not secondary endpoints in the models below. Off-diagonal absolute correlations >= 0.80 are bolded.
+
+::: {.callout-tip title="Why this table is here"}
+High off-diagonal correlations show where several outcome labels are measuring closely related domains. This supports keeping the secondary model set focused on composites and HINE summaries rather than treating every subscale as an independent secondary endpoint.
+:::
+
+```{r}
+#| label: outcome-correlation-table
+knitr::kable(
+  outcome_corr_display,
+  format = "html",
+  escape = FALSE,
+  table.attr = "class=\"table table-sm table-striped w-auto\""
+)
+```
+
+## Mixed-model feasibility check
+
+Random-intercept mixed models were not run. The available neurodevelopmental endpoints are single 2-year outcomes repeated on each child row for the metabolite visits; they are not longitudinal neurodevelopmental repeated measures.
+
+```{r}
+#| label: mixed-design-check-table
+mixed_check_tbl <- mixed_design_check %>%
+  mutate(Outcome = pretty_outcome(outcome)) %>%
+  select(
+    Outcome,
+    `Children with multiple visit rows` = n_children_with_multiple_visit_rows,
+    `Children with within-child outcome variation` = n_children_with_within_child_outcome_variation,
+    `Max distinct outcome values per child` = max_distinct_values_per_child,
+    Note = note
+  )
+make_table(mixed_check_tbl, page_len = 10, export = TRUE)
+```
+
+::: {.callout-warning}
+The retained mixed-model rows are status records only. Their estimates are intentionally missing because no mixed model was fitted.
+:::
+
+## Official NMR group cluster scores
+
+These models aggregate the 250 metabolite features into the 18 official MAE NMR `Group` categories. Continuous outcomes use OLS; HINE optimality uses logistic regression with the reduced HINE covariate block: sex, breastfeeding duration, intervention group, and primiparity.
+
+::: {.callout-note title="Group-score interpretation"}
+A group-score estimate is an association for the standardized group summary, not evidence that every metabolite in that group has the same direction or magnitude. HINE rows are on an odds-ratio scale; continuous rows are standardized beta coefficients.
+:::
+
+```{r}
+#| label: cluster-table
+cluster_table <- cluster_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    `NMR Group` = group_label,
+    `Effect Type` = ifelse(outcome == "HINE_optimal", "Odds Ratio", "Std. Beta"),
+    Estimate = estimate,
+    `95% CI` = sprintf("[%.3f, %.3f]", conf.low, conf.high),
+    `p-value` = p.value,
+    `q-value` = q.value,
+    N = n,
+    Note = note
+  ) %>%
+  select(Visit, Outcome, `NMR Group`, `Effect Type`, Estimate, `95% CI`, `p-value`, `q-value`, N, Note)
+make_table(cluster_table, page_len = 10, export = TRUE, column_widths = results_column_widths)
+```
+
+```{r}
+#| label: cluster-hits-table
+cluster_hits <- cluster_table %>% filter(!is.na(`q-value`) & `q-value` < 0.10)
+if (nrow(cluster_hits) > 0) {
+  make_table(cluster_hits, page_len = 10, export = TRUE, column_widths = results_column_widths)
+} else {
+  cat("No NMR group cluster association reached q < 0.10.")
+}
+```
+
+## Exploratory metabolite set enrichment
+
+MSEA tests whether official NMR groups show higher nominal signal ranks than the remaining features. This is an exploratory group-level summary of primary p-values, restricted to the five secondary outcomes. It does not establish individual metabolite discovery.
+
+::: {.callout-note title="MSEA interpretation"}
+The enrichment ratio summarizes whether nominal p-values are more concentrated inside an NMR group than outside it. It does not identify a causal pathway, and it should be read together with the q-value and the number of features in the group.
+:::
+
+```{r}
+#| label: msea-table
+msea_table <- msea_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    `NMR Group` = group,
+    `Features (N)` = n_features,
+    `Mean -log10(p), set` = mean_neglog10p_set,
+    `Mean -log10(p), background` = mean_neglog10p_bg,
+    `Enrichment ratio` = enrichment_ratio,
+    `p-value` = p.value,
+    `q-value` = q.value
+  ) %>%
+  select(Visit, Outcome, `NMR Group`, `Features (N)`, `Mean -log10(p), set`, `Mean -log10(p), background`, `Enrichment ratio`, `p-value`, `q-value`)
+make_table(msea_table, page_len = 10, export = TRUE)
+```
+
+```{r}
+#| label: msea-hits-table
+msea_hits <- msea_table %>% filter(!is.na(`q-value`) & `q-value` < 0.10)
+if (nrow(msea_hits) > 0) {
+  make_table(msea_hits, page_len = 10, export = TRUE)
+} else {
+  cat("No exploratory MSEA group reached q < 0.10.")
+}
+```
+
+## Tobit sensitivity for HINE global score
+
+The HINE global score is high-scoring and left-skewed. It is not true that half of the cohort is exactly censored at 78; the exact-ceiling fraction is shown below. Tobit is therefore reported only as a sensitivity model for the bounded distribution.
+
+::: {.callout-note title="Tobit interpretation"}
+Tobit estimates are not replacements for the primary OLS HINE global-score models. They ask whether conclusions are sensitive to treating the bounded upper end of the HINE scale as part of the outcome model.
+:::
+
+```{r}
+#| label: hammersmith-distribution-table
+make_table(hammersmith_summary, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: tobit-table
+tobit_table <- tobit_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    `Tobit beta` = estimate,
+    `Std. Error` = std.error,
+    `95% CI` = sprintf("[%.3f, %.3f]", conf.low, conf.high),
+    `p-value` = p.value,
+    `q-value` = q.value,
+    N = n,
+    Note = note
+  ) %>%
+  select(Visit, Outcome, Metabolite, `Tobit beta`, `Std. Error`, `95% CI`, `p-value`, `q-value`, N, Note)
+make_table(tobit_table, page_len = 10, export = TRUE, column_widths = results_column_widths)
+```
+
+## Firth sensitivity for HINE optimality
+
+Firth logistic regression is used as an exploratory sensitivity analysis for the low-event HINE optimality outcome. It uses the reduced HINE covariate block: sex, breastfeeding duration, intervention group, and primiparity. This makes it non-identical to the primary HINE logistic model.
+
+::: {.callout-note title="Firth interpretation"}
+Firth rows are bias-reduced logistic sensitivity estimates for a sparse binary endpoint. A stronger or weaker Firth estimate should be treated as a stability check, not as a direct overwrite of the primary logistic model.
+:::
+
+```{r}
+#| label: hine-counts-table
+make_table(hine_counts, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: firth-table
+firth_table <- firth_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    `Firth odds ratio` = estimate,
+    `Log odds ratio` = log_or,
+    `95% CI` = sprintf("[%.3f, %.3f]", conf.low, conf.high),
+    `p-value` = p.value,
+    `q-value` = q.value,
+    N = n,
+    Note = note
+  ) %>%
+  select(Visit, Outcome, Metabolite, `Firth odds ratio`, `Log odds ratio`, `95% CI`, `p-value`, `q-value`, N, Note)
+make_table(firth_table, page_len = 10, export = TRUE, column_widths = results_column_widths)
+```
+
+## Effective-test threshold screen
+
+The Li-Ji `M_eff` calculation estimates the effective number of metabolite tests from all-feature complete cases within each visit. This is reported as an exploratory correlation-aware screen and does not replace the primary BH-FDR correction.
+
+::: {.callout-note title="M_eff interpretation"}
+`M_eff` reduces the nominal test count when metabolites are highly correlated, then applies a Bonferroni-style threshold. It is useful for sensitivity screening, but the primary finding rule remains BH-FDR within the planned model families.
+:::
+
+```{r}
+#| label: m-eff-table
+make_table(m_eff_df, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: m-eff-hits-table
+if (!is.null(m_eff_hits) && nrow(m_eff_hits) > 0) {
+  m_eff_hits_table <- m_eff_hits %>%
+    mutate(
+      Visit = paste0("Visit ", visit),
+      Outcome = pretty_outcome(outcome),
+      Metabolite = exposure,
+      `p-value` = p.value,
+      `Primary BH q-value` = q.value,
+      `M_eff threshold` = m_eff_threshold
+    ) %>%
+    select(Visit, Outcome, Metabolite, estimate, std.error, `p-value`, `Primary BH q-value`, `M_eff threshold`)
+  make_table(m_eff_hits_table, page_len = 10, export = TRUE)
+} else {
+  cat("No association in the five-outcome secondary scope reached the M_eff Bonferroni threshold.")
+}
+```
+
+## Permutation FDR sensitivity
+
+Permutation FDR is computed using complete cases across the outcome, covariates, and all 250 metabolites. It is reported separately because its sample size differs from the primary per-metabolite complete-case models.
+
+::: {.callout-note title="Permutation interpretation"}
+Permutation q-values are empirical checks under a stricter all-feature complete-case sample. Differences from BH q-values can reflect both the resampling null and the changed analytic sample.
+:::
+
+```{r}
+#| label: perm-summary-table
+perm_summary <- perm_fdr_df %>%
+  group_by(visit, outcome) %>%
+  summarise(
+    rows = n(),
+    n_complete = min(n_complete, na.rm = TRUE),
+    min_p = min(p.value, na.rm = TRUE),
+    min_bh_q = min(q.value, na.rm = TRUE),
+    min_perm_q = min(perm_q_value, na.rm = TRUE),
+    hits_bh_q_0_10 = sum(q.value < 0.10, na.rm = TRUE),
+    hits_perm_q_0_10 = sum(perm_q_value < 0.10, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Visit = paste0("Visit ", visit), Outcome = pretty_outcome(outcome)) %>%
+  select(Visit, Outcome, rows, n_complete, min_p, min_bh_q, min_perm_q, hits_bh_q_0_10, hits_perm_q_0_10)
+make_table(perm_summary, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: perm-fdr-table
+perm_fdr_table <- perm_fdr_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    Estimate = estimate,
+    `p-value` = p.value,
+    `BH q-value` = q.value,
+    `Permutation q-value` = perm_q_value,
+    N = n_complete,
+    Note = note
+  ) %>%
+  select(Visit, Outcome, Metabolite, Estimate, `p-value`, `BH q-value`, `Permutation q-value`, N, Note)
+make_table(perm_fdr_table, page_len = 10, export = TRUE)
+```
+
+## Joint predictive models
+
+Elastic Net, PLS, and Random Forest models are fitted on covariate-residualized continuous composite outcomes. Cross-validated and out-of-bag R-squared values are reported on their raw scale; negative values are retained.
+
+::: {.callout-note title="Prediction interpretation"}
+These are prediction summaries, not per-metabolite inference. R-squared near zero or below zero means the metabolite panel did not predict the residualized outcome better than the reference prediction in validation or out-of-bag samples.
+:::
+
+::: {.panel-tabset}
+
+### Elastic Net
+
+```{r}
+#| label: enet-table
+enet_table <- enet_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    `CV R-squared` = cv_r2,
+    `Selected features (N)` = n_selected,
+    `Top selected metabolites` = selected_features
+  ) %>%
+  select(Visit, Outcome, `CV R-squared`, `Selected features (N)`, `Top selected metabolites`)
+make_table(enet_table, page_len = 10, export = TRUE)
+```
+
+### PLS
+
+```{r}
+#| label: pls-table
+pls_table <- pls_df %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    `Optimal PLS components` = n_components,
+    `CV R-squared` = cv_r2
+  ) %>%
+  select(Visit, Outcome, `Optimal PLS components`, `CV R-squared`)
+make_table(pls_table, page_len = 10, export = TRUE)
+```
+
+### Random Forest
+
+```{r}
+#| label: rf-oob-table
+rf_oob_table <- rf_df %>%
+  distinct(visit, outcome, oob_r2, n_complete, note) %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    `OOB R-squared` = oob_r2,
+    `Complete-case N` = n_complete,
+    Note = note
+  ) %>%
+  select(Visit, Outcome, `OOB R-squared`, `Complete-case N`, Note)
+make_table(rf_oob_table, table_mode = "compact", export = TRUE)
+```
+
+```{r}
+#| label: rf-importance-table
+rf_imp_table <- rf_df %>%
+  filter(note == "ok") %>%
+  group_by(visit, outcome) %>%
+  slice_max(order_by = importance, n = 5) %>%
+  ungroup() %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    Outcome = pretty_outcome(outcome),
+    Metabolite = exposure,
+    Importance = importance
+  ) %>%
+  select(Visit, Outcome, Metabolite, Importance) %>%
+  arrange(Visit, Outcome, desc(Importance))
+make_table(rf_imp_table, page_len = 10, export = TRUE)
+```
+
+:::
+
+## Interpretation
+
+The primary individual-metabolite analysis remains null after BH-FDR correction. The secondary analyses provide exploratory checks on grouping, bounded HINE outcomes, low-event HINE logistic models, metabolite correlation structure, and multivariable prediction. They do not overturn the primary null result.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::

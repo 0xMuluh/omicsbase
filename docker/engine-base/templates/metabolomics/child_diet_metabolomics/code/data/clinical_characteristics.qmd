@@ -1,0 +1,353 @@
+---
+title: "Clinical characteristics"
+---
+
+## Setup
+
+```{r}
+#| label: clinical-characteristics-01
+source("analysis_data_utils.R")
+source("../../scripts/methods_common.R")
+library(dplyr)
+library(tidyr)
+
+visits <- c(6L, 7L)
+
+visit_label <- function(v) ifelse(v == 6L, "2 Years", "5-6 Years")
+
+pretty_var <- function(x) {
+  x <- gsub("CEPercent", "Percent ", x)
+  x <- gsub("CFiball", "Fibre ", x)
+  x <- gsub("C_", "", x)
+  x <- gsub("DietQuality", "Diet Quality ", x)
+  x <- gsub("CHO", "Carbohydrate", x)
+  x <- gsub("Pro", "Protein", x)
+  x <- gsub("FAn3", "n-3 fatty acids", x)
+  x <- gsub("FAn6", "n-6 fatty acids", x)
+  x <- gsub("SFA", "SFA", x)
+  x <- gsub("MUFA", "MUFA", x)
+  x <- gsub("PUFA", "PUFA", x)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+
+exposure_map <- list(
+  "6" = c(
+    "CEPercentProDiet6", "CEPercentCHODiet6", "CEPercentFatDiet6", "CEPercentSFADiet6",
+    "CEPercentMUFADiet6", "CEPercentPUFADiet6", "CEPercentFAn3Diet6", "CEPercentFAn6Diet6",
+    "CFiballDiet6", "C_DietQuality_points_6", "C_DietQuality_classes_6"
+  ),
+  "7" = c(
+    "CEPercentProDiet7", "CEPercentCHODiet7", "CEPercentFatDiet7", "CEPercentSFADiet7",
+    "CEPercentMUFADiet7", "CEPercentPUFADiet7", "CEPercentFAn3Diet7", "CEPercentFAn6Diet7",
+    "CFiballDiet7", "C_DietQuality_points_7", "C_DietQuality_classes_7"
+  )
+)
+
+core_v6 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+core_v7 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+
+sensitivity_covars <- c("MPRSmoke", "Premature", "CSGA", "CMacrosomy", "CHealthy6", "CHealthy7")
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = paste0("visit_", visits)
+)
+
+mae <- analysis_obj$mae
+```
+
+## Objective-specific context
+
+Child diet exposures, clinical characteristics, and analytic panel characteristics are summarized here for 2 years and 5-6 years.
+
+## Sample counts by visit and intervention
+
+```{r}
+#| label: clinical-characteristics-02
+counts_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  if (!"Intervention" %in% names(cd)) {
+    return(data.frame(
+      visit = v,
+      Intervention = "missing",
+      n = nrow(cd),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  cd %>%
+    mutate(Intervention = as.character(Intervention)) %>%
+    group_by(child_age = visit_label(v), Intervention) %>%
+    summarise(n = n(), .groups = "drop")
+}))
+
+make_table(counts_tbl, caption = "Child-age panel counts by intervention")
+```
+
+## Continuous variables by visit
+
+```{r}
+#| label: clinical-characteristics-03
+continuous_summary <- function(df, vars, group_var = "Intervention") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  num_vars <- vars[vapply(df[vars], function(x) {
+    x_num <- suppressWarnings(as.numeric(x))
+    sum(is.finite(x_num)) >= 20L && length(unique(x_num[is.finite(x_num)])) >= 8L
+  }, logical(1))]
+
+  if (length(num_vars) == 0) return(data.frame())
+
+  out <- bind_rows(lapply(num_vars, function(vn) {
+    x <- suppressWarnings(as.numeric(df[[vn]]))
+
+    overall <- data.frame(
+      variable = pretty_var(vn),
+      variable_code = vn,
+      group = "Overall",
+      n = sum(is.finite(x)),
+      mean = mean(x, na.rm = TRUE),
+      sd = stats::sd(x, na.rm = TRUE),
+      median = stats::median(x, na.rm = TRUE),
+      q1 = stats::quantile(x, 0.25, na.rm = TRUE),
+      q3 = stats::quantile(x, 0.75, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      by_group <- bind_rows(lapply(sort(unique(as.character(df[[group_var]]))), function(g) {
+        idx <- as.character(df[[group_var]]) == g
+        gx <- x[idx]
+        data.frame(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g,
+          n = sum(is.finite(gx)),
+          mean = mean(gx, na.rm = TRUE),
+          sd = stats::sd(gx, na.rm = TRUE),
+          median = stats::median(gx, na.rm = TRUE),
+          q1 = stats::quantile(gx, 0.25, na.rm = TRUE),
+          q3 = stats::quantile(gx, 0.75, na.rm = TRUE),
+          stringsAsFactors = FALSE
+        )
+      }))
+    }
+
+    bind_rows(overall, by_group)
+  }))
+
+  out
+}
+
+cont_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  vars <- unique(c(exposure_map[[as.character(v)]], if (v == 6L) core_v6 else core_v7, sensitivity_covars))
+  tab <- continuous_summary(cd, vars, group_var = "Intervention")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, n, mean, sd, median, q1, q3)
+
+make_table(round_numeric(cont_tbl, 3), caption = "Continuous clinical and exposure summaries by child age")
+```
+
+## Categorical variables by visit
+
+```{r}
+#| label: clinical-characteristics-04
+categorical_summary <- function(df, vars, group_var = "Intervention") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  cat_vars <- vars[vapply(df[vars], function(x) {
+    x_chr <- as.character(x)
+    n_non_na <- sum(!is.na(x_chr) & nzchar(x_chr))
+    n_non_na >= 20L && length(unique(x_chr[!is.na(x_chr) & nzchar(x_chr)])) <= 10L
+  }, logical(1))]
+
+  if (length(cat_vars) == 0) return(data.frame())
+
+  bind_rows(lapply(cat_vars, function(vn) {
+    xv <- as.character(df[[vn]])
+    xv[is.na(xv) | xv == ""] <- "<missing>"
+
+    overall <- as.data.frame(table(xv), stringsAsFactors = FALSE) %>%
+      transmute(
+        variable = pretty_var(vn),
+        variable_code = vn,
+        group = "Overall",
+        level = xv,
+        n = Freq,
+        pct = 100 * Freq / sum(Freq)
+      )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      g <- as.character(df[[group_var]])
+      g[is.na(g) | g == ""] <- "<missing_group>"
+      by_group <- as.data.frame(table(g, xv), stringsAsFactors = FALSE) %>%
+        group_by(g) %>%
+        mutate(pct = 100 * Freq / sum(Freq)) %>%
+        ungroup() %>%
+        transmute(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g,
+          level = xv,
+          n = Freq,
+          pct = pct
+        )
+    }
+
+    bind_rows(overall, by_group)
+  }))
+}
+
+cat_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  vars <- unique(c(exposure_map[[as.character(v)]], if (v == 6L) core_v6 else core_v7, sensitivity_covars))
+  tab <- categorical_summary(cd, vars, group_var = "Intervention")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, level, n, pct)
+
+make_table(round_numeric(cat_tbl, 3), caption = "Categorical clinical and exposure summaries by child age")
+```
+
+## Requested table of characteristics
+
+These tables summarize visit-specific characteristics overall and by child diet quality group. Continuous variables are median (IQR); categorical variables are n (%).
+
+P-values compare Good, Moderate, and Poor diet quality groups within the same visit. Continuous variables use Kruskal-Wallis tests; categorical variables use Fisher exact tests, with chi-square fallback if Fisher exact fails.
+
+```{r}
+#| label: clinical-characteristics-04b
+child_diet_visit6_path <- "../data/child_diet_characteristics_visit6.csv"
+child_diet_visit7_path <- "../data/child_diet_characteristics_visit7.csv"
+
+if (file.exists(child_diet_visit6_path)) {
+  make_table(
+    read.csv(child_diet_visit6_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics: visit 6, 2 years"
+  )
+}
+
+if (file.exists(child_diet_visit7_path)) {
+  make_table(
+    read.csv(child_diet_visit7_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics: visit 7, 5-6 years"
+  )
+}
+```
+
+## Dietary intake and diet quality
+
+This table shows the descriptive summary of nutrient intakes and diet quality metrics across the two study visits (Visit 6 at 2 years of age and Visit 7 at 5–6 years of age) for the children included in the primary analyses. Continuous variables are represented as mean (SD); categorical diet quality is represented as n (%).
+
+```{r}
+#| label: clinical-characteristics-diet-descriptive
+# 1. Summarise continuous
+get_cont_summary <- function(df, vname) {
+  val <- as.numeric(df[[vname]])
+  val <- val[is.finite(val)]
+  sprintf("%.1f (%.1f)", mean(val), sd(val))
+}
+
+vars_v6 <- c(
+  "CEPercentProDiet6", "CEPercentCHODiet6", "CEPercentFatDiet6", "CEPercentSFADiet6",
+  "CEPercentMUFADiet6", "CEPercentPUFADiet6", "CEPercentFAn3Diet6", "CEPercentFAn6Diet6",
+  "CFiballDiet6", "C_DietQuality_points_6"
+)
+
+vars_v7 <- c(
+  "CEPercentProDiet7", "CEPercentCHODiet7", "CEPercentFatDiet7", "CEPercentSFADiet7",
+  "CEPercentMUFADiet7", "CEPercentPUFADiet7", "CEPercentFAn3Diet7", "CEPercentFAn6Diet7",
+  "CFiballDiet7", "C_DietQuality_points_7"
+)
+
+row_labels <- c(
+  "Protein (E%)", "Carbohydrate (E%)", "Total fat (E%)", "SFA (E%)",
+  "MUFA (E%)", "PUFA (E%)", "n-3 fatty acids (E%)", "n-6 fatty acids (E%)",
+  "Fiber (g)", "Diet quality score (points)"
+)
+
+cd6 <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[["visit_6"]]))
+cd7 <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[["visit_7"]]))
+
+cont_tbl_6 <- sapply(vars_v6, function(vn) get_cont_summary(cd6, vn))
+cont_tbl_7 <- sapply(vars_v7, function(vn) get_cont_summary(cd7, vn))
+
+cont_rows <- data.frame(
+  `Dietary Factor` = row_labels,
+  `2 Years (Visit 6)` = as.character(cont_tbl_6),
+  `5-6 Years (Visit 7)` = as.character(cont_tbl_7),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+# 2. Summarise categorical
+cat_summary <- function(df, vname) {
+  x <- tolower(trimws(as.character(haven::as_factor(df[[vname]]))))
+  total_nonmiss <- sum(!is.na(x) & x != "")
+  
+  classes <- c("good", "moderate", "poor")
+  res <- sapply(classes, function(cl) {
+    if (cl == "good") {
+      n <- sum(grepl("good", x))
+    } else if (cl == "moderate") {
+      n <- sum(grepl("moderate", x))
+    } else {
+      n <- sum(grepl("poor|needs to be vastly improved", x))
+    }
+    pct <- 100 * n / total_nonmiss
+    sprintf("%d (%.1f%%)", n, pct)
+  })
+  res
+}
+
+cat_v6 <- cat_summary(cd6, "C_DietQuality_classes_6")
+cat_v7 <- cat_summary(cd7, "C_DietQuality_classes_7")
+
+cat_rows <- data.frame(
+  `Dietary Factor` = c("Diet quality category (n, %)", "  Good", "  Moderate", "  Poor"),
+  `2 Years (Visit 6)` = c("", cat_v6[["good"]], cat_v6[["moderate"]], cat_v6[["poor"]]),
+  `5-6 Years (Visit 7)` = c("", cat_v7[["good"]], cat_v7[["moderate"]], cat_v7[["poor"]]),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+diet_tbl <- rbind(cont_rows, cat_rows)
+make_table(diet_tbl, caption = "Summary of dietary factors at baseline and follow-up visits")
+```
+
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: clinical-characteristics-05
+#| echo: false
+sessionInfo()
+```
+:::

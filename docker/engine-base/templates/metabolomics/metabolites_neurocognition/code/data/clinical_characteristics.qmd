@@ -1,0 +1,696 @@
+---
+title: "Clinical characteristics"
+---
+
+## Setup
+
+```{r}
+#| label: clinical-characteristics-01
+source("analysis_data_utils.R")
+source("../../scripts/methods_common.R")
+library(dplyr)
+library(tidyr)
+
+visits <- c(4L, 5L, 6L)
+
+visit_label <- function(v) {
+  case_when(
+    v == 4L ~ "6 Months",
+    v == 5L ~ "1 Year",
+    v == 6L ~ "2 Years",
+    TRUE ~ paste("Visit", v)
+  )
+}
+
+pretty_var <- function(x) {
+  x <- gsub("MModeOfDeliv.1", "Mode of delivery (Vaginal vs Cesarean)", x, fixed = TRUE)
+  x <- gsub("MModeOfDeliv", "Mode of delivery", x, fixed = TRUE)
+  x <- gsub("MBMIOverwOrObese", "Maternal BMI category", x, fixed = TRUE)
+  x <- gsub("MGDMOGTT1OR2Fi", "GDM OGTT 1 or 2", x, fixed = TRUE)
+  x <- gsub("PRWLabor", "Gestational weeks at delivery", x, fixed = TRUE)
+  x <- gsub("Bfdurationm", "Breastfeeding duration (months)", x, fixed = TRUE)
+  x <- gsub("CAgePsychologist6", "Age at psychologist visit (years)", x, fixed = TRUE)
+  x <- gsub("CAgePhysiotherapist6", "Age at physiotherapist visit (years)", x, fixed = TRUE)
+  x <- gsub("CFastingHoursBloodSample", "Fasting time before blood sampling", x, fixed = TRUE)
+  x <- gsub("CCognition_indexpoints6", "Bayley Composite Cognitive", x, fixed = TRUE)
+  x <- gsub("CLanguage_indexpoints6", "Bayley Composite Language", x, fixed = TRUE)
+  x <- gsub("CMotor_indexpoints6", "Bayley Composite Motor", x, fixed = TRUE)
+  x <- gsub("CExpressivelanguage_standardpoints6", "Bayley Expressive Language", x, fixed = TRUE)
+  x <- gsub("CReceptivelanguage_standardpoints6", "Bayley Receptive Language", x, fixed = TRUE)
+  x <- gsub("CFinemotor_standardpoints6", "Bayley Fine Motor", x, fixed = TRUE)
+  x <- gsub("CGrossmotor_standardpoints6", "Bayley Gross Motor", x, fixed = TRUE)
+  x <- gsub("Hammersmith6", "HINE Global Score", x, fixed = TRUE)
+  x <- gsub("HINE_optimal", "HINE Optimal Score", x, fixed = TRUE)
+  x <- gsub("CGender", "Child sex", x, fixed = TRUE)
+  x <- gsub("CBW", "Birth weight (g)", x, fixed = TRUE)
+  x <- gsub("Height.0", "Birth height (cm)", x, fixed = TRUE)
+  x <- gsub("Head.0", "Birth head circumference (cm)", x, fixed = TRUE)
+  x <- gsub("MprepBMI", "Maternal prepregnancy BMI", x, fixed = TRUE)
+  x <- gsub("MAge1", "Maternal age", x, fixed = TRUE)
+  x <- gsub("MUniEdu", "Maternal education", x, fixed = TRUE)
+  x <- gsub("MPrimipara", "Primiparity", x, fixed = TRUE)
+  x <- gsub("InterventionGroup", "Intervention group", x, fixed = TRUE)
+  x <- gsub("MLIVE1", "Maternal living arrangement", x, fixed = TRUE)
+  x <- gsub("MPRSmoke", "Maternal smoking during pregnancy", x, fixed = TRUE)
+  x <- gsub("Premature", "Born preterm", x, fixed = TRUE)
+  x <- gsub("CSGA", "Small for gestational age", x, fixed = TRUE)
+  x <- gsub("CMacrosomy", "Macrosomia", x, fixed = TRUE)
+  x <- gsub("CApgar1", "Apgar score at 1 min", x, fixed = TRUE)
+  x <- gsub("CApgar5", "Apgar score at 5 min", x, fixed = TRUE)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  x <- tools::toTitleCase(tolower(x))
+  x <- gsub("Bmi", "BMI", x, fixed = TRUE)
+  x
+}
+
+core_v4 <- c(
+  "MAge1", "MUniEdu", "MPrimipara", "InterventionGroup", "MLIVE1", "MPRSmoke", "MprepBMI", "MBMIOverwOrObese",
+  "MGDMOGTT1OR2Fi", "PRWLabor", "MModeOfDeliv.1", "CGender", "Premature", "CSGA", "CMacrosomy",
+  "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0", "Bfdurationm", "CFastingHoursBloodSample4"
+)
+
+core_v5 <- c(
+  "MAge1", "MUniEdu", "MPrimipara", "InterventionGroup", "MLIVE1", "MPRSmoke", "MprepBMI", "MBMIOverwOrObese",
+  "MGDMOGTT1OR2Fi", "PRWLabor", "MModeOfDeliv.1", "CGender", "Premature", "CSGA", "CMacrosomy",
+  "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0", "Bfdurationm", "CFastingHoursBloodSample5"
+)
+
+core_v6 <- c(
+  "MAge1", "MUniEdu", "MPrimipara", "InterventionGroup", "MLIVE1", "MPRSmoke", "MprepBMI", "MBMIOverwOrObese",
+  "MGDMOGTT1OR2Fi", "PRWLabor", "MModeOfDeliv.1", "CGender", "Premature", "CSGA", "CMacrosomy",
+  "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0", "Bfdurationm", "CAgePsychologist6",
+  "CAgePhysiotherapist6", "CFastingHoursBloodSample6", "CCognition_indexpoints6",
+  "CLanguage_indexpoints6", "CMotor_indexpoints6", "Hammersmith6", "HINE_optimal"
+)
+
+analysis_obj <- extract_analysis_data("../data/MAE_original.rds")
+mae <- analysis_obj$mae
+```
+
+## Baseline clinical characteristics
+
+This table summarizes baseline maternal and child clinical characteristics for the complete study cohort, defined as all children with at least one valid metabolomics sample at any child visit (6 months, 1 year, or 2 years). Sex is summarized inside the table and sample sizes (N) are reported per variable.
+
+::: {.callout-warning title="BMI category coding"}
+`MBMIOverwOrObese` is a two-level source variable (`BMI <30`, `BMI =/>30`). The `BMI <30 category (normal/overweight)` row is the complement of obesity and includes mothers with normal BMI; it should not be read as WHO overweight (25 <= BMI <30).
+:::
+
+```{r}
+#| label: baseline-characteristics-table
+
+# Helper functions for formatting
+to_chr <- function(x) {
+  if (inherits(x, "haven_labelled")) {
+    x <- haven::as_factor(x)
+  }
+  out <- tryCatch(as.character(x), error = function(e) as.character(unclass(x)))
+  out
+}
+
+safe_num <- function(x) suppressWarnings(as.numeric(to_chr(x)))
+
+is_yes <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("1", "yes", "y", "true", "vaginal delivery", "overweight", "obese", "optimal", "preterm", "2", "kky", "kylla")
+  res
+}
+
+is_preterm <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  x <- safe_num(v[valid])
+  res[valid] <- s %in% c("1", "yes", "y", "true", "preterm", "2") | (is.finite(x) & x < 37)
+  res
+}
+
+is_female <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("female", "girl", "f", "1", "tytto", "tyttö")
+  res
+}
+
+is_bmi_ge_30 <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("obese", "bmi =/>30", "bmi =/> 30", "bmi >=30", "bmi >= 30", "2", "yes")
+  res
+}
+
+is_bmi_lt_30 <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("bmi <30", "bmi < 30", "1", "no")
+  res
+}
+
+is_vaginal_delivery <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("vaginal", "vaginal delivery", "vaginal unassisted", "unassisted", "1", "vaginal delivery")
+  res
+}
+
+is_fish_oil_placebo <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("fish oil+placebo")
+  res
+}
+is_probiotics_placebo <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("probiotics+placebo")
+  res
+}
+is_fish_oil_probiotics <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("fish oil+probiotics")
+  res
+}
+is_placebo_placebo <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- s %in% c("placebo+placebo")
+  res
+}
+is_living_with_partner <- function(v) {
+  res <- rep(NA, length(v))
+  valid <- !is.na(v) & trimws(to_chr(v)) != ""
+  s <- tolower(trimws(to_chr(v[valid])))
+  res[valid] <- grepl("^avioliitto", s)
+  res
+}
+
+# 1. Combine colData across visits 4, 5, 6 (WITHOUT filtering by outcomes to include all children with metabolomics!)
+cd4_raw <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[["visit_4"]]), stringsAsFactors = FALSE)
+cd5_raw <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[["visit_5"]]), stringsAsFactors = FALSE)
+cd6_raw <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[["visit_6"]]), stringsAsFactors = FALSE)
+
+# Convert every column to character using to_chr first so SPSS factor labels are kept!
+cd_all_long <- bind_rows(
+  cd4_raw %>% mutate(across(everything(), to_chr)),
+  cd5_raw %>% mutate(across(everything(), to_chr)),
+  cd6_raw %>% mutate(across(everything(), to_chr))
+)
+
+cohort_cd_raw <- cd_all_long %>%
+  distinct(StudyID)
+
+for (col_name in setdiff(names(cd_all_long), "StudyID")) {
+  vals <- sapply(cohort_cd_raw$StudyID, function(id) {
+    x <- cd_all_long[[col_name]][cd_all_long$StudyID == id]
+    x_non_na <- x[!is.na(x) & x != "" & x != "NA"]
+    if (length(x_non_na) > 0) x_non_na[1] else NA_character_
+  })
+  cohort_cd_raw[[col_name]] <- as.character(vals)
+}
+
+# Define rows and variables
+neurocognition_rows_cohort <- c(
+  "Mother",
+  "Mother's age (y)",
+  "Education (college or university education) (n, %)",
+  "Primipara (n, %)",
+  "Intervention: Fish oil + placebo (n, %)",
+  "Intervention: Probiotics + placebo (n, %)",
+  "Intervention: Fish oil + probiotics (n, %)",
+  "Intervention: Placebo + placebo (n, %)",
+  "Marital status: married/cohabiting (n, %)",
+  "Smoking during pregnancy (n, %)",
+  "Pre-pregnancy BMI (kg/m2)",
+  "BMI <30 category (normal/overweight) (n, %)",
+  "Obesity (BMI >=30) (n, %)",
+  "Gestational diabetes mellitus diagnosis (n, %)",
+  "Gestational weeks at delivery (wk)",
+  "Vaginal delivery (n, %)",
+  "Child",
+  "Child sex (Girl) (n, %)",
+  "Born preterm (< 37+0 gw) (n, %)",
+  "Small for gestational weight (n, %)",
+  "Large for gestational weight (n, %)",
+  "Apgar score at 1 min",
+  "Apgar score at 5 min",
+  "Birth weight (g)",
+  "Birth height (cm)",
+  "Birth head circumference (cm)",
+  "Breast feeding duration (mo)",
+  "Child age at psychologist visit (y)",
+  "Child age at physiotherapist visit (y)",
+  "Child Cognitive Function (2 years)",
+  "Bayley Composite Cognitive Score",
+  "Bayley Composite Language Score",
+  "  Expressive Language Standard Score",
+  "  Receptive Language Standard Score",
+  "Bayley Composite Motor Score",
+  "  Fine Motor Standard Score",
+  "  Gross Motor Standard Score",
+  "HINE Global Score",
+  "HINE Optimality Score (Optimal, preterm excluded) (n, %)"
+)
+
+neurocognition_predicates_cohort <- list(
+  NULL,  # Section: Mother
+  NULL,  # MAge1 -> continuous
+  is_yes,  # MUniEdu -> custom
+  is_yes,  # MPrimipara -> custom
+  is_fish_oil_placebo,   # Intervention: Fish oil + placebo
+  is_probiotics_placebo, # Intervention: Probiotics + placebo
+  is_fish_oil_probiotics,# Intervention: Fish oil + probiotics
+  is_placebo_placebo,    # Intervention: Placebo + placebo
+  is_living_with_partner,# Marital status: married/cohabiting
+  is_yes,  # MPRSmoke -> custom
+  NULL,  # MprepBMI -> continuous
+  is_bmi_lt_30, # MBMIOverwOrObese: BMI <30 category; includes normal and overweight
+  is_bmi_ge_30, # MBMIOverwOrObese: BMI <30 vs BMI =/>30
+  is_yes,  # GDM -> custom
+  NULL,  # PRWLabor -> continuous
+  is_vaginal_delivery,  # Mode of delivery -> custom
+  NULL,  # Section: Child
+  is_female, # Child sex (Girl) -> custom
+  is_preterm,  # Born preterm -> custom
+  is_yes,  # CSGA -> custom
+  is_yes,  # CMacrosomy -> custom
+  NULL,  # CApgar1 -> continuous
+  NULL,  # CApgar5 -> continuous
+  NULL,  # CBW -> continuous
+  NULL,  # Birth height -> continuous
+  NULL,  # Head circumference -> continuous
+  NULL,  # Breast feeding -> continuous
+  NULL,  # Psychologist age -> continuous
+  NULL,  # Physiotherapist age -> continuous
+  NULL,  # Section: Cognitive
+  NULL,  # CCognition_indexpoints6 -> continuous
+  NULL,  # CLanguage_indexpoints6 -> continuous
+  NULL,  # CExpressivelanguage_standardpoints6 -> continuous
+  NULL,  # CReceptivelanguage_standardpoints6 -> continuous
+  NULL,  # CMotor_indexpoints6 -> continuous
+  NULL,  # CFinemotor_standardpoints6 -> continuous
+  NULL,  # CGrossmotor_standardpoints6 -> continuous
+  NULL,  # Hammersmith6 -> continuous
+  is_yes   # HINE_optimal -> custom (Optimal vs Suboptimal)
+)
+
+neurocognition_vars_cohort <- c(
+  NA_character_, "MAge1", "MUniEdu", "MPrimipara", 
+  "InterventionGroup", "InterventionGroup", "InterventionGroup", "InterventionGroup", "MLIVE1", 
+  "MPRSmoke", "MprepBMI", "MBMIOverwOrObese", "MBMIOverwOrObese",
+  "MGDMOGTT1OR2Fi", "PRWLabor", "MModeOfDeliv.1", 
+  NA_character_, "CGender", "Premature", "CSGA", "CMacrosomy",
+  "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0", "Bfdurationm", "CAgePsychologist6", "CAgePhysiotherapist6",
+  NA_character_, "CCognition_indexpoints6", "CLanguage_indexpoints6", "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6", "CMotor_indexpoints6", "CFinemotor_standardpoints6", "CGrossmotor_standardpoints6",
+  "Hammersmith6", "HINE_optimal"
+)
+
+continuous_vars <- c(
+  "MAge1", "MprepBMI", "PRWLabor", "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0",
+  "Bfdurationm", "CAgePsychologist6", "CAgePhysiotherapist6",
+  "CCognition_indexpoints6", "CLanguage_indexpoints6", "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6", "CMotor_indexpoints6", "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6", "Hammersmith6"
+)
+
+summarize_cohort_row <- function(row_name, col_name, custom_pred = NULL) {
+  if (is.na(col_name) || !nzchar(col_name)) {
+    return(tibble::tibble(
+      Characteristic = row_name,
+      N = NA_integer_,
+      Summary = ""
+    ))
+  }
+  
+  if (!col_name %in% names(cohort_cd_raw)) {
+    return(tibble::tibble(
+      Characteristic = row_name,
+      N = 0L,
+      Summary = "Not available"
+    ))
+  }
+  
+  x <- cohort_cd_raw[[col_name]]
+  x_num <- safe_num(x)
+  
+  if (col_name %in% continuous_vars) {
+    is_cont <- TRUE
+    pred <- NULL
+  } else if (!is.null(custom_pred)) {
+    pred <- custom_pred
+    is_cont <- FALSE
+  } else {
+    pred <- is_yes
+    is_cont <- sum(is.finite(x_num)) >= 20 && length(unique(x_num[is.finite(x_num)])) >= 8
+  }
+  
+  if (is_cont) {
+    val_x <- x_num[is.finite(x_num)]
+    n_val <- length(val_x)
+    summary_val <- if (n_val > 0) {
+      sprintf("%.1f (%.1f)", mean(val_x), stats::sd(val_x))
+    } else {
+      "Not available"
+    }
+  } else {
+    z <- pred(x)
+    keep <- !is.na(z)
+    n_val <- sum(keep)
+    summary_val <- if (n_val > 0) {
+      n_yes <- sum(z[keep])
+      pct <- 100 * n_yes / n_val
+      sprintf("%d (%.1f%%)", n_yes, pct)
+    } else {
+      "Not available"
+    }
+  }
+  
+  tibble::tibble(
+    Characteristic = row_name,
+    N = as.integer(n_val),
+    Summary = summary_val
+  )
+}
+
+cohort_rows_list <- lapply(seq_len(length(neurocognition_rows_cohort)), function(i) {
+  summarize_cohort_row(neurocognition_rows_cohort[[i]], neurocognition_vars_cohort[[i]], custom_pred = neurocognition_predicates_cohort[[i]])
+})
+
+cohort_characteristics_tbl <- bind_rows(cohort_rows_list) %>%
+  mutate(N = ifelse(is.na(N), "", as.character(N)))
+
+DT::datatable(
+  cohort_characteristics_tbl,
+  caption = "Baseline clinical characteristics of the study cohort (all children with at least one metabolomics sample)",
+  rownames = FALSE,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    dom = "Bfrtip",
+    buttons = c("csv", "excel"),
+    columnDefs = list(
+      list(className = "dt-left", targets = 0, width = "450px"),
+      list(className = "dt-center", targets = 1, width = "80px"),
+      list(className = "dt-center", targets = 2, width = "180px")
+    ),
+    rowCallback = DT::JS(
+      "function(row, data, displayNum, displayIndex) {",
+      "  if (data[1] === '' && data[2] === '') {",
+      "    $('td', row).css({'background-color': '#f1f5f9', 'font-weight': 'bold', 'color': '#0f172a'});",
+      "  }",
+      "}"
+    )
+  )
+)
+```
+
+## Objective-specific context
+
+Early life circulating metabolomic profiles and child clinical characteristics are summarized here for **6 Months** (`visit_4`), **1 Year** (`visit_5`), and **2 Years** (`visit_6`).
+
+## Sample counts by visit and sex
+
+```{r}
+#| label: clinical-characteristics-02
+counts_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  # Filter to matched analysis sample (having at least one valid primary neurocognitive outcome)
+  primary_outcomes <- c("CCognition_indexpoints6", "CLanguage_indexpoints6", "CMotor_indexpoints6", "Hammersmith6")
+  has_outcome <- rowSums(!is.na(cd[, intersect(primary_outcomes, names(cd)), drop = FALSE])) > 0
+  cd <- cd[has_outcome, , drop = FALSE]
+  if (!"CGender" %in% names(cd)) {
+    return(data.frame(
+      visit = visit_label(v),
+      Sex = "missing",
+      n = nrow(cd),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  is_g <- is_female(cd$CGender)
+  cd$Sex <- ifelse(is_g, "Girl", "Boy")
+
+  cd %>%
+    group_by(child_age = visit_label(v), Sex) %>%
+    summarise(n = n(), .groups = "drop")
+}))
+
+make_table(counts_tbl, caption = "Child-age panel counts by sex")
+```
+
+## Continuous variables by visit
+
+```{r}
+#| label: clinical-characteristics-03
+continuous_summary <- function(df, vars, group_var = "CGender") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  # List of variables to force as continuous
+  continuous_list <- c(
+    "MAge1", "MprepBMI", "PRWLabor", "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0",
+    "Bfdurationm", "CAgePsychologist6", "CAgePhysiotherapist6",
+    "CCognition_indexpoints6", "CLanguage_indexpoints6", "CExpressivelanguage_standardpoints6",
+    "CReceptivelanguage_standardpoints6", "CMotor_indexpoints6", "CFinemotor_standardpoints6",
+    "CGrossmotor_standardpoints6", "Hammersmith6", "CFastingHoursBloodSample4",
+    "CFastingHoursBloodSample5", "CFastingHoursBloodSample6"
+  )
+
+  num_vars <- vars[vars %in% continuous_list | vapply(df[vars], function(x) {
+    x_num <- suppressWarnings(as.numeric(x))
+    sum(is.finite(x_num)) >= 20L && length(unique(x_num[is.finite(x_num)])) >= 8L
+  }, logical(1))]
+
+  if (length(num_vars) == 0) return(data.frame())
+
+  out <- bind_rows(lapply(num_vars, function(vn) {
+    x <- suppressWarnings(as.numeric(df[[vn]]))
+
+    overall <- data.frame(
+      variable = pretty_var(vn),
+      variable_code = vn,
+      group = "Overall",
+      n = sum(is.finite(x)),
+      mean = mean(x, na.rm = TRUE),
+      sd = stats::sd(x, na.rm = TRUE),
+      median = stats::median(x, na.rm = TRUE),
+      q1 = stats::quantile(x, 0.25, na.rm = TRUE),
+      q3 = stats::quantile(x, 0.75, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      g_vals <- df[[group_var]]
+      is_g <- is_female(g_vals)
+      g_lbls <- ifelse(is_g, "Girls", "Boys")
+      
+      by_group <- bind_rows(lapply(sort(unique(g_lbls)), function(g) {
+        idx <- g_lbls == g
+        gx <- x[idx]
+        data.frame(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g,
+          n = sum(is.finite(gx)),
+          mean = mean(gx, na.rm = TRUE),
+          sd = stats::sd(gx, na.rm = TRUE),
+          median = stats::median(gx, na.rm = TRUE),
+          q1 = stats::quantile(gx, 0.25, na.rm = TRUE),
+          q3 = stats::quantile(gx, 0.75, na.rm = TRUE),
+          stringsAsFactors = FALSE
+        )
+      }))
+    }
+
+    bind_rows(overall, by_group)
+  }))
+
+  out
+}
+
+cont_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  # Filter to matched analysis sample (having at least one valid primary neurocognitive outcome)
+  primary_outcomes <- c("CCognition_indexpoints6", "CLanguage_indexpoints6", "CMotor_indexpoints6", "Hammersmith6")
+  has_outcome <- rowSums(!is.na(cd[, intersect(primary_outcomes, names(cd)), drop = FALSE])) > 0
+  cd <- cd[has_outcome, , drop = FALSE]
+  vars <- if (v == 4L) core_v4 else if (v == 5L) core_v5 else core_v6
+  tab <- continuous_summary(cd, vars, group_var = "CGender")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, n, mean, sd, median, q1, q3)
+
+make_table(round_numeric(cont_tbl, 3), caption = "Continuous clinical and outcome summaries by child age")
+```
+
+## Categorical variables by visit
+
+```{r}
+#| label: clinical-characteristics-04
+categorical_summary <- function(df, vars, group_var = "CGender") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  # Exclude variables that are continuous
+  continuous_list <- c(
+    "MAge1", "MprepBMI", "PRWLabor", "CApgar1", "CApgar5", "CBW", "Height.0", "Head.0",
+    "Bfdurationm", "CAgePsychologist6", "CAgePhysiotherapist6",
+    "CCognition_indexpoints6", "CLanguage_indexpoints6", "CExpressivelanguage_standardpoints6",
+    "CReceptivelanguage_standardpoints6", "CMotor_indexpoints6", "CFinemotor_standardpoints6",
+    "CGrossmotor_standardpoints6", "Hammersmith6", "CFastingHoursBloodSample4",
+    "CFastingHoursBloodSample5", "CFastingHoursBloodSample6"
+  )
+  vars <- setdiff(vars, continuous_list)
+
+  cat_vars <- vars[vapply(df[vars], function(x) {
+    x_chr <- as.character(x)
+    n_non_na <- sum(!is.na(x_chr) & nzchar(x_chr))
+    n_non_na >= 20L && length(unique(x_chr[!is.na(x_chr) & nzchar(x_chr)])) <= 10L
+  }, logical(1))]
+
+  if (length(cat_vars) == 0) return(data.frame())
+
+  bind_rows(lapply(cat_vars, function(vn) {
+    xv <- as.character(df[[vn]])
+    xv[is.na(xv) | xv == ""] <- "<missing>"
+
+    overall <- as.data.frame(table(xv), stringsAsFactors = FALSE) %>%
+      transmute(
+        variable = pretty_var(vn),
+        variable_code = vn,
+        group = "Overall",
+        level = xv,
+        n = Freq,
+        pct = 100 * Freq / sum(Freq)
+      )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      g_vals <- df[[group_var]]
+      is_g <- is_female(g_vals)
+      g_lbls <- ifelse(is_g, "Girls", "Boys")
+      
+      by_group <- as.data.frame(table(g_lbls, xv), stringsAsFactors = FALSE) %>%
+        group_by(g_lbls) %>%
+        mutate(pct = 100 * Freq / sum(Freq)) %>%
+        ungroup() %>%
+        transmute(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g_lbls,
+          level = xv,
+          n = Freq,
+          pct = pct
+        )
+    }
+
+    bind_rows(overall, by_group)
+  }))
+}
+
+cat_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  # Filter to matched analysis sample (having at least one valid primary neurocognitive outcome)
+  primary_outcomes <- c("CCognition_indexpoints6", "CLanguage_indexpoints6", "CMotor_indexpoints6", "Hammersmith6")
+  has_outcome <- rowSums(!is.na(cd[, intersect(primary_outcomes, names(cd)), drop = FALSE])) > 0
+  cd <- cd[has_outcome, , drop = FALSE]
+  vars <- if (v == 4L) core_v4 else if (v == 5L) core_v5 else core_v6
+  tab <- categorical_summary(cd, vars, group_var = "CGender")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, level, n, pct)
+
+make_table(round_numeric(cat_tbl, 3), caption = "Categorical clinical summaries by child age")
+```
+
+## Tables of Characteristics stratified by child sex
+
+These tables summarize visit-specific characteristics overall and stratified by child sex (Girls vs Boys). Continuous variables are mean (SD); categorical variables are n (%).
+
+P-values compare Girls and Boys within the same visit. Continuous variables use Wilcoxon/Kruskal-Wallis tests; categorical variables use Fisher exact tests, with chi-square fallback if Fisher exact fails.
+
+::: {.callout-warning title="BMI category coding"}
+`MBMIOverwOrObese` is reported as both stored levels: `BMI <30` and `BMI =/>30`. The `BMI <30 category (normal/overweight)` row is not a true overweight prevalence row; it includes all non-obese mothers in this source variable.
+:::
+
+::: {.panel-tabset}
+
+### 6 Months (Visit 4)
+
+```{r}
+#| label: characteristics-visit4
+v4_path <- "../data/neurocognition_characteristics_visit4.csv"
+if (file.exists(v4_path)) {
+  make_table(
+    read.csv(v4_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics at 6 months of age"
+  )
+} else {
+  cat("Characteristics table not available.")
+}
+```
+
+### 1 Year (Visit 5)
+
+```{r}
+#| label: characteristics-visit5
+v5_path <- "../data/neurocognition_characteristics_visit5.csv"
+if (file.exists(v5_path)) {
+  make_table(
+    read.csv(v5_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics at 1 year of age"
+  )
+} else {
+  cat("Characteristics table not available.")
+}
+```
+
+### 2 Years (Visit 6)
+
+```{r}
+#| label: characteristics-visit6
+v6_path <- "../data/neurocognition_characteristics_visit6.csv"
+if (file.exists(v6_path)) {
+  make_table(
+    read.csv(v6_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics at 2 years of age"
+  )
+} else {
+  cat("Characteristics table not available.")
+}
+```
+
+:::
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: clinical-characteristics-05
+sessionInfo()
+```
+:::

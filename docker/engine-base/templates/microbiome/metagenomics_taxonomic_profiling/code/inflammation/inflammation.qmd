@@ -1,0 +1,681 @@
+---
+title: "Inflammatory biomarkers and species-level microbiota changes"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup-data
+#| code-summary: "Show code"
+source("../funct.R")
+library(cowplot)
+
+tse <- readRDS("../../data/tse.Rds")
+species_list <- metadata(tse)$target_species
+
+sp_tse <- altExp(tse, "species")
+# CLR-transform species abundances (adding pseudocount to handle zeros)
+sp_tse <- transformAssay(sp_tse, assay.type = "relabundance", method = "clr", pseudocount = TRUE)
+sp_mat <- assay(sp_tse, "clr")
+cd_raw <- colData(sp_tse)
+
+infl_cols <- c(
+  "Supar1", "Supar3", "Supar_delta", "log10_Supar1", "log10_Supar3", "log10_Supar_delta",
+  "Calpro1", "Calpro3", "Calpro_delta", "log10_Calpro1", "log10_Calpro3", "log10_Calpro_delta",
+  "hsCRP1", "hsCRP3", "hsCRP_delta", "log10_hsCRP1", "log10_hsCRP3", "log10_hsCRP_delta",
+  "Hapto1", "Hapto3", "Hapto_delta", "log10_Hapto1", "log10_Hapto3", "log10_Hapto_delta"
+)
+
+cd <- as.data.frame(cd_raw)
+cd$Sample_ID  <- as.character(cd$Sample_ID)
+cd$timepoint  <- as.character(cd$timepoint)
+cd$Treatment  <- as.character(cd$Treatment)
+cd$Subject_ID <- gsub("-.*", "", cd$Sample_ID)
+
+for (col_name in infl_cols) {
+  if (col_name %in% names(cd)) {
+    cd[[col_name]] <- suppressWarnings(as.numeric(as.character(cd[[col_name]])))
+  }
+}
+
+rownames_clean <- rownames(sp_mat)
+matched_idx <- match(species_list, rownames_clean)
+valid_species <- species_list[!is.na(matched_idx)]
+valid_row_idx <- matched_idx[!is.na(matched_idx)]
+
+sp_sub_mat <- sp_mat[valid_row_idx, , drop = FALSE]
+rownames(sp_sub_mat) <- valid_species
+
+before_samples <- cd %>%
+  dplyr::filter(timepoint == "before") %>%
+  dplyr::select(Subject_ID, sample_id_before = Sample_ID, Treatment, Intervention, dplyr::any_of(infl_cols))
+
+after_samples  <- cd %>%
+  dplyr::filter(timepoint == "after") %>%
+  dplyr::select(Subject_ID, sample_id_after  = Sample_ID)
+
+subject_df <- dplyr::inner_join(before_samples, after_samples, by = "Subject_ID")
+```
+
+## Analysis question
+
+Evaluating whether changes in gut microbiota species CLR abundance ($\Delta \text{CLR}(\text{Species}) = \text{CLR}_{\text{Week 8}} - \text{CLR}_{\text{Baseline}}$) are associated with changes in inflammatory biomarkers across the 8-week intervention.
+
+The `r length(valid_species)` bacterial species analyzed here were selected because they demonstrated statistically significant changes in the previous within-group or interaction analyses (since no significant between-group differences were observed at the week 8 timepoint). The target biomarkers evaluated include three systemic inflammatory biomarkers (`suPAR`, `haptoglobin`, `hs-CRP`) and one local gut inflammatory biomarker (`calprotectin`) ($N = `r nrow(subject_df)`$ paired subjects).
+
+## Model specification
+
+Associations between species changes and biomarker changes are evaluated via three hierarchical linear models, addressing increasingly specific questions:
+
+**Q1 — Overall association** (unadjusted for intervention group):
+$$\Delta \log_{10}(\text{Biomarker}) \sim \Delta \text{CLR}(\text{Species}) + \log_{10}(\text{Biomarker}_{\text{baseline}}) + \text{CLR}(\text{Species}_{\text{baseline}})$$
+
+**Q2 — Independent of intervention group** (adjusted for treatment):
+$$\Delta \log_{10}(\text{Biomarker}) \sim \Delta \text{CLR}(\text{Species}) + \log_{10}(\text{Biomarker}_{\text{baseline}}) + \text{CLR}(\text{Species}_{\text{baseline}}) + \text{Intervention}$$
+
+**Q3 — Differs by intervention group?** (treatment interaction):
+$$\Delta \log_{10}(\text{Biomarker}) \sim \Delta \text{CLR}(\text{Species}) \times \text{Intervention} + \log_{10}(\text{Biomarker}_{\text{baseline}}) + \text{CLR}(\text{Species}_{\text{baseline}})$$
+
+Biomarker deltas are computed on the $\log_{10}$ scale to address distributional skewness, and species abundances are Centered Log-Ratio (CLR) transformed to handle the compositionality constraint of microbiome data. Standardized regression coefficients ($\beta_{\text{std}}$) and 95% confidence intervals are reported. Multiple testing correction uses Benjamini-Hochberg FDR ($Q$-value) per biomarker and model. Models are only fit for species-biomarker pairs with at least 15 complete cases to ensure adequate degrees of freedom. For Q3, the interaction significance is assessed via an F-test comparing Q2 (nested) vs Q3 (full) models.
+
+### Addressing compositionality with CLR
+Using differences in relative abundances ($\Delta \text{Species}$) is a recognized methodological limitation because relative abundance data are compositional (constrained to sum to 1). Consequently, an increase in one taxon artificially drives down the relative abundance of others, which can distort the estimated regression coefficients. In this analysis, Centered Log-Ratio (CLR) transformations were applied to the species abundances prior to taking deltas ($\Delta \text{CLR}$). This transformation maps compositional relative abundance data from the simplex to Euclidean space, resolving the compositionality constraint and making standard linear regression models statistically valid. Initial species selection was based on relative abundance changes in previous within-group and interaction analyses to align with the primary analyses of this report.
+
+## Biomarker distributions
+
+Inflammatory biomarkers were evaluated for distributional skewness. Right-skewed biomarkers (hs-CRP, calprotectin, suPAR, haptoglobin) were $\log_{10}$-transformed prior to calculating deltas.
+
+```{r}
+#| label: fig-biomarker-density
+#| fig-width: 9
+#| fig-height: 7
+#| fig-cap: "Baseline inflammatory biomarker distributions (raw vs log10-transformed)"
+#| code-summary: "Show code"
+
+infl_long <- cd %>%
+  dplyr::filter(timepoint == "before") %>%
+  dplyr::select(Subject_ID, Supar1, Calpro1, hsCRP1, Hapto1, log10_Supar1, log10_Calpro1, log10_hsCRP1, log10_Hapto1) %>%
+  dplyr::distinct(Subject_ID, .keep_all = TRUE) %>%
+  pivot_longer(-Subject_ID, names_to = "marker_var", values_to = "value") %>%
+  dplyr::filter(!is.na(value)) %>%
+  dplyr::mutate(
+    type = factor(
+      if_else(grepl("^log10_", marker_var), "Log10 Transformed", "Raw Concentration"),
+      levels = c("Raw Concentration", "Log10 Transformed")
+    ),
+    biomarker = case_when(
+      grepl("Supar", marker_var) ~ "suPAR (ng/ml)",
+      grepl("Calpro", marker_var) ~ "Calprotectin (ug/ml)",
+      grepl("hsCRP", marker_var) ~ "hs-CRP (mg/l)",
+      grepl("Hapto", marker_var) ~ "Haptoglobin (g/l)"
+    )
+  )
+
+ggplot(infl_long, aes(x = value, fill = type)) +
+  geom_density(alpha = 0.6, color = "black", linewidth = 0.3) +
+  facet_wrap(biomarker ~ type, scales = "free", ncol = 2) +
+  scale_fill_manual(values = c("Raw Concentration" = "#E41A1C", "Log10 Transformed" = "#377EB8")) +
+  theme_bw(base_size = 11) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "#F0F0F0"),
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Baseline inflammatory biomarker distributions",
+    subtitle = "Raw vs log10-transformed concentrations",
+    x = "Biomarker value",
+    y = "Density"
+  )
+```
+
+## Longitudinal biomarker trajectories
+
+Mean $\pm$ SE trajectories for each biomarker from baseline to week 8, stratified by intervention group. Paired Wilcoxon signed-rank tests assess within-group changes.
+
+```{r}
+#| label: fig-longitudinal-trajectory
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "Longitudinal inflammatory biomarker trajectories by intervention group (Mean ± SE)"
+#| code-summary: "Show code"
+
+# Build long-format data: one row per subject × biomarker × timepoint
+# Each subject's row under timepoint == "before" already contains both baseline (1) and week 8 (3) biomarker concentrations.
+# Sourcing from the "before" rows is used here as a clean deduplication step to obtain exactly one row per subject.
+cd_unique <- cd %>%
+  dplyr::distinct(Subject_ID, timepoint, .keep_all = TRUE)
+
+bm_mapping <- list(
+  list(base = "Supar1",  week8 = "Supar3",  label = "suPAR (ng/ml)"),
+  list(base = "Calpro1", week8 = "Calpro3", label = "Calprotectin (µg/ml)"),
+  list(base = "hsCRP1",  week8 = "hsCRP3",  label = "hs-CRP (mg/l)"),
+  list(base = "Hapto1",  week8 = "Hapto3",  label = "Haptoglobin (g/l)")
+)
+
+trajectory_list <- list()
+for (bm in bm_mapping) {
+  # baseline (represented by column with suffix 1)
+  df_base <- cd_unique %>%
+    dplyr::filter(timepoint == "before") %>%
+    dplyr::select(Subject_ID, Intervention, value = dplyr::all_of(bm$base)) %>%
+    dplyr::mutate(timepoint = "Baseline", biomarker = bm$label)
+  # week 8 (represented by column with suffix 3)
+  df_w8 <- cd_unique %>%
+    dplyr::filter(timepoint == "before") %>%
+    dplyr::select(Subject_ID, Intervention, value = dplyr::all_of(bm$week8)) %>%
+    dplyr::mutate(timepoint = "Week 8", biomarker = bm$label)
+  trajectory_list <- c(trajectory_list, list(df_base, df_w8))
+}
+
+traj_df <- dplyr::bind_rows(trajectory_list) %>%
+  dplyr::mutate(
+    value = suppressWarnings(as.numeric(as.character(value))),
+    timepoint = factor(timepoint, levels = c("Baseline", "Week 8")),
+    Intervention = factor(Intervention, levels = c("Control", "HWP", "HWP + LGG"))
+  ) %>%
+  dplyr::filter(!is.na(value))
+
+# Compute within-group paired Wilcoxon p-values
+pval_list <- list()
+for (bm in bm_mapping) {
+  for (grp in c("Control", "HWP", "HWP + LGG")) {
+    vals_base <- cd_unique %>%
+      dplyr::filter(timepoint == "before", Intervention == grp) %>%
+      dplyr::arrange(Subject_ID)
+    v1 <- suppressWarnings(as.numeric(as.character(vals_base[[bm$base]])))
+    v2 <- suppressWarnings(as.numeric(as.character(vals_base[[bm$week8]])))
+    complete <- !is.na(v1) & !is.na(v2)
+    if (sum(complete) >= 5) {
+      p <- wilcox.test(v1[complete], v2[complete], paired = TRUE, exact = FALSE)$p.value
+    } else {
+      p <- NA
+    }
+    pval_list <- c(pval_list, list(data.frame(
+      biomarker = bm$label, Intervention = grp, p_within = p,
+      stringsAsFactors = FALSE
+    )))
+  }
+}
+pval_df <- dplyr::bind_rows(pval_list) %>%
+  dplyr::mutate(
+    Intervention = factor(Intervention, levels = c("Control", "HWP", "HWP + LGG")),
+    signif_label = dplyr::case_when(
+      p_within < 0.001 ~ "***",
+      p_within < 0.01  ~ "**",
+      p_within < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# Summary statistics
+traj_summary <- traj_df %>%
+  dplyr::group_by(biomarker, Intervention, timepoint) %>%
+  dplyr::summarise(
+    mean_val = mean(value, na.rm = TRUE),
+    se_val = sd(value, na.rm = TRUE) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+# Merge p-value labels at Week 8 position
+label_df <- traj_summary %>%
+  dplyr::filter(timepoint == "Week 8") %>%
+  dplyr::left_join(pval_df, by = c("biomarker", "Intervention"))
+
+interv_colors <- c("Control" = "#1B9E77", "HWP" = "#D95F02", "HWP + LGG" = "#7570B3")
+
+ggplot(traj_summary, aes(x = timepoint, y = mean_val, color = Intervention, group = Intervention)) +
+  geom_line(linewidth = 0.9, position = position_dodge(width = 0.15)) +
+  geom_errorbar(
+    aes(ymin = mean_val - se_val, ymax = mean_val + se_val),
+    width = 0.15, linewidth = 0.7,
+    position = position_dodge(width = 0.15)
+  ) +
+  geom_point(size = 3, position = position_dodge(width = 0.15)) +
+  geom_text(
+    data = label_df,
+    aes(x = timepoint, y = mean_val + se_val, label = signif_label),
+    vjust = -0.8, size = 5, fontface = "bold", show.legend = FALSE,
+    position = position_dodge(width = 0.15)
+  ) +
+  facet_wrap(~ biomarker, scales = "free_y", ncol = 2) +
+  scale_color_manual(values = interv_colors) +
+  theme_bw(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "#F0F0F0"),
+    strip.text = element_text(face = "bold", size = 11)
+  ) +
+  labs(
+    title = "Inflammatory biomarker trajectories across the intervention",
+    subtitle = "Mean ± SE; within-group paired Wilcoxon: * P < 0.05, ** P < 0.01, *** P < 0.001",
+    x = "Timepoint",
+    y = "Concentration",
+    color = "Intervention"
+  )
+```
+
+```{r}
+#| label: run-regressions
+#| code-summary: "Show code"
+
+biomarkers <- c(
+  "log10_Supar_delta",
+  "log10_Calpro_delta",
+  "log10_hsCRP_delta",
+  "log10_Hapto_delta"
+)
+
+results_list <- list()
+
+for (sp in valid_species) {
+  ab_before <- sp_sub_mat[sp, subject_df$sample_id_before]
+  ab_after  <- sp_sub_mat[sp, subject_df$sample_id_after]
+  
+  df_sp <- subject_df %>%
+    dplyr::mutate(
+      sp_base = as.numeric(ab_before),
+      sp_after = as.numeric(ab_after),
+      sp_delta = as.numeric(ab_after) - as.numeric(ab_before)
+    )
+  
+  for (bm in biomarkers) {
+    base_bm_var <- gsub("_delta$", "1", bm)
+    if (!base_bm_var %in% names(df_sp) || !bm %in% names(df_sp)) next
+    
+    dat <- df_sp %>%
+      dplyr::select(Subject_ID, Treatment, y_delta = dplyr::all_of(bm), y_base = dplyr::all_of(base_bm_var), sp_delta, sp_base) %>%
+      dplyr::filter(complete.cases(.))
+    
+    # Require at least 15 complete observations to ensure sufficient degrees of freedom
+    if (nrow(dat) < 15) next
+    
+    res <- fit_biomarker_species_models(dat, species_name = sp, biomarker_name = bm)
+    results_list[[length(results_list) + 1]] <- res
+  }
+}
+
+# Combine all results and apply FDR correction per model × biomarker
+results_all <- dplyr::bind_rows(results_list) %>%
+  dplyr::group_by(model, biomarker) %>%
+  dplyr::mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(model, p_value)
+
+# Q2 subset for backward compatibility with existing heatmap / forest / scatter code
+results_df <- results_all %>% dplyr::filter(model == "Q2")
+```
+
+## Results heatmap
+
+Standardized regression coefficients ($\beta_{\text{std}}$) for species deltas predicting changes in each inflammatory biomarker. Asterisks (*) indicate nominal statistical significance ($P < 0.05$).
+
+```{r}
+#| label: fig-heatmap
+#| fig-width: 8
+#| fig-height: 12
+#| fig-cap: "Standardized regression coefficients for species deltas predicting biomarker changes"
+#| code-summary: "Show code"
+
+primary_results <- results_df %>%
+  dplyr::mutate(
+    biomarker_label = case_when(
+      biomarker == "log10_Supar_delta"  ~ "suPAR",
+      biomarker == "log10_Calpro_delta" ~ "Calprotectin",
+      biomarker == "log10_hsCRP_delta"  ~ "hs-CRP",
+      biomarker == "log10_Hapto_delta"  ~ "Haptoglobin"
+    ),
+    signif_label = if_else(p_value < 0.05, "*", ""),
+    species_clean = gsub("_", " ", species)
+  )
+
+# Perform hierarchical clustering on standardized beta coefficients to order species logically
+beta_matrix <- primary_results %>%
+  dplyr::select(species_clean, biomarker_label, beta_std) %>%
+  tidyr::pivot_wider(names_from = biomarker_label, values_from = beta_std) %>%
+  tibble::column_to_rownames("species_clean")
+
+species_order <- if (nrow(beta_matrix) > 1) {
+  hc <- hclust(dist(beta_matrix))
+  rownames(beta_matrix)[hc$order]
+} else {
+  rownames(beta_matrix)
+}
+
+primary_results$species_clean <- factor(primary_results$species_clean, levels = species_order)
+
+ggplot(primary_results, aes(x = biomarker_label, y = species_clean, fill = beta_std)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = signif_label), color = "black", vjust = 0.8, size = 5, fontface = "bold") +
+  scale_fill_gradient2(low = "#2166AC", mid = "#F7F7F7", high = "#B2182B", midpoint = 0, name = "Std. Beta (β)") +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.y = element_text(face = "italic", size = 9),
+    axis.text.x = element_text(face = "bold", size = 11),
+    panel.grid = element_blank(),
+    legend.position = "right"
+  ) +
+  labs(
+    title = "Q2: Associations adjusted for intervention group",
+    subtitle = "Standardized beta estimates adjusted for baseline levels and intervention group (* P < 0.05)",
+    x = "Inflammatory biomarker change",
+    y = "Bacterial species"
+  )
+```
+
+## Top findings
+
+Species-biomarker change pairs reaching nominal statistical significance ($P < 0.05$) with 95% confidence intervals.
+
+```{r}
+#| label: fig-forest
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "Top species-biomarker associations (P < 0.05)"
+#| code-summary: "Show code"
+
+sig_results <- results_df %>%
+  dplyr::filter(p_value < 0.05) %>%
+  dplyr::mutate(
+    biomarker_label = case_when(
+      biomarker == "log10_Supar_delta"  ~ "suPAR",
+      biomarker == "log10_Calpro_delta" ~ "Calprotectin",
+      biomarker == "log10_hsCRP_delta"  ~ "hs-CRP",
+      biomarker == "log10_Hapto_delta"  ~ "Haptoglobin"
+    ),
+    species_clean = gsub("_", " ", species),
+    label = paste0(species_clean, " (", biomarker_label, ")")
+  )
+
+if (nrow(sig_results) > 0) {
+  p_forest <- ggplot(sig_results, aes(x = beta_std, y = reorder(label, beta_std), color = biomarker_label)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_errorbar(aes(xmin = ci_low_std, xmax = ci_high_std), width = 0.2, linewidth = 0.8) +
+    geom_point(size = 3) +
+    scale_color_brewer(palette = "Set1", name = "Biomarker") +
+    theme_bw(base_size = 11) +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = "Top species-biomarker associations",
+      subtitle = "Standardized beta coefficients and 95% confidence intervals",
+      x = "Standardized effect size (β)",
+      y = "Species and biomarker pair"
+    )
+  print(p_forest)
+} else {
+  cat("No species-biomarker associations reached nominal statistical significance (P < 0.05).")
+}
+```
+
+### Bivariate scatter plots
+
+Bivariate scatter plots for top candidate associations, colored by intervention group.
+
+```{r}
+#| label: fig-scatter
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "Bivariate scatter plots for the top nominally significant (P < 0.05) species-biomarker associations. Red lines show marginal bivariate linear fits (overall trend across all subjects); reported standardized beta coefficients in subtitles are adjusted for baseline values and intervention groups as per the multivariate regression model."
+#| code-summary: "Show code"
+
+if (nrow(sig_results) > 0) {
+  interv_colors_scatter <- c("Control" = "#1B9E77", "HWP" = "#D95F02", "HWP + LGG" = "#7570B3")
+  
+  top_n_plot <- min(nrow(sig_results), 4)
+  top4 <- sig_results %>% dplyr::arrange(p_value) %>% head(top_n_plot)
+  
+  scatter_plots <- list()
+  for (i in 1:top_n_plot) {
+    sp <- top4$species[i]
+    bm <- top4$biomarker[i]
+    sp_clean <- top4$species_clean[i]
+    bm_label <- top4$biomarker_label[i]
+    p_val <- round(top4$p_value[i], 4)
+    beta_val <- round(top4$beta_std[i], 3)
+    
+    ab_b <- sp_sub_mat[sp, subject_df$sample_id_before]
+    ab_a <- sp_sub_mat[sp, subject_df$sample_id_after]
+    
+    df_plot <- subject_df %>%
+      dplyr::mutate(
+        Intervention = factor(Intervention, levels = c("Control", "HWP", "HWP + LGG")),
+        sp_delta = ab_a - ab_b,
+        bm_delta = .data[[bm]]
+      ) %>%
+      dplyr::filter(!is.na(sp_delta) & !is.na(bm_delta))
+    
+    p_i <- ggplot(df_plot, aes(x = sp_delta, y = bm_delta, color = Intervention)) +
+      geom_point(alpha = 0.7, size = 2) +
+      geom_smooth(method = "lm", aes(group = 1), color = "#E41A1C", fill = "#E41A1C", alpha = 0.15) +
+      scale_color_manual(values = interv_colors_scatter) +
+      theme_bw(base_size = 10) +
+      theme(legend.position = if (i == 1) "bottom" else "none") +
+      labs(
+        title = paste0(sp_clean, " vs ", bm_label),
+        subtitle = paste0("β = ", beta_val, ", P = ", p_val),
+        x = paste0("Δ CLR abundance (", sp_clean, ")"),
+        y = paste0("Δ log10(", bm_label, ")")
+      )
+    scatter_plots[[i]] <- p_i
+  }
+  
+  if (top_n_plot > 0) {
+    # Extract shared legend from first plot
+    legend_grob <- cowplot::get_legend(scatter_plots[[1]])
+    scatter_plots[[1]] <- scatter_plots[[1]] + theme(legend.position = "none")
+    
+    ncol_grid <- if (top_n_plot == 1) 1 else 2
+    gridExtra::grid.arrange(
+      gridExtra::arrangeGrob(grobs = scatter_plots, ncol = ncol_grid),
+      legend_grob, nrow = 2, heights = c(10, 1)
+    )
+  }
+} else {
+  cat("No scatter plots to display.")
+}
+```
+
+## Model comparison: Q1 vs Q2 vs Q3
+
+Side-by-side comparison of standardized beta estimates and p-values across the three hierarchical models. This allows assessment of whether associations are robust to group adjustment (Q1 → Q2) and whether they differ by intervention group (Q3 interaction).
+
+```{r}
+#| label: tbl-model-comparison
+#| code-summary: "Show code"
+
+bm_labels <- c(
+  "log10_Supar_delta"  = "suPAR",
+  "log10_Calpro_delta" = "Calprotectin",
+  "log10_hsCRP_delta"  = "hs-CRP",
+  "log10_Hapto_delta"  = "Haptoglobin"
+)
+
+comparison_wide <- results_all %>%
+  dplyr::mutate(
+    Species = gsub("_", " ", species),
+    Biomarker = bm_labels[biomarker]
+  ) %>%
+  dplyr::select(Species, Biomarker, model, beta_std, p_value, interaction_p) %>%
+  tidyr::pivot_wider(
+    names_from = model,
+    values_from = c(beta_std, p_value, interaction_p),
+    names_glue = "{model}_{.value}"
+  ) %>%
+  dplyr::transmute(
+    Species,
+    Biomarker,
+    `Q1 β` = round(Q1_beta_std, 3),
+    `Q1 P` = Q1_p_value,
+    `Q2 β` = round(Q2_beta_std, 3),
+    `Q2 P` = Q2_p_value,
+    `Q3 β` = round(Q3_beta_std, 3),
+    `Q3 P` = Q3_p_value,
+    `Interaction P` = Q3_interaction_p
+  )
+
+datatable(
+  comparison_wide,
+  filter = "top",
+  rownames = FALSE,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 15,
+    autoWidth = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel"),
+    columnDefs = list(
+      list(className = "dt-center", targets = 2:8)
+    )
+  )
+) %>%
+  formatSignif(columns = c("Q1 P", "Q2 P", "Q3 P", "Interaction P"), digits = 3)
+```
+
+## Interaction scatter plots (Q3)
+
+For species-biomarker pairs where the Q3 interaction F-test suggests the association may differ by intervention group (lowest interaction P-values), scatter plots show group-specific regression slopes.
+
+```{r}
+#| label: fig-interaction-scatter
+#| fig-width: 10
+#| fig-height: 10
+#| fig-cap: "Species-biomarker scatter plots with group-specific regression lines. Colored lines represent intervention-group-specific linear fits; shaded areas show 95% confidence bands."
+#| code-summary: "Show code"
+
+interaction_results <- results_all %>%
+  dplyr::filter(model == "Q3", !is.na(interaction_p)) %>%
+  dplyr::arrange(interaction_p)
+
+top_n_interact <- min(nrow(interaction_results), 6)
+interv_colors <- c("Control" = "#1B9E77", "HWP" = "#D95F02", "HWP + LGG" = "#7570B3")
+
+if (top_n_interact > 0) {
+  top_interact <- interaction_results %>% head(top_n_interact)
+  
+  interact_plots <- list()
+  for (i in 1:top_n_interact) {
+    sp  <- top_interact$species[i]
+    bm  <- top_interact$biomarker[i]
+    sp_clean <- gsub("_", " ", sp)
+    bm_label <- bm_labels[bm]
+    int_p    <- signif(top_interact$interaction_p[i], 3)
+    
+    ab_b <- sp_sub_mat[sp, subject_df$sample_id_before]
+    ab_a <- sp_sub_mat[sp, subject_df$sample_id_after]
+    
+    df_plot <- subject_df %>%
+      dplyr::mutate(
+        Intervention = factor(Intervention, levels = c("Control", "HWP", "HWP + LGG")),
+        sp_delta = ab_a - ab_b,
+        bm_delta = .data[[bm]]
+      ) %>%
+      dplyr::filter(!is.na(sp_delta) & !is.na(bm_delta))
+    
+    p_i <- ggplot(df_plot, aes(x = sp_delta, y = bm_delta, color = Intervention)) +
+      geom_point(alpha = 0.7, size = 2) +
+      geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 0.8) +
+      scale_color_manual(values = interv_colors) +
+      theme_bw(base_size = 10) +
+      theme(legend.position = if (i == 1) "bottom" else "none") +
+      labs(
+        title = paste0(sp_clean, " vs ", bm_label),
+        subtitle = paste0("Interaction P = ", int_p),
+        x = paste0("Δ CLR (", sp_clean, ")"),
+        y = paste0("Δ log10(", bm_label, ")")
+      )
+    interact_plots[[i]] <- p_i
+  }
+  
+  legend_grob <- cowplot::get_legend(interact_plots[[1]])
+  interact_plots[[1]] <- interact_plots[[1]] + theme(legend.position = "none")
+  
+  ncol_grid <- if (top_n_interact <= 2) top_n_interact else if (top_n_interact <= 4) 2 else 3
+  gridExtra::grid.arrange(
+    gridExtra::arrangeGrob(grobs = interact_plots, ncol = ncol_grid),
+    legend_grob, nrow = 2, heights = c(10, 1)
+  )
+} else {
+  cat("No interaction results available.")
+}
+```
+
+## Interpretation
+
+### Multiple testing correction outcomes
+After applying the Benjamini-Hochberg False Discovery Rate (FDR) correction across all species models per biomarker family, **no species-biomarker associations remained statistically significant at the $Q < 0.05$ threshold** in any of the three models. Under the CLR-transformed Q2 model, the lowest FDR-adjusted p-values were observed for Calprotectin, which includes nominal associations for *Streptococcus salivarius*, *Lacrimispora celerecrescens*, and *Bifidobacterium bifidum*.
+
+### Lack of FDR-significant associations
+The lack of FDR-significant associations for calprotectin and other biomarkers can be explained by:
+
+1. **Conservative FDR penalty:** Correcting for simultaneous species tests per biomarker introduces a substantial multiplicity penalty, requiring extremely strong effect sizes to survive correction.
+2. **Statistical power limitations:** With $N = `r nrow(subject_df)`$ paired subjects, the study has moderate power to detect only large, consistent linear relationships.
+3. **Biological variation:** Systemic biomarkers (like hs-CRP and haptoglobin) and local inflammatory markers (like calprotectin) exhibit high intra-individual variation, which may obscure subtle linear associations with individual species abundance changes.
+
+This is consistent with the primary study findings showing no overall significant between-group differences in these inflammatory markers during the intervention.
+
+## Full results table
+
+```{r}
+#| label: tbl-results
+#| code-summary: "Show code"
+
+datatable(
+  results_all %>%
+    dplyr::mutate(
+      `Model` = model,
+      `Species` = gsub("_", " ", species),
+      `Biomarker` = case_when(
+        biomarker == "log10_Supar_delta"  ~ "suPAR",
+        biomarker == "log10_Calpro_delta" ~ "Calprotectin",
+        biomarker == "log10_hsCRP_delta"  ~ "hs-CRP",
+        biomarker == "log10_Hapto_delta"  ~ "Haptoglobin"
+      ),
+      `Available, n` = n_samples,
+      `Std. Beta` = round(beta_std, 3),
+      `95% CI` = paste0("[", round(ci_low_std, 3), ", ", round(ci_high_std, 3), "]"),
+      `p.value` = p_value,
+      `p.adj` = q_value,
+      `Interaction P` = interaction_p
+    ) %>%
+    dplyr::select(Model, Species, Biomarker, `Available, n`, `Std. Beta`, `95% CI`, `p.value`, `p.adj`, `Interaction P`),
+  filter = "top",
+  rownames = FALSE,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 15,
+    autoWidth = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  )
+) %>%
+  formatRound(columns = c("Std. Beta"), digits = 3) %>%
+  formatSignif(columns = c("p.value", "p.adj", "Interaction P"), digits = 3)
+```
+
+## Data summary
+
+::: {.callout-note collapse="true" title="Show data summary"}
+```{r data-summary}
+tse
+```
+:::
+
+## Session information
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r sessioninfo, echo=FALSE}
+sessionInfo()
+```
+:::

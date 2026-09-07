@@ -1,0 +1,517 @@
+---
+title: "Alpha Diversity"
+author:
+  - name: Muluh
+params: 
+  index: default
+---
+
+```{r variables}
+# Alpha diversity
+index <- params$index
+variable      <- "diet" 
+adjust.method <- "FDR"
+test <- "Wilcoxon"
+```
+
+```{r data}
+# Source fxns
+source("../funct.R")
+tse <- readRDS("../../data/tse.Rds")
+tse$diet <- str_to_title(tse$diet)
+tse$diet <- factor(tse$diet, levels=c("Oat", "Rice"))
+#tse$timepoint <- factor(tse$timepoint, levels=c("Baseline", "Week 6"))
+
+```
+
+## Group-wise comparisons
+
+-   **Index:** `r params$index`
+-   **Group variable:** `r variable`
+-   **Multiple testing correction:** `r adjust.method`
+-   **Statistical test** `r test`
+
+In the report, a suffix of 1~ Baseline and 2~ Week 6
+
+```{r run_diversity_tests}
+# Calculate p-values
+run_diversity_tests <- function(tse, comparisons, 
+                                variable, index, 
+                                adjust.method = "fdr", paired = FALSE) {
+  # Get all values and groups
+  values <- colData(tse)[[index]]
+  groups <- colData(tse)[[variable]]
+  
+  # Create an empty results dataframe
+  results <- data.frame(
+    group1 = character(),
+    group2 = character(),
+    mean1 = numeric(),
+    mean2 = numeric(),
+    logFC = numeric(),
+    p.value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop through requested comparisons
+  for (comp in comparisons) {
+    group1 <- comp[1]
+    group2 <- comp[2]
+    
+    # Subset data for just these two groups
+    subset_indices <- which(groups %in% c(group1, group2))
+    subset_values <- values[subset_indices]
+    subset_groups <- groups[subset_indices]
+    
+    # Ensure paired data is properly aligned (if paired is TRUE)
+    if (paired) {
+      # Assuming 'subject' column exists for pairing
+      subset_subjects <- tse$id[subset_indices]
+      paired_data <- data.frame(
+        subject = subset_subjects,
+        group = subset_groups,
+        value = subset_values
+      ) %>%
+        tidyr::pivot_wider(names_from = group, values_from = value) %>%
+        drop_na()  # Drop pairs with missing data
+      
+      # Extract paired values
+      paired_values <- paired_data %>% select(all_of(c(group1, group2)))
+    }
+    
+    # Perform Wilcoxon test
+    if (paired) {
+      test_result <- wilcox.test(
+        paired_values[[1]], paired_values[[2]],
+        paired = TRUE, exact = FALSE
+      )
+    } else {
+      test_result <- wilcox.test(
+        subset_values ~ subset_groups,
+        exact = FALSE
+      )
+    }
+    
+    # Calculate means
+    mean1 <- mean(values[groups == group1])
+    mean2 <- mean(values[groups == group2])
+
+    if (paired) {
+       # Note: when the values are paired, we can calculate FC separately
+       # for every individual and summarize afterwards. 
+       FC <- mean(values[groups == group2] / values[groups == group1])
+    } else {
+       FC <- mean2/mean1
+    }
+
+    # Add results
+    results <- rbind(results, data.frame(
+      group1 = group1,
+      group2 = group2,
+       mean1 = mean1,
+       mean2 = mean2,
+       logFC = log2(FC),
+      p.value = test_result$p.value,
+      stringsAsFactors = FALSE
+    ))
+
+  }
+  
+  # Add adjusted p-values using specified method
+  # results$p.adj <- p.adjust(results$p.value, method = adjust.method)
+  
+  return(results)
+}
+```
+
+```{r pvalues-before}
+tse_before <- tse[, tse$visit == 1]
+# Calculate statistical results
+results_before <- run_diversity_tests(tse_before, comparisons_before, variable, index, adjust.method)
+results_before$p.adj <- p.adjust(results_before$p.value, method = "fdr")
+# Format results for display
+final_results_before <- results_before %>%
+  mutate(
+    mean1 = round(mean1, 1),
+    mean2 = round(mean2, 1),
+    logFC = round(logFC, 2),
+    p.adj = round(p.adj, 3)
+  ) %>%
+  select(group1, group2, mean1, mean2, logFC, p.adj)
+
+# Calculate y-positions for p-value annotations
+final_results_before <- final_results_before %>%
+  mutate(y.position = sapply(1:nrow(final_results_before), function(i) {
+    vals1 <- colData(tse_before)[[index]][colData(tse_before)[[variable]] == group1[i]]
+    vals2 <- colData(tse_before)[[index]][colData(tse_before)[[variable]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.5
+  }))
+colnames(final_results_before)[colnames(final_results_before) == "logFC"] <- "log2FC"
+```
+
+```{r pvalues-after}
+tse_after <- tse[, tse$visit == 2]
+# Calculate statistical results
+results_after <- run_diversity_tests(tse_after, comparisons_after, variable, index, adjust.method)
+results_after$p.adj <- p.adjust(results_after$p.value, method = "fdr")
+# Format results for display
+final_results_after <- results_after %>%
+  mutate(
+    mean1 = round(mean1, 1),
+    mean2 = round(mean2, 1),
+    logFC = round(logFC, 2),
+    p.adj = round(p.adj, 3)
+  ) %>%
+  select(group1, group2, mean1, mean2, logFC, p.adj)
+
+# Calculate y-positions for p-value annotations
+final_results_after <- final_results_after %>%
+  mutate(y.position = sapply(1:nrow(final_results_after), function(i) {
+    vals1 <- colData(tse_after)[[index]][colData(tse_after)[[variable]] == group1[i]]
+    vals2 <- colData(tse_after)[[index]][colData(tse_after)[[variable]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.2
+  }))
+colnames(final_results_after)[colnames(final_results_after) == "logFC"] <- "log2FC"
+```
+
+```{r pvalues-paired}
+diet_groups <- unique(tse$diet)
+
+# Calculate statistical results
+results_paired <- lapply(diet_groups, function(group) {
+  # Subset tse for the current meal group
+  tse_subset <- tse[, tse$diet == group]
+  
+  # Run the diversity tests
+  res <- run_diversity_tests(
+    tse = tse_subset, 
+    comparisons = comparisons_paired, 
+    variable = "duration", 
+    index, 
+    adjust.method = adjust.method, 
+    paired = TRUE
+  )
+  
+  # Add the meal group as a new column
+  res$diet <- group
+  
+  return(res)
+}) %>% 
+  bind_rows()
+
+results_paired <- results_paired[, c("diet", setdiff(names(results_paired), "diet"))]
+
+# results_paired$p.adj <- p.adjust(results_paired$p.value, method = "fdr")
+# Format results for display
+final_results_paired <- results_paired %>%
+  mutate(
+    mean1 = round(mean1, 1),
+    mean2 = round(mean2, 1),
+    logFC = round(logFC, 2),
+    p.value = round(p.value, 3)
+  ) %>%
+  select(diet, group1, group2, mean1, mean2, logFC, p.value) %>% arrange(diet)
+
+# Calculate y-positions for p-value annotations
+final_results_paired <- final_results_paired %>%
+  mutate(y.position = sapply(1:nrow(final_results_paired), function(i) {
+    vals1 <- colData(tse)[[index]][colData(tse)[["duration"]] == group1[i]]
+    vals2 <- colData(tse)[[index]][colData(tse)[["duration"]] == group2[i]]
+    max(c(vals1, vals2)) + i * 0.2
+  }))
+final_results_paired$group1 <- NULL
+final_results_paired$group2 <- NULL
+colnames(final_results_paired)[colnames(final_results_paired) == "logFC"] <- "log2FC"
+```
+
+```{r}
+#| label: fig-figure-of-findings-before-after
+#| fig-width: 5
+#| fig-height: 4
+#| fig.align: "center"
+
+plotBoxplot(tse, col.var = index, x = "duration", fill.by = "diet", add.significance = T) + 
+  scale_fill_viridis_d(option = "D")
+```
+
+### Table of the top findings
+
+#### Across-group
+
+##### Before treatment
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **`r test`**
+
+```{r}
+#| label: tbl-table-of-findings-before
+if (knitr::is_html_output()) {
+  datatable(
+      final_results_before %>% select(-y.position), 
+      options = list(
+        pageLength = 6,
+        dom = 'Bfrtip'
+      ),
+      caption = "Table of alpha diversity comparisons at the Baseline",
+      rownames = FALSE
+  ) %>%
+    formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+    formatSignif(columns = "p.adj", digits = 3)
+} else {
+  library(kableExtra)
+  final_results_before %>% 
+    select(-y.position) %>%
+    mutate(
+      across(where(is.numeric), ~round(., 3))
+      #p.adj = signif(p.adj, 3)
+    ) %>%
+    kbl(caption = "Table of alpha diversity comparisons at the Baseline",
+        booktabs = TRUE,
+        longtable = TRUE,
+        align = c('l', 'r', 'r', 'r', 'r')) %>%
+    kable_styling(latex_options = "repeat_header") %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+##### After treatment
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **`r test`**
+
+
+```{r}
+#| label: tbl-table-of-findings-after
+if (knitr::is_html_output()) {
+  datatable(
+    final_results_after %>% select(-y.position), 
+    options = list(
+      pageLength = 6,
+      dom = 'Bfrtip'
+    ),
+    caption = "Table of alpha diversity comparisons at Week 6",
+    rownames = FALSE
+) %>%
+  formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+  formatSignif(columns = "p.adj", digits = 3)
+} else {
+  library(kableExtra)
+  final_results_after %>% 
+    select(-y.position) %>%
+    mutate(
+      across(where(is.numeric), ~round(., 3))
+      #p.adj = signif(p.adj, 3)
+    ) %>%
+    kbl(caption = "Table of alpha diversity comparisons at Week 6",
+        booktabs = TRUE,
+        longtable = TRUE,
+        align = c('l', 'r', 'r', 'r', 'r')) %>%
+    kable_styling(latex_options = "repeat_header") %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+```{r}
+#| label: fig-figure-of-findings-within
+#| fig-width: 5
+#| fig-height: 4
+#| fig.align: "center"
+
+#div_change
+plotBoxplot(tse, col.var = index, x = "diet", fill.by = "duration", pair.by = "id", add.change = T, add.significance = T)
+```
+
+#### Within-group
+
+##### Paired treatment
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test:  **paired `r test`**
+
+```{r}
+#| label: tbl-table-of-findings-paired
+
+if (knitr::is_html_output()) {
+  datatable(
+    final_results_paired %>% select(-y.position),  
+    options = list(
+      pageLength = 4,
+      dom = 'Bfrtip'
+    ),
+    caption = "Table of alpha diversity paired between the Baseline and Week 6",
+    rownames = FALSE
+) %>%
+  formatRound(columns = c("mean1", "mean2", "log2FC"), digits = 2) %>%
+  formatSignif(columns = "p.value", digits = 3)
+} else {
+  library(kableExtra)
+  final_results_paired %>% 
+    mutate(
+      across(where(is.numeric), ~round(., 3))
+      #p.adj = signif(p.adj, 3)
+    ) %>%
+    kbl(caption = "Table of alpha diversity paired between the Baseline and Week 6",
+        booktabs = TRUE,
+        longtable = TRUE,
+        align = c('l', 'r', 'r', 'r', 'r')) %>%
+    kable_styling(latex_options = "repeat_header") %>%
+    row_spec(0, bold = TRUE)
+}
+```
+
+### LMM
+
+
+Research Question 1: Did the diet change the microbiota?
+
+-   The interaction term (Treatment:Timepoint) tests whether the effect of time on Alpha diversity depends on the diet group.
+
+-   Post-hoc analysis within each diet group identifies specific changes in Alpha diversity over time.
+
+Research Question 2: Was the microbiota equal between the diet groups before and after diet?
+
+-   The main effect of diet tests for differences in Alpha diversity between diet groups at baseline.
+
+-   Post-hoc analysis across diet groups at each timepoint identifies specific differences between diets
+
+Interpret the Results
+
+-   Main Effects:
+    -   diet: Tests for differences in microbiota between Diet A and Diet B at Baseline.
+
+    -   duration: Tests for changes in microbiota over time across both diets.
+
+    -   diet:duration: Tests whether the effect of Timepoint depends on the diet group.
+
+-   Random Effects:
+    -   (1|id): Accounts for within-subject variability.
+
+```{r lmer-stuffm}
+adjust.method <- "FDR"
+test <- "paired Wilcoxon"
+```
+
+```{r lmer-stuff}
+formula_used <- "~ diet * timepoint + (1 | id)"
+
+tse$diet <- factor(tse$diet, levels=c("Rice", "Oat"))
+
+if (index == "observed") {
+  tse$observed_log2 <- log2(tse$observed)
+  res <- run_lmer(tse, "observed_log2")
+} else {
+  res <- run_lmer(tse, index)
+}
+```
+
+-   Multiple testing correction: **`r adjust.method`**
+-   Statistical test: **`r test`**
+-   Formula used: **`r formula_used`**
+
+```{r}
+#| label: tbl-table-of-interaction
+sjPlot::tab_model(res)
+```
+
+
+```{r}
+#| label: fig-figure-of-interaction
+sjPlot::plot_model(res)
+```
+#### Post-Hoc Analysis
+
+*Within-Group Comparisons*
+```{r}
+#| label: tbl-table-of-interaction-within
+ref_grid <- emmeans(res, ~ diet * duration)
+within_group_comps <- contrast(ref_grid, method = "pairwise", by = "diet")
+kable(as.data.frame(within_group_comps), caption = "Estimates for diets")
+# Add confidence intervals
+within_group_comps_ci <- confint(within_group_comps)
+```
+
+
+```{r}
+#| label: fig-figure-of-interaction-within
+# Convert to a data frame
+within_group_df <- as.data.frame(within_group_comps_ci)
+
+ggplot(within_group_df, aes(x = diet, y = estimate, color = diet)) +
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Diet", y = paste("Differences Alpha Diversity -", index, "(Baseline - Post-Intervention)"), 
+       title = "Within-Group Comparisons of Alpha Diversity") +
+  theme_minimal()
+```
+
+*Across-Group Comparisons*
+How to read the results;
+N.B This interpretation is an example of how to read.
+
+-   For Marginal Means (emmeans):
+    -   Low diversity (e.g., Shannon = 2.5): "The mean Shannon diversity for diet oat was 2.5 (95% CI: 2.3, 2.7), indicating lower microbial diversity compared to typical healthy gut microbiomes (Shannon ~3-5)."
+
+    -   High diversity (e.g., Shannon = 4.2):"The mean Shannon diversity for diet rice was 4.2 (95% CI: 4.0, 4.4), indicating a rich and balanced microbial community."
+
+-   For Contrasts:
+    -   Negative estimate (e.g., -0.8):"diet oat had significantly lower Shannon diversity than diet rice (estimate = -0.8, p < 0.05), suggesting reduced microbial richness."
+
+    -   Positive estimate (e.g., 0.8):"diet oat had significantly higher Shannon diversity than diet rice (estimate = 0.8, p < 0.05), suggesting enhanced microbial balance."
+```{r}
+#| label: tbl-table-of-interaction-across-emmeans
+posthoc <- emmeans(res, pairwise ~ diet | duration)
+# sjPlot::tab_model(as.data.frame(posthoc$contrasts)) 
+data_emmean <- as.data.frame(posthoc$emmeans)
+if (index == "observed") {
+  data_emmean <- data_emmean %>%
+    # rename(emmeans = "coef") %>% 
+    mutate(
+      `2 ^ coef` = 2 ^ emmean, 
+      lower.CL_actual = 2 ^ lower.CL,     
+      upper.CL_actual = 2 ^ upper.CL
+    )
+  some_order <- c("diet", "duration", 
+               "emmean", "2 ^ coef",
+               "SE", "df", "lower.CL", "lower.CL_actual", 
+               "upper.CL", "upper.CL_actual")
+  data_emmean <- data_emmean %>%
+    select(all_of(some_order))  %>%
+    rename(emmean = "coef")
+} else {
+  some_order <- c("diet", "duration", 
+               "emmean", "SE", "df", "lower.CL",  
+               "upper.CL")
+  data_emmean <- data_emmean %>%
+    select(all_of(some_order))  %>%
+    rename(emmean = "coef", duration = "timepoint")
+}
+kable(data_emmean,  caption = "Estimated Marginal Means for Diets")
+```
+
+
+```{r}
+#| label: tbl-table-of-interaction-across-contrasts
+kable(as.data.frame(posthoc$contrasts), caption = "Estimated contrasts for Diets")
+```
+
+```{r}
+#| label: fig-figure-of-interaction-across
+posthoc_ci <- confint(posthoc$contrasts)
+
+# Convert to a data frame
+posthoc_df <- as.data.frame(posthoc_ci)
+#posthoc_df <- as.data.frame(posthoc$contrasts)
+ggplot(posthoc_df, aes(x = contrast, y = estimate, color = duration)) +
+ geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL)) +
+  facet_wrap(~ duration) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Comparison", y =  paste("Differences Alpha Diversity -", index), 
+       title = "Comparisons of Alpha Diversity") +
+  theme_minimal()
+```
+
+## Data Summary
+
+```{r data-summary}
+tse
+```

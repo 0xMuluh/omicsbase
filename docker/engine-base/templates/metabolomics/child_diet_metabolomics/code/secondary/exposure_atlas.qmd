@@ -1,0 +1,277 @@
+---
+title: "Exposure atlas: child diet"
+---
+
+Exposure-by-exposure reporting across the primary question set.
+
+- Every exposure family is shown across the concurrent 2-year, concurrent 5-6-year, prospective, and repeated-measures components when available.
+- Each component includes a concise summary table, an overview plot, a raw-`p` top-hits forest plot, and a searchable full result table.
+- The full result tables are the exhaustive record. The overview plots are summaries.
+- Repeated-measures components can yield multiple coefficient rows per metabolite; in those cases the circular plot shows the strongest row per metabolite within the displayed term family, while the full table retains every returned row.
+- Multi-level diet-quality class exposures are shown as omnibus factor tests with `p` and `q` values; no single beta or confidence interval is displayed for those rows.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+source("../../scripts/circular_manhattan_helper.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(knitr)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+q1 <- results$q1
+q2 <- results$q2
+q3 <- results$q3
+q4 <- results$q4
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+mae <- analysis_obj$mae
+
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+feature_meta$feature_group <- if ("Group" %in% names(feature_meta)) as.character(feature_meta$Group) else "Unknown"
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group")], by = "feature")
+}
+
+summary_tbl <- function(df, n_col = NULL, n_ind_col = NULL) {
+  out <- tibble(
+    result_rows = nrow(df),
+    significant_rows = sum(df$q.value < 0.10, na.rm = TRUE),
+    significant_fraction = if (nrow(df) > 0) mean(df$q.value < 0.10, na.rm = TRUE) else NA_real_
+  )
+  if (!is.null(n_col) && n_col %in% names(df)) {
+    vals <- suppressWarnings(as.numeric(df[[n_col]]))
+    vals <- vals[is.finite(vals)]
+    out$n_range <- if (length(vals) == 0) NA_character_ else paste0(min(vals), "-", max(vals))
+  }
+  if (!is.null(n_ind_col) && n_ind_col %in% names(df)) {
+    vals <- suppressWarnings(as.numeric(df[[n_ind_col]]))
+    vals <- vals[is.finite(vals)]
+    out$n_individuals_range <- if (length(vals) == 0) NA_character_ else paste0(min(vals), "-", max(vals))
+  }
+  out
+}
+
+emit_static_table <- function(tbl, caption = NULL, digits = 3) {
+  if (is.null(tbl) || nrow(tbl) == 0) {
+    cat("<p>No rows available.</p>\n")
+    return(invisible(NULL))
+  }
+
+  tbl_out <- tbl
+  num_cols <- vapply(tbl_out, is.numeric, logical(1))
+  if (any(num_cols)) {
+    tbl_out[num_cols] <- lapply(tbl_out[num_cols], function(x) {
+      if (all(is.na(x))) return(x)
+      if (all(abs(x[is.finite(x)] - round(x[is.finite(x)])) < 1e-8)) {
+        round(x, 0)
+      } else {
+        round(x, digits)
+      }
+    })
+  }
+
+  html <- knitr::kable(
+    tbl_out,
+    format = "html",
+    row.names = FALSE,
+    caption = caption,
+    table.attr = 'class="table table-sm table-striped table-hover atlas-table"'
+  )
+  cat(as.character(html), "\n")
+  invisible(NULL)
+}
+
+is_multilevel_factor_row <- function(df) {
+  term_flag <- if ("term" %in% names(df)) grepl("\\|", df$term) else rep(FALSE, nrow(df))
+  exposure_flag <- if ("exposure" %in% names(df)) grepl("DietQuality_classes", df$exposure) else rep(FALSE, nrow(df))
+  term_flag | exposure_flag
+}
+
+forest_plot <- function(df, title_text, estimate_col = "estimate", lower_col = "conf.low", upper_col = "conf.high") {
+  top_df <- df %>%
+    slice_min(p.value, n = min(20L, nrow(df)), with_ties = FALSE) %>%
+    mutate(feature_lab = paste0(feature_group, " | ", feature))
+
+  if (nrow(top_df) == 0) {
+    return(NULL)
+  }
+
+  ggplot(top_df, aes(x = .data[[estimate_col]], y = fct_reorder(feature_lab, .data[[estimate_col]]), color = feature_group)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey45") +
+    geom_errorbarh(aes(xmin = .data[[lower_col]], xmax = .data[[upper_col]]), height = 0.2, color = "grey55") +
+    geom_point(size = 2) +
+    labs(
+      x = "Standardized beta (95% CI)",
+      y = NULL,
+      title = title_text,
+      subtitle = "Top 20 rows ranked by raw p-value",
+      color = "Metabolite group"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+q1_all <- q1 %>% mutate(component = "Concurrent 2y", base_exposure = base_exposure_child_diet(exposure)) %>% add_feature_meta()
+q2_all <- q2 %>% mutate(component = "Concurrent 5-6y", base_exposure = base_exposure_child_diet(exposure)) %>% add_feature_meta()
+q3_all <- q3 %>% mutate(component = "Prospective 2y -> 5-6y", base_exposure = base_exposure_child_diet(exposure)) %>% add_feature_meta()
+q4_all <- q4 %>%
+  mutate(
+    component = if_else(grepl(":", term), "Repeated interaction", "Repeated main effect"),
+    base_exposure = exposure_pair,
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  ) %>%
+  add_feature_meta()
+
+all_res <- bind_rows(q1_all, q2_all, q3_all, q4_all)
+all_exposure_families <- unique(c(q1_all$base_exposure, q2_all$base_exposure, q3_all$base_exposure, q4_all$base_exposure))
+all_exposure_families <- all_exposure_families[order(pretty_exposure(all_exposure_families))]
+```
+
+## Exposure-by-exposure atlas
+
+```{r}
+#| label: atlas-loop
+#| results: asis
+#| echo: false
+#| fig-width: 14
+#| fig-height: 14
+
+for (exp_base in all_exposure_families) {
+  cat("\n\n### Exposure Family: ", pretty_exposure(exp_base), "{.unnumbered}\n\n", sep = "")
+  cat("Raw variable family: `", exp_base, "`\n\n", sep = "")
+
+  exp_full <- all_res %>% filter(base_exposure == exp_base)
+  available_components <- component_order[component_order %in% unique(exp_full$component)]
+
+  cat("::: {.panel-tabset}\n")
+
+  for (component_i in available_components) {
+    cat("\n#### ", component_label(component_i), "\n\n", sep = "")
+
+    sub_df <- exp_full %>% filter(component == component_i)
+    is_repeated <- grepl("^Repeated", component_i)
+    multilevel_factor <- if (is_repeated) rep(FALSE, nrow(sub_df)) else is_multilevel_factor_row(sub_df)
+    omnibus_only <- !is_repeated && nrow(sub_df) > 0 && all(multilevel_factor)
+
+    if (nrow(sub_df) == 0) {
+      cat("No rows available for this component.\n\n")
+      next
+    }
+
+    if (is_repeated) {
+      cat("Overview plot: strongest coefficient row per metabolite within this repeated-measures term family. The full table below retains all returned rows.\n\n")
+      plot_df <- sub_df %>%
+        group_by(feature) %>%
+        arrange(p.value, .by_group = TRUE) %>%
+        slice_head(n = 1) %>%
+        ungroup()
+      summary_out <- summary_tbl(sub_df, n_col = "n_obs", n_ind_col = "n_ind")
+    } else if (omnibus_only) {
+      cat("This component is an omnibus multi-level factor test. Raw `p` and BH-adjusted `q` values are shown below, but no single beta or confidence interval is displayed because the factor is tested jointly.\n\n")
+      plot_df <- sub_df[0, , drop = FALSE]
+      summary_out <- summary_tbl(sub_df, n_col = "n")
+    } else {
+      cat("Overview plot: one row per metabolite from the fitted component. The full table below is exhaustive for this component.\n\n")
+      plot_df <- sub_df
+      summary_out <- summary_tbl(sub_df, n_col = "n")
+    }
+
+    emit_static_table(summary_out, caption = paste0(component_label(component_i), " summary"))
+
+    cat("\n**Metabolome-wide overview plot**\n\n")
+    if (omnibus_only) {
+      cat("This component is based on omnibus factor tests, so no single-direction effect-size overview plot is shown.\n\n")
+    } else {
+      cat("::: {.column-screen-inset-right}\n")
+      plot_circular_manhattan(plot_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i)))
+      cat("\n:::\n\n")
+    }
+
+    cat("**Top 20 rows by raw p-value**\n\n")
+    if (omnibus_only) {
+      cat("This component is based on omnibus factor tests, so no single-coefficient forest plot is shown.\n\n")
+    } else {
+      p_forest <- forest_plot(sub_df, paste0(pretty_exposure(exp_base), " | ", component_label(component_i)))
+      if (!is.null(p_forest)) {
+        print(p_forest)
+      } else {
+        cat("No rows available for the top-ranked forest plot.\n\n")
+      }
+    }
+
+    cat("**Full result table**\n\n")
+    cat("This table is the exhaustive result set for this exposure family and component.\n\n")
+    display_df <- if (is_repeated) {
+      sub_df %>%
+        arrange(p.value, feature, term) %>%
+        transmute(
+          term,
+          feature_group,
+          feature,
+          estimate,
+          std.error,
+          conf.low,
+          conf.high,
+          p.value,
+          q.value,
+          n_obs,
+          n_ind,
+          note
+        )
+    } else if (omnibus_only) {
+      sub_df %>%
+        mutate(
+          Test = "Omnibus multi-level factor test",
+          contrast_terms = if ("term" %in% names(sub_df)) as.character(term) else NA_character_
+        ) %>%
+        arrange(p.value, feature) %>%
+        transmute(
+          feature_group,
+          feature,
+          Test,
+          contrast_terms,
+          p.value,
+          q.value,
+          n
+        ) %>%
+        {
+          if (all(is.na(.$contrast_terms))) select(., -contrast_terms) else .
+        }
+    } else {
+      sub_df %>%
+        arrange(p.value, feature) %>%
+        transmute(
+          feature_group,
+          feature,
+          estimate,
+          conf.low,
+          conf.high,
+          p.value,
+          q.value,
+          n
+        )
+    }
+    emit_static_table(display_df, caption = paste0(component_label(component_i), " full results"))
+    cat("\n\n")
+  }
+
+  cat(":::\n\n")
+  cat("\n\n---\n\n")
+}
+```

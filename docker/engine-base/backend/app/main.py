@@ -1,0 +1,158 @@
+"""FastAPI application entry point."""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.project_edits import router as project_edits_router
+from app.api.execution_runs import router as execution_runs_router
+from app.api.edit_reviews import router as edit_reviews_router
+from app.api.files import router as files_router
+from app.api.inline_edit import router as inline_edit_router
+from app.api.notes.turns import note_agent_router
+from app.api.notes.standalone import standalone_router as standalone_notes_router
+from app.api.projects_note_executions import standalone_execution_router as standalone_note_execution_router
+from app.api.knowledge import router as knowledge_router
+from app.api.runs import router as runs_router
+from app.api.datasets import router as datasets_router
+from app.api.report_packs import router as report_packs_router
+from app.api.projects import router as projects_router
+from app.config import settings
+from app.middleware.auth import ApiKeyMiddleware
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup and shutdown."""
+    # Ensure database tables exist
+    from app.database import Base, engine
+    import app.models.project  # noqa: F401
+    import app.models.notes  # noqa: F401
+    import app.models.knowledge  # noqa: F401
+    import app.models.runs  # noqa: F401
+    Base.metadata.create_all(bind=engine)
+
+    from app.database import SessionLocal
+    from app.services.agent_runs import (
+        pause_stale_agent_runs,
+        purge_expired_agent_runs,
+        reconcile_stale_jobs,
+    )
+    from app.services.agent_continuations import (
+        dispatch_ready_continuations,
+        recover_interrupted_continuations,
+    )
+
+    startup_db = SessionLocal()
+    try:
+        paused_runs = pause_stale_agent_runs(
+            startup_db,
+            stale_after_seconds=settings.agent_run_stale_after_seconds,
+        )
+        paused_jobs = reconcile_stale_jobs(
+            startup_db,
+            stale_after_seconds=settings.agent_run_stale_after_seconds,
+        )
+        # Backfill legacy continuation metadata before retention evaluates runs.
+        recovered_continuations = recover_interrupted_continuations(startup_db)
+        purged_history = purge_expired_agent_runs(
+            startup_db,
+            retention_days=settings.agent_run_retention_days,
+            batch_size=settings.agent_run_retention_batch_size,
+        )
+        if paused_runs or paused_jobs or purged_history["runs_deleted"]:
+            print(
+                f"! Recovered {paused_runs} stale agent run(s) and "
+                f"{paused_jobs} stale compatibility job(s); "
+                f"purged {purged_history['runs_deleted']} expired run(s) during startup"
+            )
+        dispatched_continuations = dispatch_ready_continuations(startup_db)
+        if recovered_continuations or dispatched_continuations:
+            print(
+                f"✓ Recovered {recovered_continuations} and dispatched "
+                f"{dispatched_continuations} continuation plan(s) during startup"
+            )
+    finally:
+        startup_db.close()
+
+    # Verify prerequisites
+    from app.services.runner import check_prerequisites
+
+    checks = await check_prerequisites()
+    if checks.get("r_available"):
+        print(f"✓ R available: {checks.get('r_version', 'unknown')}")
+    else:
+        print("✗ R not found — rendering will fail")
+
+    if checks.get("quarto_available"):
+        print(f"✓ Quarto available: {checks.get('quarto_version', 'unknown')}")
+    else:
+        print("✗ Quarto not found — rendering will fail")
+
+    # Warm system prompt & registry cache
+    from app.services.llm import load_system_prompt
+    load_system_prompt()
+    print("✓ System prompt & registry cache warmed")
+
+    # Production auth guard
+    if not settings.api_key and not settings.dev_mode:
+        print(
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  CRITICAL SECURITY WARNING: No API key configured and      ║\n"
+            "║  dev_mode is False. All endpoints are unauthenticated.     ║\n"
+            "║  Set API_KEY in .env or enable DEV_MODE=true for local     ║\n"
+            "║  development.                                              ║\n"
+            "╚══════════════════════════════════════════════════════════════╝"
+        )
+    elif settings.dev_mode:
+        print("⚠ Running in DEV_MODE — auth bypass, default tenants, and sandbox bypass are permitted")
+
+    yield
+
+
+app = FastAPI(
+    title="OmicsBase",
+    description="OmicsBase-powered omics analysis with transparent, reproducible Quarto reports.",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(ApiKeyMiddleware)
+
+# CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_url, "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routers
+app.include_router(projects_router)
+app.include_router(files_router)
+app.include_router(project_edits_router)
+app.include_router(execution_runs_router)
+app.include_router(edit_reviews_router)
+app.include_router(inline_edit_router)
+app.include_router(standalone_notes_router)
+app.include_router(note_agent_router)
+app.include_router(standalone_note_execution_router)
+app.include_router(knowledge_router)
+app.include_router(runs_router)
+app.include_router(datasets_router)
+app.include_router(report_packs_router)
+
+
+@app.get("/api/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "omicsbase"}
+
+
+@app.get("/api/prerequisites")
+async def prerequisites():
+    """Check system prerequisites (R, Quarto)."""
+    from app.services.runner import check_prerequisites
+    return await check_prerequisites()

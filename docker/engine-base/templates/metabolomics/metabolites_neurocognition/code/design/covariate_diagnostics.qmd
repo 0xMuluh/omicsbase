@@ -1,0 +1,1250 @@
+---
+title: "Covariate and model specification"
+---
+
+## Setup
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+has_dagitty <- requireNamespace("dagitty", quietly = TRUE)
+
+analysis_data <- extract_analysis_data("../data/MAE_original.rds")
+mae <- analysis_data$mae
+df_long <- analysis_data$data
+
+subj_clinical <- df_long %>%
+  distinct(StudyID, .keep_all = TRUE)
+
+n_matched_children <- dplyr::n_distinct(df_long$StudyID)
+n_metabolite_features <- length(analysis_data$metabolite_cols)
+
+summarize_covariate <- function(var_name, data_source) {
+  val <- data_source[[var_name]]
+  
+  if (is.null(val)) {
+    return(tibble(
+      Variable = var_name,
+      Label = "Not found in dataset",
+      Type = "-",
+      Available_N = 0,
+      Missing_N = 0,
+      Missing_Pct = 100,
+      Summary_Stats = "-"
+    ))
+  }
+  
+  n_tot <- length(val)
+  n_miss <- sum(is.na(val))
+  pct_miss <- 100 * n_miss / n_tot
+  n_avail <- n_tot - n_miss
+  lbl <- attr(val, "label")
+  labels_attr <- metadata(mae)$pheno_labels
+  if ((is.null(lbl) || lbl == "") && !is.null(labels_attr) && var_name %in% names(labels_attr)) {
+    lbl <- labels_attr[[var_name]]
+  }
+  if (is.null(lbl) || lbl == "") lbl <- "-"
+
+  display_val <- if (inherits(val, "haven_labelled")) haven::as_factor(val) else val
+  if (is.factor(display_val) || is.character(display_val) || is.logical(display_val)) {
+    v_type <- if (inherits(val, "haven_labelled")) "Labelled categorical" else class(display_val)[[1]]
+    counts <- sort(table(display_val, useNA = "no"), decreasing = TRUE)
+    summary_stat <- paste(sprintf("%s: %s", names(counts), as.integer(counts)), collapse = "; ")
+  } else if (is.numeric(display_val)) {
+    finite_val <- display_val[is.finite(display_val)]
+    v_type <- "Numeric"
+    summary_stat <- if (length(finite_val) == 0) {
+      "-"
+    } else {
+      sprintf("Mean: %.1f, Range: %.1f - %.1f", mean(finite_val), min(finite_val), max(finite_val))
+    }
+  } else {
+    v_type <- class(display_val)[[1]]
+    summary_stat <- "-"
+  }
+  
+  tibble(
+    Variable = var_name,
+    Label = as.character(lbl),
+    Type = v_type,
+    Available_N = n_avail,
+    Missing_N = n_miss,
+    Missing_Pct = pct_miss,
+    Summary_Stats = summary_stat
+  )
+}
+core_vars <- c("CGender", "PRWLabor", "CBW", "MAge1", "MprepBMI", "MUniEdu", "MPrimipara", "MGDMOGTT1OR2Fi", "MPRSmoke", "Bfdurationm")
+sens_vars <- c("Premature", "InterventionGroup", "MLIVE1", "MModeOfDeliv.1", "CSGA", "CMacrosomy", "CApgar1", "CApgar5", "CAgePsychologist6", "CAgePhysiotherapist6")
+continuous_outcomes <- c(
+  "CCognition_indexpoints6",
+  "CLanguage_indexpoints6",
+  "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6",
+  "CMotor_indexpoints6",
+  "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6",
+  "Hammersmith6"
+)
+all_candidate_covars <- unique(c(core_vars, sens_vars))
+
+as_analysis_vector <- function(x) {
+  if (inherits(x, "haven_labelled")) return(haven::as_factor(x))
+  x
+}
+
+kruskal_epsilon_sq <- function(statistic, n, groups) {
+  if (!is.finite(statistic) || !is.finite(n) || !is.finite(groups) || n <= groups) return(NA_real_)
+  max(0, as.numeric((statistic - groups + 1) / (n - groups)))
+}
+
+covariate_test <- function(x, y) {
+  x <- as_analysis_vector(x)
+  y <- as_analysis_vector(y)
+  dat <- tibble::tibble(x = x, y = y) %>% tidyr::drop_na()
+  if (nrow(dat) < 10) {
+    return(tibble::tibble(test = "too_few_complete", n = nrow(dat), effect_label = NA_character_, effect_value = NA_real_, p_value = NA_real_))
+  }
+  x_num <- is.numeric(dat$x)
+  y_num <- is.numeric(dat$y)
+  if (x_num && y_num) {
+    out <- suppressWarnings(stats::cor.test(dat$x, dat$y, method = "spearman", exact = FALSE))
+    return(tibble::tibble(test = "Spearman", n = nrow(dat), effect_label = "rho", effect_value = unname(out$estimate), p_value = out$p.value))
+  }
+  if (!x_num && y_num) {
+    grp <- as.factor(dat$x)
+    if (nlevels(grp) < 2) return(tibble::tibble(test = "constant", n = nrow(dat), effect_label = NA_character_, effect_value = NA_real_, p_value = NA_real_))
+    out <- suppressWarnings(stats::kruskal.test(dat$y ~ grp))
+    eps <- kruskal_epsilon_sq(out$statistic, nrow(dat), nlevels(grp))
+    return(tibble::tibble(test = "Kruskal-Wallis", n = nrow(dat), effect_label = "epsilon_sq", effect_value = eps, p_value = out$p.value))
+  }
+  if (x_num && !y_num) {
+    grp <- as.factor(dat$y)
+    if (nlevels(grp) < 2) return(tibble::tibble(test = "constant", n = nrow(dat), effect_label = NA_character_, effect_value = NA_real_, p_value = NA_real_))
+    out <- suppressWarnings(stats::kruskal.test(dat$x ~ grp))
+    eps <- kruskal_epsilon_sq(out$statistic, nrow(dat), nlevels(grp))
+    return(tibble::tibble(test = "Kruskal-Wallis", n = nrow(dat), effect_label = "epsilon_sq", effect_value = eps, p_value = out$p.value))
+  }
+  tab <- table(as.factor(dat$x), as.factor(dat$y))
+  if (any(dim(tab) < 2)) return(tibble::tibble(test = "constant", n = nrow(dat), effect_label = NA_character_, effect_value = NA_real_, p_value = NA_real_))
+  out <- suppressWarnings(stats::fisher.test(tab))
+  tibble::tibble(test = "Fisher exact", n = nrow(dat), effect_label = "cramers_v", effect_value = cramers_v(dat$x, dat$y), p_value = out$p.value)
+}
+
+metabolite_pc_scores <- function(visit_name, n_pc = 5) {
+  tse <- experiments(mae)[[visit_name]]
+  mat <- t(assay(tse, "mbo"))
+  keep <- apply(mat, 2, function(x) sum(is.finite(x)) >= 10 && stats::sd(x, na.rm = TRUE) > 0)
+  mat <- mat[, keep, drop = FALSE]
+  mat <- apply(mat, 2, function(x) {
+    x[is.na(x)] <- stats::median(x, na.rm = TRUE)
+    x
+  })
+  pcs <- stats::prcomp(scale(mat), center = FALSE, scale. = FALSE)$x[, seq_len(min(n_pc, ncol(mat))), drop = FALSE]
+  cd <- as.data.frame(colData(tse), stringsAsFactors = FALSE)
+  cd$sample_id <- rownames(cd)
+  out <- cbind(cd, as.data.frame(pcs))
+  names(out)[(ncol(out) - ncol(pcs) + 1):ncol(out)] <- paste0("PC", seq_len(ncol(pcs)))
+  out
+}
+
+cramers_v <- function(x, y) {
+  keep <- !is.na(x) & !is.na(y)
+  x <- as.factor(as_analysis_vector(x)[keep])
+  y <- as.factor(as_analysis_vector(y)[keep])
+  if (length(x) == 0 || nlevels(x) < 2L || nlevels(y) < 2L) return(NA_real_)
+  tab <- table(x, y)
+  chi <- suppressWarnings(stats::chisq.test(tab, correct = FALSE))
+  n <- sum(tab)
+  denom <- n * (min(dim(tab)) - 1)
+  if (!is.finite(denom) || denom <= 0) return(NA_real_)
+  sqrt(as.numeric(chi$statistic) / denom)
+}
+
+is_continuous_var <- function(x) {
+  if (inherits(x, "haven_labelled") || is.factor(x) || is.character(x) || is.logical(x)) return(FALSE)
+  is.numeric(x) && length(unique(x[is.finite(x)])) >= 6
+}
+
+pairwise_collinearity <- function(df, vars, threshold = 0.70) {
+  vars <- vars[vars %in% names(df)]
+  vars <- vars[vapply(vars, function(v) sum(!is.na(df[[v]])) >= 10, logical(1))]
+  if (length(vars) < 2L) return(tibble::tibble())
+  bind_rows(lapply(utils::combn(vars, 2, simplify = FALSE), function(pair) {
+    x <- df[[pair[[1]]]]
+    y <- df[[pair[[2]]]]
+    res <- covariate_test(x, y)
+    if (nrow(res) == 0 || is.na(res$effect_value)) return(NULL)
+    tibble::tibble(
+      covariate_1 = pair[[1]],
+      covariate_2 = pair[[2]],
+      metric = res$effect_label,
+      value = res$effect_value,
+      flagged = is.finite(res$effect_value) && abs(res$effect_value) >= threshold
+    )
+  })) %>%
+    filter(is.finite(value)) %>%
+    arrange(desc(abs(value)))
+}
+
+
+prepare_model_matrix_data <- function(dat, vars) {
+  vars <- vars[vars %in% names(dat)]
+  out <- dat[, vars, drop = FALSE]
+  for (nm in names(out)) {
+    if (inherits(out[[nm]], "haven_labelled")) {
+      out[[nm]] <- haven::as_factor(out[[nm]])
+    }
+    if (is.character(out[[nm]]) || is.factor(out[[nm]]) || is.logical(out[[nm]])) {
+      out[[nm]] <- factor(out[[nm]])
+    } else {
+      out[[nm]] <- suppressWarnings(as.numeric(out[[nm]]))
+    }
+  }
+  out
+}
+
+safe_vif_by_column <- function(X) {
+  if (!is.matrix(X) || nrow(X) < 10 || ncol(X) < 2) return(setNames(rep(NA_real_, ncol(X)), colnames(X)))
+  keep <- apply(X, 2, function(col) stats::sd(col, na.rm = TRUE) > 0)
+  out <- setNames(rep(NA_real_, ncol(X)), colnames(X))
+  X <- X[, keep, drop = FALSE]
+  if (ncol(X) < 2) return(out)
+  vifs <- vapply(seq_len(ncol(X)), function(j) {
+    y <- X[, j]
+    Z <- X[, -j, drop = FALSE]
+    r2 <- tryCatch(summary(stats::lm(y ~ Z))$r.squared, error = function(e) NA_real_)
+    if (!is.finite(r2) || r2 >= 1) return(Inf)
+    1 / (1 - r2)
+  }, numeric(1))
+  out[colnames(X)] <- vifs
+  out
+}
+
+model_matrix_collinearity <- function(visit_name, covars, fasting_var) {
+  dat <- as.data.frame(colData(experiments(mae)[[visit_name]]), stringsAsFactors = FALSE)
+  vars <- c(covars, fasting_var)
+  dd <- prepare_model_matrix_data(dat, vars)
+  dd <- dd[stats::complete.cases(dd), , drop = FALSE]
+  empty_row <- function(term = "all_terms") {
+    tibble::tibble(
+      exposure_panel = visit_name,
+      term = term,
+      n_fits = 0L,
+      median_vif = NA_real_,
+      max_vif = NA_real_,
+      vif_gt_5 = 0L,
+      vif_gt_10 = 0L,
+      rank_deficient_fits = NA_integer_
+    )
+  }
+  if (nrow(dd) < 10 || ncol(dd) < 2) return(empty_row())
+
+  form <- stats::reformulate(names(dd))
+  X <- tryCatch(stats::model.matrix(form, data = dd), error = function(e) NULL)
+  if (is.null(X)) return(empty_row())
+
+  rank_deficient <- qr(X)$rank < ncol(X)
+  assign_idx <- attr(X, "assign")
+  term_labels <- attr(stats::terms(form), "term.labels")
+  keep <- colnames(X) != "(Intercept)"
+  X_no_intercept <- X[, keep, drop = FALSE]
+  assign_no_intercept <- assign_idx[keep]
+  vifs <- safe_vif_by_column(X_no_intercept)
+
+  bind_rows(lapply(seq_along(term_labels), function(term_idx) {
+    cols <- names(vifs)[assign_no_intercept == term_idx]
+    term_vifs <- vifs[cols]
+    term_vifs <- term_vifs[!is.na(term_vifs)]
+    term_max <- if (length(term_vifs) == 0) NA_real_ else suppressWarnings(max(term_vifs, na.rm = TRUE))
+    tibble::tibble(
+      exposure_panel = visit_name,
+      term = term_labels[[term_idx]],
+      n_fits = 1L,
+      median_vif = term_max,
+      max_vif = term_max,
+      vif_gt_5 = as.integer((is.finite(term_max) && term_max > 5) || is.infinite(term_max)),
+      vif_gt_10 = as.integer((is.finite(term_max) && term_max > 10) || is.infinite(term_max)),
+      rank_deficient_fits = as.integer(rank_deficient)
+    )
+  }))
+}
+
+missingness_by_panel <- function(panel_specs, vars) {
+  bind_rows(lapply(seq_len(nrow(panel_specs)), function(i) {
+    panel <- panel_specs$exposure_panel[[i]]
+    dat <- as.data.frame(colData(experiments(mae)[[panel]]), stringsAsFactors = FALSE)
+    bind_rows(lapply(vars, function(v) {
+      out <- summarize_covariate(v, dat)
+      mutate(out, exposure_panel = panel, .before = 1)
+    }))
+  }))
+}
+
+simple_missingness_by_panel <- function(panel_specs, vars) {
+  missingness_by_panel(panel_specs, vars) %>%
+    transmute(
+      exposure_panel,
+      covariate = Variable,
+      available_n = Available_N,
+      missing_n = Missing_N,
+      missing_pct = Missing_Pct
+    )
+}
+
+panel_collinearity_flags <- function(collinearity_tbl, vars) {
+  panels <- sort(unique(collinearity_tbl$exposure_panel))
+  grid <- tidyr::expand_grid(exposure_panel = panels, covariate = vars)
+  flags <- bind_rows(lapply(vars, function(v) {
+    collinearity_tbl %>%
+      filter(covariate_1 == v | covariate_2 == v) %>%
+      group_by(exposure_panel) %>%
+      summarize(
+        covariate = v,
+        collinearity_flag = any(flagged, na.rm = TRUE),
+        flagged_pairs = sum(flagged, na.rm = TRUE),
+        max_pair_metric = ifelse(all(is.na(value)), NA_real_, max(abs(value), na.rm = TRUE)),
+        strongest_pair = ifelse(n() == 0, NA_character_, paste(covariate_1[which.max(abs(value))], covariate_2[which.max(abs(value))], sep = " vs ")),
+        .groups = "drop"
+      )
+  }))
+  grid %>%
+    left_join(flags, by = c("exposure_panel", "covariate")) %>%
+    mutate(
+      collinearity_flag = ifelse(is.na(collinearity_flag), FALSE, collinearity_flag),
+      flagged_pairs = ifelse(is.na(flagged_pairs), 0L, flagged_pairs)
+    )
+}
+
+prepare_lm_data <- function(dat, vars) {
+  vars <- vars[vars %in% names(dat)]
+  out <- dat[, vars, drop = FALSE]
+  for (nm in names(out)) {
+    out[[nm]] <- as_analysis_vector(out[[nm]])
+    if (is.character(out[[nm]]) || is.factor(out[[nm]]) || is.logical(out[[nm]])) {
+      out[[nm]] <- factor(out[[nm]])
+    } else {
+      out[[nm]] <- suppressWarnings(as.numeric(out[[nm]]))
+    }
+  }
+  out
+}
+
+fit_pc_beta <- function(dat, outcome, pc, vars) {
+  vars <- unique(c(outcome, pc, vars))
+  dd <- prepare_lm_data(dat, vars)
+  dd <- dd[stats::complete.cases(dd), , drop = FALSE]
+  if (nrow(dd) < 20 || !outcome %in% names(dd) || !pc %in% names(dd)) return(NA_real_)
+  fit <- tryCatch(stats::lm(stats::reformulate(setdiff(names(dd), outcome), response = outcome), data = dd), error = function(e) NULL)
+  if (is.null(fit) || !pc %in% names(stats::coef(fit))) return(NA_real_)
+  unname(stats::coef(fit)[[pc]])
+}
+
+estimate_change_screen <- function(panel, dat, covars, fasting_var, outcomes, pcs, change_threshold = 10) {
+  bind_rows(lapply(covars, function(covar) {
+    if (covar %in% core_vars) {
+      return(tibble::tibble(exposure_panel = panel, covariate = covar, beta_change_tests = 0L, max_beta_change_pct = NA_real_, beta_change_driver = NA_character_, beta_change_signal = FALSE))
+    }
+    tests <- bind_rows(lapply(outcomes, function(outcome) {
+      bind_rows(lapply(pcs, function(pc) {
+        if (!all(c(outcome, pc, covar) %in% names(dat))) {
+          return(tibble::tibble(outcome = outcome, pc = pc, pct_change = NA_real_))
+        }
+        base_vars <- setdiff(unique(c(core_vars, fasting_var)), covar)
+        beta_base <- fit_pc_beta(dat, outcome, pc, base_vars)
+        beta_plus <- fit_pc_beta(dat, outcome, pc, unique(c(base_vars, covar)))
+        pct_change <- if (!is.finite(beta_base) || !is.finite(beta_plus) || abs(beta_base) < 1e-8) NA_real_ else abs((beta_plus - beta_base) / beta_base) * 100
+        tibble::tibble(outcome = outcome, pc = pc, pct_change = pct_change)
+      }))
+    })) %>% filter(is.finite(pct_change))
+    if (nrow(tests) == 0) {
+      return(tibble::tibble(exposure_panel = panel, covariate = covar, beta_change_tests = 0L, max_beta_change_pct = NA_real_, beta_change_driver = NA_character_, beta_change_signal = FALSE))
+    }
+    best <- tests %>% arrange(desc(pct_change)) %>% slice(1)
+    tibble::tibble(
+      exposure_panel = panel,
+      covariate = covar,
+      beta_change_tests = nrow(tests),
+      max_beta_change_pct = best$pct_change[[1]],
+      beta_change_driver = paste(best$pc[[1]], best$outcome[[1]], sep = " / "),
+      beta_change_signal = best$pct_change[[1]] >= change_threshold
+    )
+  }))
+}
+
+build_variable_key <- function(df) {
+  nm <- names(df)
+  make_friendly <- function(x) {
+    y <- gsub("([a-z])([A-Z])", "\\1 \\2", x)
+    y <- gsub("([A-Za-z])([0-9])", "\\1 \\2", y)
+    y <- gsub("([0-9])([A-Za-z])", "\\1 \\2", y)
+    y <- gsub("[._]+", " ", y)
+    y <- gsub("\\s+", " ", trimws(y))
+    tools::toTitleCase(tolower(y))
+  }
+  var_label <- vapply(nm, function(v) {
+    lb <- attr(df[[v]], "label")
+    if (is.null(lb) || is.na(lb) || lb == "") "" else as.character(lb)
+  }, character(1))
+  value_levels <- vapply(nm, function(v) {
+    labs <- attr(df[[v]], "labels")
+    if (is.null(labs) || length(labs) == 0) return("")
+    paste(sprintf("%s = %s", names(labs), unname(labs)), collapse = "; ")
+  }, character(1))
+  tibble::tibble(
+    Friendly_Name = vapply(nm, make_friendly, character(1)),
+    Variable_Code = nm,
+    Variable_Label = var_label,
+    Value_Levels = value_levels
+  )
+}
+
+```
+
+## Analysis question
+
+Association between serum NMR metabolites at 6 months, 1 year, and 2 years and 2-year Bayley-III/HINE neurodevelopment outcomes.
+
+## Covariate specification
+
+### Covariate selection framework
+
+1. Core covariates are retained in primary models.
+2. Visit-specific fasting time is retained as a measurement-condition covariate.
+3. Sensitivity candidates are screened for missingness, collinearity, metabolite-PC association, and outcome association.
+4. Screening supports sensitivity-model decisions; it does not remove pre-specified core covariates.
+
+```{mermaid}
+graph LR
+    A[Covariate Candidate] --> B{In Core DAG?}
+    B -- Yes --> C[Status: keep_core]
+    B -- No --> D{In Sensitivity Block?}
+    D -- Yes --> E{Screening Signal?<br>p < 0.20 OR Beta Change > 10%}
+    E -- Yes --> F[Status: keep_sensitivity]
+    E -- No --> G[Status: consider_drop]
+    D -- No --> G
+```
+
+### Symbol key
+
+- $E$: metabolite exposure
+- $Y$: neurodevelopment outcome
+- $C_k$: covariate $k$
+- $F_t$: visit-specific fasting time
+- $i$: child index
+- $t$: exposure visit
+
+### Causal roles
+
+- `Confounder`: common cause of `E` and `Y`; adjust in primary models.
+- `Measurement condition`: affects measured metabolite concentration; adjust with the exposure visit.
+- `Sensitivity candidate`: plausible covariate reviewed outside the primary core block.
+
+### DAG
+
+```{r}
+#| label: covariate-diagnostics-dag
+if (!has_dagitty) {
+  cat("Package 'dagitty' not installed; DAG plot and adjustment set are skipped.")
+} else {
+  dag_spec <- dagitty::dagitty(" 
+  dag {
+    E [exposure]
+    Y [outcome]
+    Mage
+    MBMI
+    SES
+    Parity
+    GDM
+    Smoking
+    ChildSex
+    GestAge
+    BirthWeight
+    Breastfeeding
+    Fasting
+ 
+    Mage -> E
+    Mage -> Y
+    MBMI -> E
+    MBMI -> Y
+    SES -> E
+    SES -> Y
+    Parity -> E
+    Parity -> Y
+    GDM -> E
+    GDM -> Y
+    Smoking -> E
+    Smoking -> Y
+    ChildSex -> E
+    ChildSex -> Y
+    GestAge -> E
+    GestAge -> Y
+    BirthWeight -> E
+    BirthWeight -> Y
+    Breastfeeding -> E
+    Breastfeeding -> Y
+    Fasting -> E
+    E -> Y
+  }
+  ")
+
+  plot(dag_spec)
+  dagitty::adjustmentSets(dag_spec, exposure = "E", outcome = "Y")
+}
+```
+
+### Normality and skewness diagnostics
+
+The table below presents the skewness values computed for the 8 continuous neurocognitive outcomes (measured at 2 years) and 6 continuous clinical covariates across the matched analysis samples for Visit 4 (6 months), Visit 5 (1 year), and Visit 6 (2 years).
+
+```{r}
+#| label: normality-skewness-table
+#| message: false
+#| warning: false
+
+# To evaluate whether the continuous clinical characteristics, covariate candidates, and neurocognitive outcomes 
+# are appropriate for linear regression modeling, we assess their distributions for normality and skewness.
+# 
+# A standard guideline is that skewness values between -1.0 and +1.0 indicate acceptable symmetry for linear 
+# regression models without transformation, while values outside this range (particularly absolute skewness > 1.0) 
+# suggest substantial skewness that may require alternative modeling approaches (e.g., dichotomization or non-linear models).
+
+# Custom skewness calculation function to avoid external package dependencies
+calc_skew = function(x) {
+  x_clean = x[is.finite(x)]
+  if (length(x_clean) < 3) return(NA_real_)
+  m3 = mean((x_clean - mean(x_clean))^3)
+  m2 = mean((x_clean - mean(x_clean))^2)
+  m3 / (m2^1.5)
+}
+
+continuous_outcomes_list <- c(
+  "CCognition_indexpoints6",
+  "CLanguage_indexpoints6",
+  "CExpressivelanguage_standardpoints6",
+  "CReceptivelanguage_standardpoints6",
+  "CMotor_indexpoints6",
+  "CFinemotor_standardpoints6",
+  "CGrossmotor_standardpoints6",
+  "Hammersmith6"
+)
+
+continuous_covariates_list <- c(
+  "CBW",
+  "MAge1",
+  "MprepBMI",
+  "Bfdurationm",
+  "CAgePsychologist6",
+  "CAgePhysiotherapist6"
+)
+
+# Outcomes labels
+friendly_labels <- c(
+  CCognition_indexpoints6 = "Bayley composite cognitive",
+  CLanguage_indexpoints6 = "Bayley composite language",
+  CExpressivelanguage_standardpoints6 = "Bayley expressive language",
+  CReceptivelanguage_standardpoints6 = "Bayley receptive language",
+  CMotor_indexpoints6 = "Bayley composite motor",
+  CFinemotor_standardpoints6 = "Bayley fine motor",
+  CGrossmotor_standardpoints6 = "Bayley gross motor",
+  Hammersmith6 = "HINE global score",
+  CBW = "Birth weight",
+  MAge1 = "Maternal age",
+  MprepBMI = "Pre-pregnancy BMI",
+  Bfdurationm = "Breastfeeding duration",
+  CAgePsychologist6 = "Age at psychologist assessment",
+  CAgePhysiotherapist6 = "Age at physiotherapist assessment"
+)
+
+get_skewness_vector <- function(visit_name, vars) {
+  tse <- experiments(mae)[[visit_name]]
+  df_visit <- as.data.frame(colData(tse))
+  
+  # Filter to matched analysis sample (having at least one valid primary neurocognitive outcome)
+  primary_outcomes <- c("CCognition_indexpoints6", "CLanguage_indexpoints6", "CMotor_indexpoints6", "Hammersmith6")
+  has_outcome <- rowSums(!is.na(df_visit[, intersect(primary_outcomes, names(df_visit)), drop = FALSE])) > 0
+  df_visit <- df_visit[has_outcome, , drop = FALSE]
+  
+  vapply(vars, function(v) {
+    if (!v %in% names(df_visit)) return(NA_real_)
+    calc_skew(df_visit[[v]])
+  }, numeric(1))
+}
+
+all_vars <- c(continuous_outcomes_list, continuous_covariates_list)
+
+skew_v4 <- get_skewness_vector("visit_4", all_vars)
+skew_v5 <- get_skewness_vector("visit_5", all_vars)
+skew_v6 <- get_skewness_vector("visit_6", all_vars)
+
+skewness_tbl <- tibble::tibble(
+  Variable = all_vars,
+  Label = friendly_labels[all_vars],
+  Type = ifelse(all_vars %in% continuous_outcomes_list, "Outcome", "Covariate"),
+  `Visit 4 (6mo) Skewness` = skew_v4,
+  `Visit 5 (1y) Skewness` = skew_v5,
+  `Visit 6 (2y) Skewness` = skew_v6,
+  Interpretation = dplyr::case_when(
+    abs(skew_v6) < 0.5 ~ "Symmetric",
+    abs(skew_v6) >= 0.5 & abs(skew_v6) < 1.0 ~ "Moderate skew",
+    abs(skew_v6) >= 1.0 ~ "Highly skewed (Review)",
+    TRUE ~ "-"
+  )
+)
+
+make_table(skewness_tbl, caption = "Normality assessment: Skewness of continuous variables in matched cohorts", table_mode = "wide")
+```
+
+::: {.callout-tip}
+#### Interpretation of Skewness Results
+* **Bayley-III Outcomes**: All 7 continuous Bayley outcomes show absolute skewness values well below $1.0$ (ranging from $-0.10$ to $+0.69$ across all visits), confirming they are appropriate for linear regression.
+* **HINE Global Score**: `Hammersmith6` shows substantial left skew (skewness $\approx -1.7$ to $-1.8$), arising from a ceiling effect where most children score at or near the clinical maximum. This confirms the protocol decision to model `HINE_optimal` as a binary outcome using logistic regression rather than analyzing the continuous `Hammersmith6` score in linear regression.
+* **Continuous Covariates**: Birth weight (`CBW`), maternal age (`MAge1`), breastfeeding duration (`Bfdurationm`), and assessment ages (`CAgePsychologist6`, `CAgePhysiotherapist6`) are approximately symmetric (absolute skewness $< 0.70$). Maternal pre-pregnancy BMI (`MprepBMI`) shows a mild right skew ($\approx 1.02$ to $1.13$), which is clinically expected for BMI and remains acceptable.
+:::
+
+To visually inspect these distributions, the figure below shows the density distributions and histograms for all continuous outcomes and covariates in the matched cohort (using the Visit 6 analytical sample, $N = 239$).
+
+```{r}
+#| label: normality-plots
+#| classes: fig-wide
+#| message: false
+#| warning: false
+#| fig-width: 12
+#| fig-height: 10
+#| fig-dpi: 300
+
+library(ggplot2)
+
+v6_tse <- experiments(mae)[["visit_6"]]
+v6_df <- as.data.frame(colData(v6_tse))
+
+# Pivot longer for ggplot grid
+plot_df <- v6_df %>%
+  select(dplyr::all_of(all_vars)) %>%
+  tidyr::pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  dplyr::filter(is.finite(Value)) %>%
+  dplyr::mutate(
+    Friendly_Label = friendly_labels[Variable],
+    Type = ifelse(Variable %in% continuous_outcomes_list, "Outcomes", "Covariates")
+  )
+
+ggplot(plot_df, aes(x = Value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, fill = "#5b9bd5", color = "white", alpha = 0.7) +
+  geom_density(color = "#1f4e78", linewidth = 0.8) +
+  facet_wrap(~ Friendly_Label, scales = "free", ncol = 4) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.background = element_rect(fill = "#f2f2f2", color = NA),
+    strip.text = element_text(face = "bold", size = 9, color = "#333333"),
+    panel.spacing = unit(1, "lines"),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Distribution of Continuous Outcomes and Covariates (Visit 6 Matched Cohort, N = 239)",
+    x = "Variable Value",
+    y = "Density"
+  )
+```
+
+### Analysis subsets
+
+Counts are calculated before metabolite-specific missingness is applied.
+
+```{r}
+#| label: planned-complete-case-table
+
+complete_case_count <- function(visit_name, fasting_var, outcome_var) {
+  dat <- as.data.frame(colData(experiments(mae)[[visit_name]]))
+  vars <- c(outcome_var, core_vars, fasting_var)
+  vars <- vars[vars %in% names(dat)]
+  sum(stats::complete.cases(dat[, vars, drop = FALSE]))
+}
+
+availability_tbl <- tidyr::expand_grid(
+  exposure_panel = c("visit_4", "visit_5", "visit_6"),
+  outcome = continuous_outcomes
+) %>%
+  mutate(
+    fasting_var = dplyr::case_when(
+      exposure_panel == "visit_4" ~ "CFastingHoursBloodSample4",
+      exposure_panel == "visit_5" ~ "CFastingHoursBloodSample5",
+      exposure_panel == "visit_6" ~ "CFastingHoursBloodSample6"
+    ),
+    planned_complete_case_n = mapply(complete_case_count, exposure_panel, fasting_var, outcome)
+  ) %>%
+  select(exposure_panel, outcome, fasting_var, planned_complete_case_n)
+
+hine_tbl <- tibble::tibble(
+  exposure_panel = c("visit_4", "visit_5", "visit_6"),
+  outcome = "HINE_optimal",
+  fasting_var = c("CFastingHoursBloodSample4", "CFastingHoursBloodSample5", "CFastingHoursBloodSample6"),
+  planned_complete_case_n = mapply(complete_case_count, exposure_panel, fasting_var, outcome)
+)
+
+make_table(
+  bind_rows(availability_tbl, hine_tbl),
+  caption = "Planned complete-case availability before metabolite-specific missingness",
+  table_mode = "wide"
+)
+```
+
+### Covariate blocks
+
+```{r}
+#| label: covariate-diagnostics-05
+core_covars_v6 <- core_vars
+core_covars_v7_lean <- core_vars
+baseline_covars_q3 <- core_vars
+sensitivity_covars_q3 <- c("CSGA", "CMacrosomy")
+mixed_covars_core <- core_vars
+sensitivity_covars <- sens_vars
+
+list(
+  core = core_vars,
+  measurement_condition = c("CFastingHoursBloodSample4", "CFastingHoursBloodSample5", "CFastingHoursBloodSample6"),
+  sensitivity_candidates = sens_vars
+)
+```
+
+### Collinearity
+
+::: {.callout-tip}
+#### Understanding Collinearity & VIF
+* **Pairwise Screen**: A Spearman correlation, Epsilon-squared, or Cramer's V at or above 0.70 highlights redundant covariate pairs. In such cases, standard errors of the exposure effect estimate may inflate if both are kept.
+* **Model-Matrix VIF**: Variance Inflation Factors (VIF) summarize design-wide multicollinearity. Values below 5 indicate no concern. Values above 5, or rank deficiency indicating exact aliasing, require reviewing the models for redundant parameters or category sparseness.
+:::
+
+Collinearity is checked before interpreting expanded adjustment sets:
+
+- Numeric covariate pairs are screened with Spearman correlations within each visit-specific analytic panel.
+- Categorical covariate pairs are screened with Cramer's V.
+- Mixed continuous-categorical pairs are screened with Epsilon-squared from Kruskal-Wallis tests.
+- Pairs with absolute values at or above 0.70 are flagged for review.
+
+
+```{r}
+#| label: purposeful-collinearity-screen
+
+panel_specs <- tibble::tibble(
+  exposure_panel = c("visit_4", "visit_5", "visit_6"),
+  fasting_var = c("CFastingHoursBloodSample4", "CFastingHoursBloodSample5", "CFastingHoursBloodSample6")
+)
+
+collinearity_tbl <- bind_rows(lapply(seq_len(nrow(panel_specs)), function(i) {
+  panel <- panel_specs$exposure_panel[[i]]
+  dat <- as.data.frame(colData(experiments(mae)[[panel]]), stringsAsFactors = FALSE)
+  pairwise_collinearity(dat, c(all_candidate_covars, panel_specs$fasting_var[[i]])) %>%
+    mutate(exposure_panel = panel, .before = 1)
+})) %>%
+  mutate(value = round(value, 3)) %>%
+  arrange(exposure_panel, desc(abs(value)))
+
+make_table(collinearity_tbl, caption = "Visit-specific covariate pair collinearity screen", table_mode = "wide")
+```
+
+### Model-matrix collinearity
+
+Model-matrix collinearity is checked before interpreting expanded adjustment sets. The fixed-effect design matrix is evaluated and the maximum design-column VIF is reported within each term; rank-deficient models indicate exact collinearity or aliasing.
+
+Each row summarizes one model term within one analysis panel. `N fits` is the number of exposure-specific design matrices checked. `Median VIF` and `Max VIF` summarize the term-level VIF across those fits. `VIF > 5` and `VIF > 10` are counts of fits above those thresholds. `Rank-deficient fits` is the count of design matrices with exact rank deficiency.
+
+Interpretation: VIF values below 5 indicate no material collinearity concern by the applied threshold. Terms with VIF above 5, especially above 10, or any rank-deficient fits should be reviewed for redundant covariates, sparse categories, or exact aliasing.
+
+```{r}
+#| label: purposeful-model-matrix-collinearity
+
+design_collinearity <- bind_rows(lapply(seq_len(nrow(panel_specs)), function(i) {
+  model_matrix_collinearity(
+    panel_specs$exposure_panel[[i]],
+    all_candidate_covars,
+    panel_specs$fasting_var[[i]]
+  )
+})) %>%
+  mutate(
+    median_vif = ifelse(is.finite(median_vif), round(median_vif, 2), median_vif),
+    max_vif = ifelse(is.finite(max_vif), round(max_vif, 2), max_vif)
+  ) %>%
+  rename(
+    `Exposure panel` = exposure_panel,
+    Term = term,
+    `N fits` = n_fits,
+    `Median VIF` = median_vif,
+    `Max VIF` = max_vif,
+    `VIF > 5` = vif_gt_5,
+    `VIF > 10` = vif_gt_10,
+    `Rank-deficient fits` = rank_deficient_fits
+  )
+
+make_table(design_collinearity, caption = "Model-matrix term collinearity summary", table_mode = "wide")
+```
+
+### Exposure-covariate screening
+
+::: {.callout-note}
+#### Purposeful Selection Screening
+Purposeful selection screening evaluates empirical associations between candidate covariates and either the exposure panels or neurodevelopment outcomes. This empirical screening supports sensitivity model adjustment choices but does not establish confounding on its own.
+* A liberal significance threshold of $p < 0.20$ is used during screening to ensure that potential confounders with weak univariate associations are not prematurely omitted.
+* Small $q$-values (Benjamini-Hochberg adjusted) indicate associations that survive multiple-testing adjustments across the candidate block.
+:::
+
+Metabolite principal components (PCs) summarize broad visit-specific metabolite variation for screening. Numeric covariates are screened against each PC using Spearman correlations, while categorical covariates are screened using Kruskal-Wallis tests.
+
+The table summarizes screening tests by covariate and exposure visit while retaining the strongest driver. `Best PC` identifies the metabolite PC with the smallest raw p-value for that covariate-panel row. `Effect` reports Spearman rho for numeric-numeric screens, epsilon-squared for Kruskal-Wallis screens, and Cramer's V for categorical-categorical screens.
+
+```{r}
+#| label: purposeful-metabolite-screen
+
+pc_panels <- list(
+  visit_4 = metabolite_pc_scores("visit_4"),
+  visit_5 = metabolite_pc_scores("visit_5"),
+  visit_6 = metabolite_pc_scores("visit_6")
+)
+
+pc_screen <- bind_rows(lapply(names(pc_panels), function(panel) {
+  dat <- pc_panels[[panel]]
+  pcs <- grep("^PC[0-9]+$", names(dat), value = TRUE)
+  bind_rows(lapply(all_candidate_covars, function(covar) {
+    bind_rows(lapply(pcs, function(pc) {
+      if (!covar %in% names(dat)) return(tibble::tibble(exposure_panel = panel, covariate = covar, pc = pc, test = "missing", n = 0L, p_value = NA_real_))
+      covariate_test(dat[[covar]], dat[[pc]]) %>% mutate(exposure_panel = panel, covariate = covar, pc = pc, .before = 1)
+    }))
+  }))
+})) %>%
+  group_by(exposure_panel) %>%
+  mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  ungroup()
+
+pc_summary <- pc_screen %>%
+  arrange(exposure_panel, covariate, is.na(p_value), p_value) %>%
+  group_by(exposure_panel, covariate) %>%
+  summarize(
+    tests = sum(!is.na(p_value)),
+    p_lt_0_20 = sum(p_value < 0.20, na.rm = TRUE),
+    q_lt_0_10 = sum(q_value < 0.10, na.rm = TRUE),
+    best_pc = first(pc),
+    best_test = first(test),
+    best_n = first(n),
+    effect_label = first(effect_label),
+    effect_value = first(effect_value),
+    min_p = first(p_value),
+    min_q = first(q_value),
+    exposure_signal = any(p_value < 0.20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c(effect_value, min_p, min_q), ~ round(.x, 3))) %>%
+  arrange(exposure_panel, min_p, covariate)
+
+make_table(
+  pc_summary %>%
+    rename(
+      `Exposure panel` = exposure_panel,
+      Covariate = covariate,
+      Tests = tests,
+      `p < 0.20` = p_lt_0_20,
+      `q < 0.10` = q_lt_0_10,
+      `Best PC` = best_pc,
+      `Best test` = best_test,
+      N = best_n,
+      `Effect metric` = effect_label,
+      Effect = effect_value,
+      `Min p` = min_p,
+      `Min q` = min_q,
+      `Exposure signal` = exposure_signal
+    ),
+  caption = "Covariate association with metabolite PC structure",
+  table_mode = "wide"
+)
+```
+
+### Covariate-outcome screening
+
+Candidate covariates are screened against the 2-year neurocognitive outcomes (`CCognition_indexpoints6`, `CLanguage_indexpoints6`, `CExpressivelanguage_standardpoints6`, `CReceptivelanguage_standardpoints6`, `CMotor_indexpoints6`, `CFinemotor_standardpoints6`, `CGrossmotor_standardpoints6`, and `Hammersmith6`/`HINE_optimal`).
+
+Continuous outcomes are screened using Spearman correlation for continuous covariates and Kruskal-Wallis tests for categorical covariates. The binary HINE optimality outcome is screened using Kruskal-Wallis for continuous covariates and Fisher's exact tests for categorical covariates.
+
+The table summarizes the outcome-side screen by covariate while keeping the outcome that drove the smallest raw p-value. `Effect` uses the same metric convention as the exposure-side screen.
+
+```{r}
+#| label: purposeful-outcome-screen
+
+v6_clinical <- as.data.frame(colData(experiments(mae)[["visit_6"]]), stringsAsFactors = FALSE)
+outcome_screen <- bind_rows(lapply(all_candidate_covars, function(covar) {
+  bind_rows(lapply(c(continuous_outcomes, "HINE_optimal"), function(outcome) {
+    if (!covar %in% names(v6_clinical) || !outcome %in% names(v6_clinical)) {
+      return(tibble::tibble(covariate = covar, outcome = outcome, test = "missing", n = 0L, p_value = NA_real_))
+    }
+    covariate_test(v6_clinical[[covar]], v6_clinical[[outcome]]) %>% mutate(covariate = covar, outcome = outcome, .before = 1)
+  }))
+})) %>%
+  mutate(q_value = p.adjust(p_value, method = "BH"))
+
+outcome_summary <- outcome_screen %>%
+  arrange(covariate, is.na(p_value), p_value) %>%
+  group_by(covariate) %>%
+  summarize(
+    tests = sum(!is.na(p_value)),
+    p_lt_0_20 = sum(p_value < 0.20, na.rm = TRUE),
+    q_lt_0_10 = sum(q_value < 0.10, na.rm = TRUE),
+    best_outcome = first(outcome),
+    best_test = first(test),
+    best_n = first(n),
+    effect_label = first(effect_label),
+    effect_value = first(effect_value),
+    min_p = first(p_value),
+    min_q = first(q_value),
+    outcome_signal = any(p_value < 0.20, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c(effect_value, min_p, min_q), ~ round(.x, 3))) %>%
+  arrange(min_p, covariate)
+
+# Add custom labels for all outcomes to friendly_labels if not present
+friendly_labels_all <- c(
+  friendly_labels,
+  HINE_optimal = "HINE optimal/suboptimal (preterm excluded)"
+)
+
+make_table(
+  outcome_screen %>%
+    mutate(
+      outcome_lbl = dplyr::recode(outcome, !!!friendly_labels_all),
+      across(c(effect_value, p_value, q_value), ~ round(.x, 3))
+    ) %>%
+    select(
+      Covariate = covariate,
+      Outcome = outcome_lbl,
+      `Test type` = test,
+      N = n,
+      `Effect metric` = effect_label,
+      Effect = effect_value,
+      `p-value` = p_value,
+      `FDR q-value` = q_value
+    ) %>%
+    arrange(Covariate, `p-value`),
+  caption = "Covariate associations with all continuous and binary 2-year neurocognitive outcomes",
+  table_mode = "wide"
+)
+```
+
+### Combined covariate screening summary
+
+This table combines the exposure-side, outcome-side, and collinearity screens at the exposure-panel level. It is the compact bridge between diagnostics and the decision-support table.
+
+```{r}
+#| label: purposeful-combined-screening
+
+collinearity_by_covar <- panel_collinearity_flags(collinearity_tbl, all_candidate_covars)
+
+combined_screen <- pc_summary %>%
+  left_join(
+    outcome_summary %>%
+      select(covariate, outcome_tests = tests, outcome_p_lt_0_20 = p_lt_0_20, outcome_q_lt_0_10 = q_lt_0_10, best_outcome, outcome_min_p = min_p, outcome_min_q = min_q, outcome_signal),
+    by = "covariate"
+  ) %>%
+  left_join(collinearity_by_covar, by = c("exposure_panel", "covariate")) %>%
+  mutate(
+    collinearity_flag = ifelse(is.na(collinearity_flag), FALSE, collinearity_flag),
+    flagged_pairs = ifelse(is.na(flagged_pairs), 0L, flagged_pairs)
+  ) %>%
+  select(
+    exposure_panel, covariate,
+    exposure_tests = tests, exposure_p_lt_0_20 = p_lt_0_20, exposure_q_lt_0_10 = q_lt_0_10,
+    best_pc, min_p, min_q, exposure_signal,
+    outcome_tests, outcome_p_lt_0_20, outcome_q_lt_0_10, best_outcome, outcome_min_p, outcome_min_q, outcome_signal,
+    collinearity_flag, flagged_pairs, max_pair_metric, strongest_pair
+  )
+
+make_table(
+  combined_screen %>%
+    rename(
+      `Exposure panel` = exposure_panel,
+      Covariate = covariate,
+      `Exposure tests` = exposure_tests,
+      `Exposure p < 0.20` = exposure_p_lt_0_20,
+      `Exposure q < 0.10` = exposure_q_lt_0_10,
+      `Best PC` = best_pc,
+      `Exposure min p` = min_p,
+      `Exposure min q` = min_q,
+      `Exposure signal` = exposure_signal,
+      `Outcome tests` = outcome_tests,
+      `Outcome p < 0.20` = outcome_p_lt_0_20,
+      `Outcome q < 0.10` = outcome_q_lt_0_10,
+      `Best outcome` = best_outcome,
+      `Outcome min p` = outcome_min_p,
+      `Outcome min q` = outcome_min_q,
+      `Outcome signal` = outcome_signal,
+      `Collinearity flag` = collinearity_flag,
+      `Flagged pairs` = flagged_pairs,
+      `Max pair metric` = max_pair_metric,
+      `Strongest pair` = strongest_pair
+    ),
+  caption = "Panel-specific combined covariate screening summary",
+  table_mode = "wide"
+)
+```
+
+### Covariate decision support (reference models)
+
+This table synthesizes the empirical screening results with visit-specific missingness and estimate-change checks. The estimate-change screen compares metabolite-PC coefficients before and after adding each sensitivity candidate to the core adjustment set; a maximum absolute change of at least 10% is flagged.
+
+* **Core covariates** are retained in primary models regardless of empirical screening results.
+* **Sensitivity candidates** are carried forward when they have acceptable missingness and either both-sided screening support or an estimate-change signal.
+* Candidates with high missingness ($> 30\%$) are restricted to descriptive summaries or restricted sensitivity analyses.
+
+```{r}
+#| label: purposeful-decision-support
+
+missing_summary <- simple_missingness_by_panel(panel_specs, all_candidate_covars)
+
+beta_change_summary <- bind_rows(lapply(seq_len(nrow(panel_specs)), function(i) {
+  panel <- panel_specs$exposure_panel[[i]]
+  dat <- pc_panels[[panel]]
+  pcs <- grep("^PC[0-9]+$", names(dat), value = TRUE)
+  estimate_change_screen(panel, dat, all_candidate_covars, panel_specs$fasting_var[[i]], continuous_outcomes, pcs)
+})) %>%
+  mutate(max_beta_change_pct = round(max_beta_change_pct, 1))
+
+decision_tbl <- combined_screen %>%
+  left_join(missing_summary, by = c("exposure_panel", "covariate")) %>%
+  left_join(beta_change_summary, by = c("exposure_panel", "covariate")) %>%
+  mutate(
+    block = ifelse(covariate %in% core_vars, "Core", "Sensitivity candidate"),
+    exposure_signal = ifelse(is.na(exposure_signal), FALSE, exposure_signal),
+    outcome_signal = ifelse(is.na(outcome_signal), FALSE, outcome_signal),
+    beta_change_signal = ifelse(is.na(beta_change_signal), FALSE, beta_change_signal),
+    collinearity_flag = ifelse(is.na(collinearity_flag), FALSE, collinearity_flag),
+    decision = dplyr::case_when(
+      block == "Core" ~ "Retain in primary model",
+      missing_pct > 30 ~ "Descriptive or restricted sensitivity only",
+      collinearity_flag & (exposure_signal | outcome_signal | beta_change_signal) ~ "Review before sensitivity model",
+      (exposure_signal & outcome_signal) | beta_change_signal ~ "Carry to sensitivity model",
+      TRUE ~ "Descriptive unless clinically required"
+    )
+  ) %>%
+  select(
+    exposure_panel, covariate, block, available_n, missing_pct,
+    best_pc, best_outcome, exposure_signal, outcome_signal,
+    max_beta_change_pct, beta_change_driver, beta_change_signal,
+    collinearity_flag, flagged_pairs, decision
+  )
+
+make_table(
+  decision_tbl %>%
+    rename(
+      `Exposure panel` = exposure_panel,
+      Covariate = covariate,
+      Block = block,
+      `Available n` = available_n,
+      `Missing pct` = missing_pct,
+      `Best PC` = best_pc,
+      `Best outcome` = best_outcome,
+      `Exposure signal` = exposure_signal,
+      `Outcome signal` = outcome_signal,
+      `Max beta change pct` = max_beta_change_pct,
+      `Beta-change driver` = beta_change_driver,
+      `Beta-change signal` = beta_change_signal,
+      `Collinearity flag` = collinearity_flag,
+      `Flagged pairs` = flagged_pairs
+    ),
+  caption = "Panel-specific purposeful selection decision support",
+  table_mode = "wide"
+)
+```
+
+### Covariate selection traceability
+
+This table documents the pre-specified role, scientific motivation, and the observed screening support across panels.
+
+```{r}
+#| label: covariate-selection-traceability
+
+covariate_trace <- tibble::tibble(
+  covariate = c(core_vars, sens_vars),
+  role = c(rep("core", length(core_vars)), rep("sensitivity", length(sens_vars))),
+  motivation = c(
+    "Child sex-related metabolomic and neurodevelopment variation",
+    "Gestational age-related developmental and metabolic variation",
+    "Birth-size related developmental and metabolic variation",
+    "Maternal baseline age-related confounding control",
+    "Maternal baseline metabolic confounding control",
+    "Socioeconomic proxy",
+    "Parity-related confounding control",
+    "Maternal metabolic status proxy",
+    "Maternal smoking-related confounding control",
+    "Infant feeding-related confounding control",
+    "Preterm birth sensitivity descriptor",
+    "Intervention group assignment",
+    "Maternal living arrangement descriptor",
+    "Delivery mode sensitivity descriptor",
+    "Small-for-gestational-age sensitivity descriptor",
+    "Macrosomia sensitivity descriptor",
+    "Early neonatal condition sensitivity descriptor",
+    "Early neonatal condition sensitivity descriptor",
+    "Timing of psychologist assessment",
+    "Timing of physiotherapist assessment"
+  )
+) %>%
+  left_join(
+    decision_tbl %>%
+      group_by(covariate) %>%
+      summarize(
+        panels_reviewed = n_distinct(exposure_panel),
+        min_missing_pct = min(missing_pct, na.rm = TRUE),
+        max_missing_pct = max(missing_pct, na.rm = TRUE),
+        exposure_signal_panels = sum(exposure_signal, na.rm = TRUE),
+        outcome_signal_panels = sum(outcome_signal, na.rm = TRUE),
+        beta_change_signal_panels = sum(beta_change_signal, na.rm = TRUE),
+        collinearity_flag_panels = sum(collinearity_flag, na.rm = TRUE),
+        decisions = paste(sort(unique(decision)), collapse = "; "),
+        .groups = "drop"
+      ),
+    by = "covariate"
+  ) %>%
+  mutate(test_role = ifelse(role == "core", "Retained in primary model", "Purposeful selection support"))
+
+make_table(covariate_trace, caption = "Covariate selection traceability", table_mode = "wide")
+```
+
+### Missingness by visit
+
+Summaries use the compiled MAE dataset (`r n_matched_children` unique children matched with metabolomics).
+
+#### Core block
+
+Maternal baseline factors and core child birth covariates included in primary models.
+
+```{r}
+#| label: core-covariates-table
+
+core_summary <- missingness_by_panel(panel_specs, core_vars)
+
+make_table(core_summary, caption = "Core covariates by exposure panel", table_mode = "wide")
+```
+
+#### Measurement-condition block
+
+Visit-specific fasting hours at blood sampling included in models corresponding to the exposure visit.
+
+```{r}
+#| label: measurement-covariates-table
+
+v4_clinical <- as.data.frame(colData(experiments(mae)[["visit_4"]]))
+v5_clinical <- as.data.frame(colData(experiments(mae)[["visit_5"]]))
+v6_clinical <- as.data.frame(colData(experiments(mae)[["visit_6"]]))
+
+fasting_summary <- bind_rows(
+  summarize_covariate("CFastingHoursBloodSample4", v4_clinical) %>% mutate(Variable = "CFastingHoursBloodSample4 (6 Months)"),
+  summarize_covariate("CFastingHoursBloodSample5", v5_clinical) %>% mutate(Variable = "CFastingHoursBloodSample5 (1 Year)"),
+  summarize_covariate("CFastingHoursBloodSample6", v6_clinical) %>% mutate(Variable = "CFastingHoursBloodSample6 (2 Years)")
+)
+
+make_table(fasting_summary, caption = "Fasting hours covariates by visit", table_mode = "wide")
+```
+
+#### Sensitivity and descriptive block
+
+Plausible clinical covariates and assessment timing variables evaluated in sensitivity analyses.
+
+```{r}
+#| label: sensitivity-covariates-table
+
+sens_summary <- missingness_by_panel(panel_specs, sens_vars)
+
+make_table(sens_summary, caption = "Sensitivity and descriptive covariates by exposure panel", table_mode = "wide")
+```
+
+## Model specification
+
+### Proposed models
+
+1. Predictive 6-month model: `Y_2y ~ E_6m + core_covariates + CFastingHoursBloodSample4`
+2. Predictive 1-year model: `Y_2y ~ E_1y + core_covariates + CFastingHoursBloodSample5`
+3. Concurrent 2-year model: `Y_2y ~ E_2y + core_covariates + CFastingHoursBloodSample6`
+4. HINE optimality model: `HINE_optimal ~ E_t + core_covariates + fasting_t`
+5. Sensitivity models: add selected sensitivity covariates and compare estimates.
+
+### Model families
+
+```{r}
+#| label: planned-model-families
+
+model_spec_tbl <- tibble::tibble(
+  model_family = c(
+    "Predictive 6-month model",
+    "Predictive 1-year model",
+    "Concurrent 2-year model",
+    "HINE optimality model"
+  ),
+  exposure = c(
+    "Each visit_4 metabolite",
+    "Each visit_5 metabolite",
+    "Each visit_6 metabolite",
+    "Each metabolite from visit_4, visit_5, or visit_6"
+  ),
+  outcome = c(
+    "Continuous 2-year Bayley/HINE scores",
+    "Continuous 2-year Bayley/HINE scores",
+    "Continuous 2-year Bayley/HINE scores",
+    "Binary HINE optimal/suboptimal"
+  ),
+  formula_template = c(
+    "Outcome_2y ~ metabolite_6m + core_covariates + CFastingHoursBloodSample4",
+    "Outcome_2y ~ metabolite_1y + core_covariates + CFastingHoursBloodSample5",
+    "Outcome_2y ~ metabolite_2y + core_covariates + CFastingHoursBloodSample6",
+    "HINE_optimal ~ metabolite_t + core_covariates + fasting_t"
+  )
+)
+
+make_table(model_spec_tbl, caption = "Planned model families", table_mode = "wide")
+```
+
+### Mathematical model forms
+
+1. Continuous outcome model:
+
+$$
+Y_{i,2} = \beta_0 + \beta_1 E_{i,t} + \sum_{k=1}^{p} \gamma_k C_{i,k} + \delta F_{i,t} + \varepsilon_i
+$$
+
+2. HINE optimality model:
+
+$$
+\mathrm{logit}\{P(Y_i = \mathrm{Suboptimal})\} = \beta_0 + \beta_1 E_{i,t} + \sum_{k=1}^{p} \gamma_k C_{i,k} + \delta F_{i,t}
+$$
+
+### Data snapshot
+
+```{r}
+#| label: covariate-data-snapshot
+
+tibble::tibble(
+  object = c("matched child IDs", "metabolite features", "analysis rows"),
+  value = c(n_matched_children, n_metabolite_features, nrow(df_long))
+) %>%
+  make_table(caption = "Data snapshot", table_mode = "compact")
+```
+
+### Variable key
+
+<details>
+<summary>Click to expand full variable key</summary>
+
+```{r}
+#| label: covariate-variable-key
+
+variable_key <- build_variable_key(subj_clinical)
+make_table(variable_key, caption = "Variable key", table_mode = "wide")
+```
+
+</details>
+
+### Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: covariate-session-info
+sessionInfo()
+```
+:::

@@ -10,3 +10,10 @@
 - HTTP GET `/` returned 200 from LibreChat (3080) and OpenHands (3001). Engine (8001) returned 404 at `/`, confirming an HTTP listener but not an execution health test.
 - No analysis execution, model calls, container restarts, database changes, or upstream merges were performed.
 - Existing whitespace at two patch locations is preserved intentionally in this faithful source checkpoint.
+
+## Repository-owned engine build
+
+- Imported all 299 base source files with matching SHA-256 hashes and verified every Docker COPY source exists inside the repository.
+- Built `omicsbase-engine-base:dev` and `omicsbase-engine:dev` using only `docker/engine-base/` and `engine/` build contexts; cached layers were used where available.
+- Ran all three existing engine tests against the rebuilt image in a temporary read-only container with no host mounts or external network. Real R execution, persistence failure handling, errors, and cancellation passed. Existing kernel cleanup ResourceWarnings were emitted; they did not fail the tests.
+- Running deployment images and containers were not replaced.

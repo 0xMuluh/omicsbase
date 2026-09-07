@@ -1,0 +1,397 @@
+---
+title: "Data quality and assumptions"
+---
+
+## Setup
+
+```{r}
+#| label: data-quality-assumptions-01
+source("analysis_data_utils.R")
+library(dplyr)
+library(ggplot2)
+
+visits <- c(4L, 5L, 6L, 7L)
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = paste0("visit_", visits)
+)
+
+df <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+
+raw_df <- extract_long_from_mae(
+  analysis_obj$mae,
+  visits = paste0("visit_", visits)
+)
+
+results <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+model_status <- results$model_status
+
+visit_label <- function(v) dplyr::case_when(
+  v == 4L ~ "6 Months",
+  v == 5L ~ "12 Months",
+  v == 6L ~ "24 Months",
+  v == 7L ~ "5-6 Years",
+  TRUE ~ paste("Visit", v)
+)
+
+pretty_var <- function(x) {
+  x <- sub("^M", "", x)
+  x <- gsub("DietaryPatterns", "Dietary Patterns ", x)
+  x <- gsub("DIINormalDiet", "Dietary Inflammatory Index ", x)
+  x <- gsub("DIIDensityDiet", "Dietary Inflammatory Index Density ", x)
+  x <- gsub("^IDQ1$", "IDQ", x)
+  x <- gsub("^IDQ2$", "IDQ", x)
+  x <- gsub("EPercent", "Percent ", x)
+  x <- gsub("Fiball", "Fibre ", x)
+  x <- gsub("CHO", "Carbohydrate", x)
+  x <- gsub("Pro", "Protein", x)
+  x <- gsub("FAn3", "n-3 fatty acids", x)
+  x <- gsub("FAn6", "n-6 fatty acids", x)
+  x <- gsub("SFA", "SFA", x)
+  x <- gsub("MUFA", "MUFA", x)
+  x <- gsub("PUFA", "PUFA", x)
+  x <- sub("[12]$", "", x)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+```
+
+## Missingness in candidate variables
+
+```{r}
+#| label: data-quality-assumptions-02
+candidate_vars <- c(
+  "MDietaryPatterns_1", "MDIINormalDiet1", "MDIIDensityDiet1", "MIDQ1",
+  "MEPercentProDiet1", "MEPercentCHODiet1", "MEPercentFatDiet1",
+  "MEPercentPUFADiet1", "MEPercentMUFADiet1", "MEPercentSFADiet1",
+  "MEPercentFAn3Diet1", "MEPercentFAn6Diet1", "MEPercentFiballDiet1",
+  "MDietaryPatterns_2", "MDIINormalDiet2", "MDIIDensityDiet2", "MIDQ2",
+  "MEPercentProDiet2", "MEPercentCHODiet2", "MEPercentFatDiet2",
+  "MEPercentPUFADiet2", "MEPercentMUFADiet2", "MEPercentSFADiet2",
+  "MEPercentFAn3Diet2", "MEPercentFAn6Diet2", "MEPercentFiballDiet2",
+  "Intervention", "CGender", "MEthnicity", "MDise",
+  "MprepBMI", "MAge1", "MprevGDM_new", "Bfdurationm",
+  "MPRSmoke", "MUniEdu", "CWeightBirth"
+)
+
+missingness_tbl <- bind_rows(lapply(visits, function(v) {
+  dv <- df %>% filter(visit_num == v)
+
+  bind_rows(lapply(candidate_vars, function(var_nm) {
+    miss_fraction <- mean(is.na(dv[[var_nm]]))
+    data.frame(
+      child_age = visit_label(v),
+      variable = pretty_var(var_nm),
+      variable_code = var_nm,
+      n_missing = sum(is.na(dv[[var_nm]])),
+      missing_fraction = miss_fraction,
+      stringsAsFactors = FALSE
+    )
+  }))
+})) %>%
+  arrange(desc(missing_fraction), child_age, variable)
+
+make_table(round_numeric(missingness_tbl, 3), caption = "Variable missingness by child age")
+```
+
+## Metabolite sparsity by visit
+
+```{r}
+#| label: data-quality-assumptions-03
+sparsity_summary <- bind_rows(lapply(visits, function(v) {
+  dv <- raw_df %>% filter(visit_num == v)
+  mat <- as.matrix(dv[, metabolite_cols, drop = FALSE])
+  observed_fraction <- colMeans(!is.na(mat))
+
+  data.frame(
+    child_age = visit_label(v),
+    n_features = length(observed_fraction),
+    median_observed_fraction = median(observed_fraction, na.rm = TRUE),
+    p10_observed_fraction = as.numeric(quantile(observed_fraction, 0.10, na.rm = TRUE, names = FALSE)),
+    features_obs_lt_0_50 = sum(observed_fraction < 0.50, na.rm = TRUE),
+    features_obs_lt_0_70 = sum(observed_fraction < 0.70, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+}))
+
+make_table(round_numeric(sparsity_summary, 3), caption = "Metabolite observation coverage by child age")
+```
+
+```{r}
+#| label: data-quality-assumptions-04
+sparse_features <- bind_rows(lapply(visits, function(v) {
+  dv <- raw_df %>% filter(visit_num == v)
+  mat <- as.matrix(dv[, metabolite_cols, drop = FALSE])
+  observed_fraction <- colMeans(!is.na(mat))
+
+  data.frame(
+    child_age = visit_label(v),
+    metabolite = names(observed_fraction),
+    observed_fraction = as.numeric(observed_fraction),
+    stringsAsFactors = FALSE
+  )
+})) %>%
+  arrange(observed_fraction, child_age, metabolite) %>%
+  slice_head(n = 20)
+
+make_table(round_numeric(sparse_features, 3), caption = "Lowest-coverage metabolites across visits")
+```
+
+## Model coverage by analysis question
+
+```{r}
+#| label: data-quality-assumptions-05
+coverage_tbl <- model_status %>%
+  mutate(
+    question = dplyr::case_when(
+      question == "Q4" ~ "Q1: Early-Pregnancy Age-Specific Models",
+      question == "Q5" ~ "Q2: Late-Pregnancy Age-Specific Models",
+      question == "Q6" ~ "Q3: Mutual Timing Model",
+      question == "Q7" ~ "Q4: Longitudinal Interaction Model",
+      TRUE ~ question
+    ),
+    child_age = ifelse(is.na(visit), NA_character_, visit_label(as.integer(visit))),
+    exposure = pretty_var(exposure),
+    n_complete = ifelse(
+      is.na(n_complete_min) | !is.finite(n_complete_min),
+      NA_character_,
+      ifelse(n_complete_min == n_complete_max, as.character(n_complete_min), paste0(n_complete_min, "-", n_complete_max))
+    )
+  ) %>%
+  select(question, analysis, child_age, timing, exposure, status, reason, n_complete, n_features_tested, term_family)
+
+make_table(coverage_tbl, caption = "Observed model coverage and execution status from the saved analyses")
+```
+
+## Log-transform feasibility
+
+```{r}
+#| label: data-quality-assumptions-06
+non_positive_tbl <- bind_rows(lapply(visits, function(v) {
+  dv <- raw_df %>% filter(visit_num == v)
+  mat <- as.matrix(dv[, metabolite_cols, drop = FALSE])
+
+  non_positive_fraction <- colMeans(mat <= 0, na.rm = TRUE)
+  has_non_positive <- non_positive_fraction > 0
+
+  data.frame(
+    child_age = visit_label(v),
+    metabolites_with_non_positive = sum(has_non_positive, na.rm = TRUE),
+    fraction_with_non_positive = mean(has_non_positive, na.rm = TRUE),
+    median_non_positive_fraction = median(non_positive_fraction, na.rm = TRUE),
+    p90_non_positive_fraction = as.numeric(quantile(non_positive_fraction, 0.90, na.rm = TRUE, names = FALSE)),
+    stringsAsFactors = FALSE
+  )
+}))
+
+make_table(round_numeric(non_positive_tbl, 3), caption = "Non-positive values before log transformation")
+```
+
+## Sample-level signal quality
+
+```{r}
+#| label: data-quality-assumptions-07
+sample_qc <- df %>%
+  transmute(
+    StudyID,
+    child_age = factor(visit_label(visit_num), levels = visit_label(visits)),
+    sample_missing_fraction = rowMeans(is.na(across(all_of(metabolite_cols)))),
+    median_abs_z = apply(abs(as.matrix(select(., all_of(metabolite_cols)))), 1, median, na.rm = TRUE)
+  )
+
+qc_summary <- sample_qc %>%
+  group_by(child_age) %>%
+  summarise(
+    samples = n(),
+    median_missing_fraction = median(sample_missing_fraction, na.rm = TRUE),
+    p90_missing_fraction = as.numeric(quantile(sample_missing_fraction, 0.90, na.rm = TRUE, names = FALSE)),
+    median_abs_z = median(median_abs_z, na.rm = TRUE),
+    p90_abs_z = as.numeric(quantile(median_abs_z, 0.90, na.rm = TRUE, names = FALSE)),
+    .groups = "drop"
+  )
+
+make_table(round_numeric(qc_summary, 3), caption = "Sample-level quality summary")
+```
+
+```{r}
+#| label: fig-sample-missingness
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 5
+ggplot(sample_qc, aes(x = sample_missing_fraction, fill = child_age)) +
+  geom_histogram(binwidth = 0.02, alpha = 0.6, position = "identity") +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Sample missingness across child ages",
+    x = "Fraction of missing metabolites per sample",
+    y = "Count",
+    fill = "Child age"
+  )
+```
+
+```{r}
+#| label: fig-sample-zscore
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 5
+ggplot(sample_qc, aes(x = child_age, y = median_abs_z, color = child_age)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Distribution of sample-level median |z| by child age",
+    x = "Child age",
+    y = "Median absolute z-score"
+  )
+```
+
+## Visit participation profile
+
+```{r}
+#| label: data-quality-assumptions-08
+visit_profile <- df %>%
+  distinct(StudyID, visit_num) %>%
+  count(StudyID, name = "n_visits")
+
+profile_tbl <- visit_profile %>%
+  count(n_visits, name = "n_children") %>%
+  mutate(pct_children = 100 * n_children / sum(n_children)) %>%
+  arrange(n_visits)
+
+make_table(round_numeric(profile_tbl, 3), caption = "Number of visits contributed per child")
+```
+
+```{r}
+#| label: fig-followup-coverage
+#| classes: fig-small
+#| fig-width: 7
+#| fig-height: 5
+ggplot(profile_tbl, aes(x = factor(n_visits), y = n_children)) +
+  geom_col(fill = "#2C3E50") +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Child follow-up coverage",
+    x = "Visits contributed",
+    y = "Number of children"
+  )
+```
+
+## Feature-level missingness pattern
+
+```{r}
+#| label: data-quality-assumptions-09
+missing_long <- bind_rows(lapply(visits, function(v) {
+  dv <- df %>% filter(visit_num == v)
+  miss <- colMeans(is.na(dv[, metabolite_cols, drop = FALSE]))
+
+  data.frame(
+    child_age = visit_label(v),
+    metabolite = names(miss),
+    missing_fraction = as.numeric(miss),
+    stringsAsFactors = FALSE
+  )
+}))
+
+top_missing_features <- missing_long %>%
+  group_by(metabolite) %>%
+  summarise(mean_missing = mean(missing_fraction, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_missing)) %>%
+  slice_head(n = 25)
+
+make_table(round_numeric(top_missing_features, 3), caption = "Top 25 metabolites by average missingness")
+```
+
+```{r}
+#| label: fig-missingness-heatmap
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 8
+missing_plot_df <- missing_long %>%
+  filter(metabolite %in% top_missing_features$metabolite) %>%
+  mutate(
+    metabolite = factor(metabolite, levels = rev(top_missing_features$metabolite))
+  )
+
+ggplot(missing_plot_df, aes(x = child_age, y = metabolite, fill = missing_fraction)) +
+  geom_tile() +
+  scale_fill_gradient(low = "#F7FBFF", high = "#08306B") +
+  theme_minimal(base_size = 10) +
+  labs(
+    title = "Missingness heatmap for highest-missing metabolites",
+    x = "Child age",
+    y = "Metabolite",
+    fill = "Missing fraction"
+  )
+```
+
+## Raw vs transformed distribution check
+
+```{r}
+#| label: data-quality-assumptions-10
+sample_values <- function(dat, cols, label, max_points = 50000L) {
+  vals <- as.numeric(as.matrix(dat[, cols, drop = FALSE]))
+  vals <- vals[is.finite(vals)]
+  if (length(vals) > max_points) {
+    set.seed(123)
+    vals <- sample(vals, max_points)
+  }
+  data.frame(scale = label, value = vals, stringsAsFactors = FALSE)
+}
+
+dist_raw <- sample_values(raw_df, metabolite_cols, "raw")
+dist_transformed <- sample_values(df, metabolite_cols, "log10+z")
+
+dist_df <- bind_rows(dist_raw, dist_transformed)
+
+dist_summary <- dist_df %>%
+  group_by(scale) %>%
+  summarise(
+    n_values = n(),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    p01 = as.numeric(quantile(value, 0.01, na.rm = TRUE, names = FALSE)),
+    median = as.numeric(quantile(value, 0.50, na.rm = TRUE, names = FALSE)),
+    p99 = as.numeric(quantile(value, 0.99, na.rm = TRUE, names = FALSE)),
+    .groups = "drop"
+  )
+
+make_table(round_numeric(dist_summary, 3), caption = "Distribution summary before and after transformation")
+```
+
+```{r}
+#| label: fig-dist-check
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 5
+plot_limits <- quantile(dist_df$value, probs = c(0.01, 0.99), na.rm = TRUE)
+
+ggplot(
+  dist_df %>% filter(value >= plot_limits[[1]], value <= plot_limits[[2]]),
+  aes(x = value, color = scale, fill = scale)
+) +
+  geom_density(alpha = 0.2) +
+  theme_minimal(base_size = 11) +
+  labs(
+    title = "Distribution check: raw vs log10+z",
+    x = "Value (trimmed to 1st-99th percentile)",
+    y = "Density",
+    color = "Scale",
+    fill = "Scale"
+  )
+```
+
+## Global structure sanity check (PCA)
+
+The full PCA visualization and loadings diagnostics are reported in the Data Summary page to avoid duplicated computation and repeated figures.
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: data-quality-assumptions-11
+#| echo: false
+sessionInfo()
+```
+:::

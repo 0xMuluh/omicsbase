@@ -1,0 +1,121 @@
+
+```{r setup_m}
+source("../funct.R")
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+pa_tse <- altExp(tse, "pathabundance")
+
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Diet" 
+formula_used <- "~ diet * timepoint + (1 | id)"
+correction <- "Benjamini-Hochberg FDR adjustment"
+
+```
+
+## Significant pathways from maaslin model
+
+This section highlights significant taxa from maaslin3.
+
+Analysis information:
+
+-   Method: maaslin3
+-   Group variable: `r variable`
+-   Formula used: **`r formula_used`**
+-   Correction: **`r correction`**
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+### N.B pvalues used in plot are from Wilcoxon tests
+
+```{r tsesub_m}
+file_path1 <- file.path("../../output/daa/daa_pa/interaction/significant_results.tsv")
+file_path2 <- file.path("../../output/daa/daa_pa/oat/significant_results.tsv")
+file_path3 <- file.path("../../output/daa/daa_pa/rice/significant_results.tsv")
+daa_tab1 <- read_tsv(file_path1, col_names = TRUE, show_col_types = FALSE)
+daa_tab2 <- read_tsv(file_path2, col_names = TRUE, show_col_types = FALSE) 
+daa_tab3 <- read_tsv(file_path3, col_names = TRUE, show_col_types = FALSE) 
+daa_tab1 <- na.omit(daa_tab1)
+daa_tab2 <- na.omit(daa_tab2)
+daa_tab3 <- na.omit(daa_tab3)
+significant_fxns <- unique(c(daa_tab1$feature, daa_tab2$feature, daa_tab3$feature))
+target_list <- rownames(pa_tse)
+
+closest_matches <- sapply(significant_fxns, function(x) {
+  target_list[which.min(stringdist(x, target_list, method = "jw"))]
+})
+
+
+```
+
+```{r before-after_m}
+pa_tse$diet <- factor(pa_tse$diet, levels=c("oat", "rice"))
+df <- mia::meltSE(pa_tse, add.col = T, assay.type = "relabundance")
+
+df_not_zer0 <- df %>%
+    group_by(FeatureID, duration, diet) %>%
+    summarise(
+        nonzero_n = sum(relabundance > 0, na.rm = TRUE),
+        total_n = sum(!is.na(relabundance)),
+        pct_nonzero = round(100 * nonzero_n / total_n, 1),
+        .groups = "drop"
+    ) %>%
+    filter(nonzero_n > 0) %>%
+    pivot_wider(
+        names_from = c(duration, diet),
+        values_from = c(nonzero_n, total_n, pct_nonzero),
+        names_glue = "{diet}_{duration}_{.value}"
+    )
+
+```
+
+```{r}
+
+plots_list <- list()
+plots_list <- setNames(lapply(closest_matches, function(taxon_name) {
+    
+    p1 <- plotBoxplot( pa_tse, assay.type = "relabundance", x = "diet",  fill.by = "duration", pair.by = "id", features = c(taxon_name), facet.by = "rownames", add.change = T, add.significance = T, ncol = 1, label.size = 5) +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15),
+        strip.text = element_blank(),
+        axis.text = element_text(face = "bold"),
+  ) + labs(title = taxon_name)
+
+    p2 <- plotBoxplot( pa_tse, assay.type = "relabundance", x = "duration",  fill.by = "diet", features = c(taxon_name), facet.by = "rownames", add.significance = T, ncol = 1, label.size = 5) +
+        scale_fill_viridis_d(option = "D") +
+      theme_minimal(base_size = 15) +
+  theme(text = element_text(family = "Roboto", size = 15), 
+        strip.text = element_blank(),
+        axis.text = element_text(face = "bold"),
+  )
+    
+    label_text <- generate_prevalence_label(df_not_zer0, taxon_name)
+    
+    p12 <- wrap_plots(p1, p2, axes = "collect") + 
+      labs(caption = label_text) +
+      theme(
+    plot.caption = element_text(size = 10, 
+                                face = "bold.italic", 
+                                hjust = 1, color = "darkblue") )
+    
+    return(p12)
+    
+}
+    ),
+ closest_matches)
+```
+
+```{r hits_m}
+#| layout-ncol: 1
+#| fig-width: 10 
+#| fig-height: 6 
+
+ordered_plots <- plots_list[order(names(plots_list))]
+
+for (plot_name in names(ordered_plots)) {
+  print(ordered_plots[[plot_name]])
+}
+
+```

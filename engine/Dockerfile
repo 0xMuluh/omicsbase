@@ -1,4 +1,5 @@
-FROM omicsbase-backend:dev
+ARG ENGINE_BASE_IMAGE=omicsbase-engine-base:dev
+FROM ${ENGINE_BASE_IMAGE}
 
 USER root
 WORKDIR /app

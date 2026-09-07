@@ -1,0 +1,408 @@
+---
+title: "Diagnostic plots"
+---
+
+Figures for the exploratory secondary analyses are restricted to the five secondary outcomes. They are sensitivity or descriptive summaries, not confirmatory evidence of individual-metabolite discovery.
+
+::: {.callout-note title="How to read these plots"}
+These figures rank or summarize secondary analyses for orientation. They are not hit lists: confirm any apparent signal in the corresponding result table, checking the model note, sample size, confidence interval, and q-value.
+:::
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+res_path <- "../output/results/neurocognition_secondary_results.rds"
+if (!file.exists(res_path)) {
+  stop("Required secondary result object not found: ", res_path)
+}
+results_obj <- readRDS(res_path)
+required_objects <- c(
+  "cluster_results", "msea_results", "tobit_results", "firth_results",
+  "elastic_net", "pls", "perm_fdr_results", "rf_results",
+  "secondary_outcomes", "secondary_continuous_outcomes", "m_eff"
+)
+missing_objects <- setdiff(required_objects, names(results_obj))
+if (length(missing_objects) > 0) {
+  stop("Secondary result object missing required element(s): ", paste(missing_objects, collapse = ", "))
+}
+
+cluster_df <- results_obj[["cluster_results"]]
+msea_df <- results_obj[["msea_results"]]
+tobit_df <- results_obj[["tobit_results"]]
+firth_df <- results_obj[["firth_results"]]
+enet_df <- results_obj[["elastic_net"]]
+pls_df <- results_obj[["pls"]]
+perm_fdr_df <- results_obj[["perm_fdr_results"]]
+rf_df <- results_obj[["rf_results"]]
+secondary_outcomes <- results_obj[["secondary_outcomes"]]
+secondary_continuous_outcomes <- results_obj[["secondary_continuous_outcomes"]]
+
+mae_path <- "../data/MAE.rds"
+if (!file.exists(mae_path)) {
+  stop("Required MAE object not found: ", mae_path)
+}
+mae <- readRDS(mae_path)
+
+pretty_outcome <- function(x) {
+  dplyr::case_when(
+    x == "CCognition_indexpoints6" ~ "Bayley Cognitive",
+    x == "CLanguage_indexpoints6" ~ "Bayley Language",
+    x == "CMotor_indexpoints6" ~ "Bayley Motor",
+    x == "Hammersmith6" ~ "HINE Global Score",
+    x == "HINE_optimal" ~ "HINE Optimality",
+    TRUE ~ x
+  )
+}
+
+stop_if_empty <- function(df, context) {
+  if (nrow(df) == 0) {
+    stop("No rows available for ", context, ".")
+  }
+  df
+}
+```
+
+## NMR group cluster score associations
+
+Top NMR group score associations across the five secondary outcomes. Continuous models are plotted as standardized beta coefficients; HINE optimality is plotted as log odds ratio.
+
+::: {.callout-note title="Axis scale"}
+Values to the right of zero indicate higher outcome score or higher HINE optimality odds per higher NMR group score; values to the left indicate lower outcome score or lower odds. The HINE rows use log odds ratios, so their x-axis values are not directly comparable to standardized beta values.
+:::
+
+```{r}
+#| label: fig-cluster-top
+#| fig-cap: "Top exploratory NMR group score associations across the five secondary outcomes."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 7
+cluster_top <- cluster_df %>%
+  filter(note == "ok" & !is.na(p.value)) %>%
+  mutate(
+    Outcome = pretty_outcome(outcome),
+    Visit = paste0("Visit ", visit),
+    plot_est = ifelse(outcome == "HINE_optimal", log(estimate), estimate),
+    plot_low = ifelse(outcome == "HINE_optimal", log(conf.low), conf.low),
+    plot_high = ifelse(outcome == "HINE_optimal", log(conf.high), conf.high),
+    label = stringr::str_wrap(paste0(Visit, ": ", Outcome, " - ", group_label), width = 45)
+  ) %>%
+  arrange(p.value) %>%
+  slice_head(n = 20) %>%
+  stop_if_empty("cluster score plot")
+
+ggplot(cluster_top, aes(x = plot_est, y = fct_reorder(label, plot_est))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbarh(aes(xmin = plot_low, xmax = plot_high), height = 0.2, linewidth = 0.8, color = "#34495e") +
+  geom_point(size = 2.8, color = "#34495e") +
+  theme_minimal(base_size = 12) +
+  labs(x = "Estimate (standardized beta or log odds ratio)", y = NULL)
+```
+
+## Metabolite set enrichment
+
+Top metabolite-group rank-sum enrichment summaries. These are group-level summaries of nominal p-value concentration.
+
+::: {.callout-note title="Axis scale"}
+The enrichment ratio compares the average nominal signal inside an NMR group against the background. A large bar suggests concentration of nominal p-values within a group, not discovery of a specific metabolite.
+:::
+
+```{r}
+#| label: fig-msea-top
+#| fig-cap: "Top exploratory MSEA enrichment ratios restricted to the five secondary outcomes."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 6
+msea_top <- msea_df %>%
+  filter(!is.na(p.value)) %>%
+  mutate(
+    Outcome = pretty_outcome(outcome),
+    Visit = paste0("Visit ", visit),
+    label = stringr::str_wrap(paste0(Visit, ": ", Outcome, " - ", group), width = 45)
+  ) %>%
+  arrange(p.value) %>%
+  slice_head(n = 15) %>%
+  stop_if_empty("MSEA plot")
+
+ggplot(msea_top, aes(x = enrichment_ratio, y = fct_reorder(label, enrichment_ratio), fill = -log10(p.value))) +
+  geom_col() +
+  scale_fill_viridis_c(option = "magma", name = expression(-log[10](p))) +
+  theme_minimal(base_size = 12) +
+  labs(x = "Enrichment ratio", y = NULL)
+```
+
+## HINE sensitivity models
+
+Top Tobit and Firth sensitivity estimates. These are sensitivity models and do not replace the primary models.
+
+::: {.callout-note title="Model scale"}
+The Tobit panel is for bounded HINE global score. The Firth panel is for sparse binary HINE optimality and is shown on the log-odds scale. Read direction within each panel, not across the two model families.
+:::
+
+::: {.panel-tabset}
+
+### Tobit HINE global score
+
+```{r}
+#| label: fig-tobit-top
+#| fig-cap: "Top Tobit sensitivity estimates for HINE global score."
+#| classes: fig-small
+#| fig-width: 11
+#| fig-height: 5
+tobit_top <- tobit_df %>%
+  filter(note == "ok" & !is.na(p.value)) %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    label = stringr::str_wrap(paste0(Visit, ": ", exposure), width = 35)
+  ) %>%
+  arrange(p.value) %>%
+  slice_head(n = 10) %>%
+  stop_if_empty("Tobit plot")
+
+ggplot(tobit_top, aes(x = estimate, y = fct_reorder(label, estimate), color = Visit)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, linewidth = 0.8) +
+  geom_point(size = 3) +
+  theme_minimal(base_size = 12) +
+  labs(x = "Tobit beta (95% CI)", y = NULL)
+```
+
+### Firth HINE optimality
+
+```{r}
+#| label: fig-firth-top
+#| fig-cap: "Top Firth logistic sensitivity estimates for HINE optimality."
+#| classes: fig-small
+#| fig-width: 11
+#| fig-height: 5
+firth_top <- firth_df %>%
+  filter(note == "firth_ok" & !is.na(p.value) & conf.low > 0 & conf.high > 0) %>%
+  mutate(
+    Visit = paste0("Visit ", visit),
+    label = stringr::str_wrap(paste0(Visit, ": ", exposure), width = 35)
+  ) %>%
+  arrange(p.value) %>%
+  slice_head(n = 10) %>%
+  stop_if_empty("Firth plot")
+
+ggplot(firth_top, aes(x = log_or, y = fct_reorder(label, log_or), color = Visit)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbarh(aes(xmin = log(conf.low), xmax = log(conf.high)), height = 0.2, linewidth = 0.8) +
+  geom_point(size = 3) +
+  theme_minimal(base_size = 12) +
+  labs(x = "Firth log odds ratio (95% CI)", y = NULL)
+```
+
+:::
+
+## Permutation FDR sensitivity
+
+The permutation-FDR panel shows the secondary outcome-visit combination with the smallest nominal p-value under the complete-case permutation analysis.
+
+::: {.callout-note title="How to read the diagonal"}
+Points on the diagonal have similar BH and permutation q-values. Points above the diagonal have larger permutation q-values than BH q-values; points below have smaller permutation q-values.
+:::
+
+```{r}
+#| label: fig-perm-compare
+#| fig-cap: "BH q-value versus permutation q-value for the strongest complete-case permutation panel."
+#| classes: fig-small
+#| fig-width: 6
+#| fig-height: 6
+perm_focus <- perm_fdr_df %>%
+  filter(note == "ok" & !is.na(p.value)) %>%
+  group_by(visit, outcome) %>%
+  summarise(min_p = min(p.value), .groups = "drop") %>%
+  arrange(min_p) %>%
+  slice_head(n = 1) %>%
+  stop_if_empty("permutation focus panel")
+
+perm_scatter <- perm_fdr_df %>%
+  filter(visit == perm_focus$visit[1], outcome == perm_focus$outcome[1], note == "ok") %>%
+  mutate(panel = paste0("Visit ", visit, ": ", pretty_outcome(outcome)))
+
+ggplot(perm_scatter, aes(x = q.value, y = perm_q_value)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(alpha = 0.65, color = "#2c7fb8", size = 2.3) +
+  theme_minimal(base_size = 12) +
+  labs(x = "BH q-value", y = "Permutation q-value", title = unique(perm_scatter$panel))
+```
+
+## Joint predictive performance
+
+Cross-validated and out-of-bag R-squared values are shown on the raw scale, including negative values.
+
+::: {.callout-note title="Prediction interpretation"}
+Positive R-squared indicates validation-sample prediction above the reference prediction; values near zero or below zero indicate weak or no useful prediction from the metabolite panel.
+:::
+
+```{r}
+#| label: fig-joint-r2
+#| fig-cap: "Joint model predictive performance across Bayley composite outcomes."
+#| classes: fig-medium
+#| fig-width: 9
+#| fig-height: 5
+enet_plot <- enet_df %>%
+  transmute(visit, outcome, model = "Elastic Net", r2 = cv_r2)
+pls_plot <- pls_df %>%
+  transmute(visit, outcome, model = "PLS", r2 = cv_r2)
+rf_plot <- rf_df %>%
+  filter(note == "ok") %>%
+  distinct(visit, outcome, oob_r2) %>%
+  transmute(visit, outcome, model = "Random Forest", r2 = oob_r2)
+joint_plot <- bind_rows(enet_plot, pls_plot, rf_plot) %>%
+  mutate(Visit = paste0("Visit ", visit), Outcome = pretty_outcome(outcome)) %>%
+  stop_if_empty("joint model performance plot")
+
+ggplot(joint_plot, aes(x = Visit, y = r2, fill = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_col(position = "dodge") +
+  facet_wrap(~ Outcome) +
+  theme_minimal(base_size = 12) +
+  labs(x = NULL, y = "Cross-validated or OOB R-squared", fill = "Model") +
+  theme(legend.position = "bottom")
+```
+
+## Random forest variable importance
+
+Visit 5 random-forest variable importance is shown only as a descriptive ranking because predictive performance is weak.
+
+::: {.callout-note title="Ranking interpretation"}
+Variable importance ranks metabolites by contribution inside the fitted random forest. When predictive performance is weak, these ranks are descriptive and should not be treated as metabolite discoveries.
+:::
+
+```{r}
+#| label: fig-rf-importance
+#| fig-cap: "Top random forest variable-importance ranks at Visit 5."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 5
+rf_top <- rf_df %>%
+  filter(visit == 5 & note == "ok") %>%
+  mutate(Outcome = pretty_outcome(outcome)) %>%
+  group_by(Outcome) %>%
+  slice_max(order_by = importance, n = 10) %>%
+  ungroup() %>%
+  stop_if_empty("RF importance plot")
+
+ggplot(rf_top, aes(x = importance, y = fct_reorder(exposure, importance))) +
+  geom_col(fill = "#34495e") +
+  facet_wrap(~ Outcome, scales = "free_y") +
+  theme_minimal(base_size = 12) +
+  labs(x = "Permutation variable importance", y = NULL)
+```
+
+## Metabolite correlation structure
+
+This heatmap shows pairwise metabolite correlation at Visit 5 for context. Metabolites are ordered by official MAE NMR group, with hierarchical ordering within each group and boundary lines marking group blocks. Group names are labeled directly on the left side; the same order applies to rows and columns. The figure illustrates dependency in the NMR panel but does not itself determine significance.
+
+::: {.callout-note title="Correlation interpretation"}
+Red blocks mark positively correlated metabolites and blue blocks mark inversely correlated metabolites. Large blocks explain why many metabolite tests are not independent, but the heatmap is descriptive and is not a significance test.
+:::
+
+```{r}
+#| label: fig-correlation-heatmap
+#| fig-cap: "Metabolite pairwise correlation heatmap at Visit 5, ordered by official NMR group."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 9
+tse_v5 <- experiments(mae)[["visit_5"]]
+mat_v5 <- as.matrix(t(assay(tse_v5, "mbo")))
+mat_v5 <- apply(mat_v5, 2, as.numeric)
+mat_v5 <- mat_v5[complete.cases(mat_v5), , drop = FALSE]
+cor_mat_v5 <- cor(mat_v5, use = "pairwise.complete.obs")
+rd_v5 <- as.data.frame(rowData(experiments(mae)[["visit_all"]]), stringsAsFactors = FALSE)
+rd_v5$Feature <- rownames(rd_v5)
+feature_meta <- rd_v5 %>%
+  filter(Feature %in% colnames(cor_mat_v5)) %>%
+  mutate(Group = as.character(Group)) %>%
+  arrange(match(Feature, colnames(cor_mat_v5)))
+group_order <- unique(feature_meta$Group)
+ordered_names <- unlist(lapply(group_order, function(group_nm) {
+  members <- feature_meta$Feature[feature_meta$Group == group_nm]
+  if (length(members) > 2) {
+    group_cor <- cor_mat_v5[members, members, drop = FALSE]
+    members[hclust(as.dist(1 - abs(group_cor)))$order]
+  } else {
+    members
+  }
+}), use.names = FALSE)
+ordered_names <- intersect(ordered_names, colnames(cor_mat_v5))
+feature_order <- data.frame(
+  Feature = ordered_names,
+  Position = seq_along(ordered_names),
+  stringsAsFactors = FALSE
+) %>%
+  left_join(feature_meta[, c("Feature", "Group")], by = "Feature")
+group_ranges <- feature_order %>%
+  group_by(Group) %>%
+  summarise(
+    start = min(Position) - 0.5,
+    end = max(Position) + 0.5,
+    center = mean(Position),
+    n_features = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = group_order)) %>%
+  arrange(Group)
+group_label_df <- group_ranges %>%
+  mutate(Label = stringr::str_wrap(as.character(Group), width = 24))
+boundary_pos <- sort(unique(c(group_ranges$start, group_ranges$end)))
+boundary_pos <- boundary_pos[boundary_pos > 0.5 & boundary_pos < length(ordered_names) + 0.5]
+
+cor_df_v5 <- as.data.frame(cor_mat_v5[ordered_names, ordered_names]) %>%
+  mutate(Feature1 = rownames(cor_mat_v5[ordered_names, ordered_names])) %>%
+  pivot_longer(-Feature1, names_to = "Feature2", values_to = "Correlation") %>%
+  left_join(feature_order %>% select(Feature1 = Feature, X = Position), by = "Feature1") %>%
+  left_join(feature_order %>% select(Feature2 = Feature, Y = Position), by = "Feature2")
+
+ggplot(cor_df_v5, aes(x = X, y = Y, fill = Correlation)) +
+  geom_tile() +
+  geom_vline(xintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+  geom_hline(yintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+  ggrepel::geom_text_repel(
+    data = group_label_df,
+    aes(x = 0.5, y = center, label = Label),
+    inherit.aes = FALSE,
+    nudge_x = -45,
+    direction = "y",
+    hjust = 1,
+    size = 2.35,
+    segment.color = "grey35",
+    segment.size = 0.18,
+    min.segment.length = 0,
+    box.padding = 0.12,
+    point.padding = 0.05,
+    max.overlaps = Inf
+  ) +
+  scale_fill_gradient2(low = "#3b5998", mid = "white", high = "#d9534f", midpoint = 0, limit = c(-1, 1)) +
+  scale_x_continuous(limits = c(-70, length(ordered_names) + 0.5), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0.5, length(ordered_names) + 0.5), expand = c(0, 0)) +
+  coord_fixed(clip = "off") +
+  labs(x = NULL, y = NULL, fill = "Correlation") +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    plot.margin = margin(5.5, 5.5, 5.5, 120),
+    legend.position = "right"
+  )
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: session-info
+sessionInfo()
+```
+:::

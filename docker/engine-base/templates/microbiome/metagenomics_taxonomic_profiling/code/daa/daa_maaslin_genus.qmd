@@ -1,0 +1,410 @@
+---
+title: "DAA"
+author: ""
+---
+
+# Differential abundance analysis
+
+```{r setup}
+library(maaslin3)
+
+# Source group-assignment
+source("../funct.R")
+
+# Load the TreeSummarizedExperiment object
+tse <- readRDS("../../data/tse.Rds")
+
+taxa_name <- "genus"
+prevalence.th <- 10/100
+detection.th <- 0.1/100
+
+variable <- "Intervention" 
+formula_used_accross_gp <- '~ Intervention'
+formula_used_within_gp <- '~ time + (1 | subject)'
+formula_used_int <- '~ Intervention * time + (1 | subject)'
+correction <- "Benjamini-Hochberg FDR adjustment"
+```
+
+Analysis information:
+
+-   Method: maaslin3
+-   Taxonomic level: **`r taxa_name`**
+-   Group variable: `r variable`
+-   Formula used for interaction: **`r formula_used_int`**
+-   Formula used across groups: **`r formula_used_accross_gp`**
+-   Formula used within groups: **`r formula_used_within_gp`**
+-   Correction: **`r correction`**
+-   Detection threshold: `r 100 * detection.th`%
+-   Prevalence threshold: `r 100 * prevalence.th`%
+
+Research Questions:
+
+1.  How does each treatment influence gut microbiota composition over time?
+
+2.  Are there significant differences between treatments?
+
+We’ll use a mixed-effects model with:
+
+-   Fixed Effects:
+
+    -   Treatment: To test differences between treatments.
+
+    -   Timepoint: Tests for changes over time across all treatments.
+
+    -   Treatment:Timepoint: To test whether the effect of time depends on the treatment.
+
+-   Random Effects:
+
+    -   (1\|subject): To account for repeated measures within subjects.
+
+Interpret the Results
+
+-   Treatment:Timepoint Interaction:
+
+A significant interaction indicates that the effect of time depends on the treatment group.
+
+This answers Research Question 1 (how each treatment influences microbiota over time).
+
+-   Treatment Effects:
+
+The coefficients for Treatment indicate differences between treatment groups at baseline.
+
+This answers Research Question 2 (differences between treatments).
+
+```{r data_prep}
+# Create output directory for results
+output_base_dir <- "../../output/daa/daa_taxa"
+dir.create(output_base_dir, showWarnings = FALSE)
+```
+
+```{r maaslin all}
+# Run Maaslin3
+run_maaslin3 <- function(taxa_tse, taxa_name, formula_used, dir) {
+  # Keep only paired cases (individuals with both timepoint points)
+  # paired.cases <- names(which(table(taxa_tse$subject) == 2))
+  # taxa_tse <- taxa_tse[, taxa_tse$subject %in% paired.cases]
+  # taxa_tse$treat <- taxa_tse$group
+
+  # Run MaAsLin3
+  fit <- maaslin3(
+    taxa_tse, 
+    output = dir,
+    formula = formula_used,
+    normalization = 'TSS',
+    transform = 'LOG',
+    augment = TRUE,
+    standardize = TRUE,
+    max_significance = 0.25,
+    plot_associations = FALSE,
+    median_comparison_abundance = TRUE,
+    median_comparison_prevalence = FALSE,
+    verbosity = "WARN"
+  )
+  
+  return(fit)
+}
+```
+
+```{r}
+taxa_tse <- altExp(tse, paste0(taxa_name, "_prevalent"))
+formula_used_int <- '~ Intervention * time + (1 | subject)'
+# Create output directory for this taxonomic level
+output_dir <- file.path(output_base_dir, taxa_name)
+dir.create(output_dir, showWarnings = FALSE)
+file_path <- file.path("../../output/daa/daa_taxa", taxa_name, "significant_results.tsv")
+if (!file.exists(file_path)) {
+fit <- run_maaslin3(taxa_tse, taxa_name, formula_used_int, output_dir)
+}
+```
+
+## Interaction Model
+
+```{r}
+#| label: tbl-table-interaction-genus
+  total_features <- nrow(taxa_tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, metadata, value, coef, qval_individual, qval_joint, model)
+  taxa_of_interest <- unique(daa_tab$feature)
+  
+  table_caption <- paste("Table of significant features for", taxa_name, 
+                           "- Total features analyzed:", total_features)
+    
+  # Split the results by model
+  daa_tab_split <- split(daa_tab, daa_tab$model)
+  daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+    rename(metadata = "variable", value = "term") %>%
+      select(-model)
+  
+  # Format output for HTML or LaTeX
+  datatable(
+    daa_tab_split$abundance,
+    extensions = c("Buttons"),
+    options = list(
+      pageLength = 6,
+      dom = 'Bfrtip',
+      buttons = c("copy", "csv", "excel")
+    ),
+    caption = table_caption,
+    rownames = FALSE
+  ) %>%
+  formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+```
+
+
+## Post-Hoc Analysis
+
+### Within-Group Comparisons
+```{r run_maaslin_o}
+
+tse_4 <- taxa_tse[, taxa_tse$Treatment == "4"]
+tse_B <- taxa_tse[, taxa_tse$Treatment == "B"]
+tse_C <- taxa_tse[, taxa_tse$Treatment == "C"]
+
+formula_used_int <- '~ timepoint + (1 | subject)'
+
+tse_list = list(tse_4, tse_B, tse_C)
+lapply(tse_list, function(tse){
+  treatment_dir <- file.path(output_base_dir, unique(tse$Treatment), taxa_name)
+  target_file <- file.path(treatment_dir, "all_results.tsv")
+  if (!file.exists(target_file)) {
+    dir.create(treatment_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, taxa_name, formula_used_int, treatment_dir)
+  }
+})
+```
+
+```{r}
+file_path_w <- file.path("../../data/wilcoxon_tables/wilcox_genus.csv")
+daa_tab_w <- read_csv(file_path_w, col_names = TRUE, show_col_types = FALSE)
+daa_tab_w <- daa_tab_w %>% rename(Taxon = "feature")
+
+```
+
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_taxa", unique(tse$Treatment), taxa_name, "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, coef, qval_individual, qval_joint, model)
+  
+  table_caption <- paste("Comparison between timepoints within group", unique(tse$Treatment),"." , taxa_name, "level, relative abundance."," Method: Maaslin3,  FDR: Wilcoxon", "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    daa_tab_w <- daa_tab_w[daa_tab_w$Treatment == unique(tse$Treatment), ]  %>%
+      select(-Treatment)
+    daa_tab_split$abundance <- merge(daa_tab_split$abundance, daa_tab_w, by = "feature") %>%
+      select(-model)
+    some_order <- c("feature", "mean.rel1",	"mean.rel2", "logFC.clr",	"coef",	"qval_individual",	"qval_joint",	"FDR")
+      daa_tab_split$abundance <-  daa_tab_split$abundance  %>% 
+        select(all_of(some_order))
+      
+      plot1 <- ggplot(daa_tab_split$abundance, aes(x = coef, y = logFC.clr)) +
+        geom_point() +
+        labs(title = "a) Internal validation") +
+        geom_smooth(method = "lm", se = FALSE, color = "red")
+      
+      volcano_plot <- ggplot(daa_tab_split$abundance, aes(x = coef, y = qval_joint, size = mean.rel2)) +
+        geom_point(aes(color = qval_joint < 0.25), alpha = 0.7) +  
+        labs(
+          title = "b) Volcano Plot: significance vs effect size",
+          x = "Estimates (coef)",
+          y = "qval_joint(<0.25)"
+        ) +
+        scale_color_manual(values = c("red", "blue")) +  
+        theme_minimal() +
+        theme(
+          legend.position = "none",
+          plot.title = element_text(hjust = 0.5)
+        )
+      volcano_plot <- volcano_plot + 
+        geom_text_repel(data = subset(daa_tab_split$abundance, qval_joint < 0.25),
+                        aes(label = feature), size = 3, box.padding = 0.3)
+      
+      plot <- wrap_plots(plot1, volcano_plot)
+    
+      table <- datatable(
+        daa_tab_split$abundance,
+        extensions = c("Buttons"),
+        options = list(
+          pageLength = 6,
+          dom = 'Bfrtip',
+          buttons = c("copy", "csv", "excel")
+        ),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+      
+      list(plot = plot, table = table)
+}
+  )
+```
+
+```{r}
+#| label: fig-figure-within-genus_all
+#| fig-width: 8
+#| fig-height: 8
+
+tab_heat <- lapply(tse_list, function(tse){
+    file_path <- file.path("../../output/daa/daa_taxa", unique(tse$Treatment), taxa_name, "all_results.tsv")
+    df <- read_tsv(file_path, show_col_types = FALSE)
+    df$Intervention <- unique(tse$Intervention) 
+    df$Treatment <- unique(tse$Treatment) 
+    df_split <- split(df, df$model)
+    return(df_split$abundance)
+}
+  )
+tab_heat <- bind_rows(tab_heat)
+
+tab_heat <- merge(tab_heat, daa_tab_w, by = c("feature", "Treatment"))
+
+tab_heat <- tab_heat %>%
+  mutate(
+    signif_label = case_when(
+      qval_joint < 0.05 ~ "*",
+      qval_joint < 0.10 ~ "†",
+      TRUE ~ ""
+    ),
+    label = ifelse(!is.na(logFC.clr), paste0(round(logFC.clr, 4), signif_label), "")
+  )
+
+tab_heat <- tab_heat[tab_heat$qval_joint < 0.25, ]
+
+# Plot
+ggplot(tab_heat, aes(x = Intervention, y = feature, fill = logFC.clr)) +
+  geom_tile(color = "white", size = 0.3) +
+  geom_text(aes(label = label), size = 5) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, na.value = "grey50") +
+  theme_minimal(base_size = 14) +
+  theme(text = element_text(family = "Roboto"), 
+        axis.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank()
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = "Effect Size"
+  ) + labs(caption = "p < 0.05 = *   p <0.10 = †")
+```
+
+
+#### Group 4 - Estimates the change in relative abundance between timepoint 1 and timepoint 2
+```{r}
+#| label: tbl-table-within-genus4
+tabs[[1]]$table
+```
+
+```{r}
+#| label: fig-figure-within-genus4
+#| fig-cap: "Group 4: (a)  Internal validation: checking that alternative tests give correlated results, (b) volcano plot showing the relation between effect size and significance"
+#| fig-width: 10
+#| fig-height: 5
+tabs[[1]]$plot
+```
+
+
+#### Group B - Estimates the change in relative abundance between timepoint 1 and timepoint 2
+```{r}
+#| label: tbl-table-within-genusB
+tabs[[2]]$table
+```
+
+```{r}
+#| label: fig-figure-within-genusB
+#| fig-cap: "Group B: (a)  Internal validation: checking that alternative tests give correlated results, (b) volcano plot showing the relation between effect size and significance"
+#| fig-width: 10
+#| fig-height: 5
+tabs[[2]]$plot
+```
+
+
+#### Group C - Estimates the change in relative abundance between timepoint 1 and timepoint 2
+```{r}
+#| label: tbl-table-within-genusC
+tabs[[3]]$table
+```
+
+```{r}
+#| label: fig-figure-within-genusC
+#| fig-cap: "Group C: (a)  Internal validation: checking that alternative tests give correlated results, (b) volcano plot showing the relation between effect size and significance"
+#| fig-width: 10
+#| fig-height: 5
+tabs[[3]]$plot
+```
+
+
+### Across-Group Comparisons
+```{r}
+tse_after <- taxa_tse[, taxa_tse$timepoint == "after"]
+tse_before <- taxa_tse[, taxa_tse$timepoint == "before"]
+
+formula_used_int <- '~ Intervention'
+
+tse_list = list(tse_before, tse_after)
+lapply(tse_list, function(tse){
+  timepoint_dir <- file.path(output_base_dir, unique(tse$timepoint), taxa_name)
+  target_file <- file.path(timepoint_dir, "all_results.tsv")
+  if (!file.exists(target_file)) {
+    dir.create(timepoint_dir, showWarnings = FALSE, recursive = TRUE)
+    run_maaslin3(tse, taxa_name, formula_used_int, timepoint_dir)
+  }
+})
+```
+
+```{r}
+tabs <- lapply(tse_list, function(tse){
+file_path <- file.path("../../output/daa/daa_taxa", unique(tse$timepoint), taxa_name, "all_results.tsv")
+  total_features <- nrow(tse)
+  daa_tab <- read_tsv(file_path, col_names = TRUE, show_col_types = FALSE) %>%
+      filter(!is.na(feature)) %>%
+      select(feature, value, coef, qval_individual, qval_joint, model)
+  
+   table_caption <- paste("Comparison between between treatments(reference = 4) at timepoint", unique(tse$timepoint), "." , taxa_name, "level, relative abundance."," Method: Maaslin3",
+                           "- Total features analyzed:", total_features)
+    
+    # Split the results by model
+    daa_tab_split <- split(daa_tab, daa_tab$model)
+    daa_tab_split$abundance <-  daa_tab_split$abundance %>% 
+    rename( value = "term") %>%
+      select(-model)
+  
+      datatable(
+        daa_tab_split$abundance,
+        extensions = c("Buttons"),
+        options = list(
+          pageLength = 6,
+          dom = 'Bfrtip',
+          buttons = c("copy", "csv", "excel")
+        ),
+        caption = table_caption,
+        rownames = FALSE
+      ) %>%
+      formatSignif(columns = c("qval_joint", "qval_individual", "coef"), digits = 3)
+}
+  )
+```
+
+#### Before Intervention - Estimates the difference in relative abundance between treatments at timepoint 1
+```{r}
+#| label: tbl-table-before-genus
+tabs[[1]]
+```
+
+#### Post Intervention - Estimates the difference in relative abundance between treatments at timepoint 2
+```{r}
+#| label: tbl-table-after-species
+tabs[[2]]
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::
+

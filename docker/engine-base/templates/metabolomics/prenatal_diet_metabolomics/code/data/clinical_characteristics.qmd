@@ -1,0 +1,328 @@
+---
+title: "Clinical characteristics"
+---
+
+## Setup
+
+```{r}
+#| label: clinical-characteristics-01
+source("analysis_data_utils.R")
+source("shared/methods_common.R")
+library(dplyr)
+library(tidyr)
+
+visits <- c(4L, 5L, 6L, 7L)
+
+visit_label <- function(v) dplyr::case_when(
+  v == 4L ~ "6 Months",
+  v == 5L ~ "12 Months",
+  v == 6L ~ "24 Months",
+  v == 7L ~ "5-6 Years",
+  TRUE ~ paste("Visit", v)
+)
+
+pretty_var <- function(x) {
+  x <- sub("^M", "", x)
+  x <- gsub("DietaryPatterns", "Dietary Patterns ", x)
+  x <- gsub("DIINormalDiet", "Dietary Inflammatory Index ", x)
+  x <- gsub("DIIDensityDiet", "Dietary Inflammatory Index Density ", x)
+  x <- gsub("^IDQ1$", "IDQ", x)
+  x <- gsub("^IDQ2$", "IDQ", x)
+  x <- gsub("EPercent", "Percent ", x)
+  x <- gsub("Fiball", "Fibre ", x)
+  x <- gsub("CHO", "Carbohydrate", x)
+  x <- gsub("Pro", "Protein", x)
+  x <- gsub("FAn3", "n-3 fatty acids", x)
+  x <- gsub("FAn6", "n-6 fatty acids", x)
+  x <- gsub("SFA", "SFA", x)
+  x <- gsub("MUFA", "MUFA", x)
+  x <- gsub("PUFA", "PUFA", x)
+  x <- sub("[12]$", "", x)
+  x <- gsub("_", " ", x, fixed = TRUE)
+  x <- gsub("\\s+", " ", trimws(x))
+  tools::toTitleCase(tolower(x))
+}
+
+exposures_early <- c(
+  "MDietaryPatterns_1", "MDIINormalDiet1", "MDIIDensityDiet1", "MIDQ1",
+  "MEPercentProDiet1", "MEPercentCHODiet1", "MEPercentFatDiet1",
+  "MEPercentPUFADiet1", "MEPercentMUFADiet1", "MEPercentSFADiet1",
+  "MEPercentFAn3Diet1", "MEPercentFAn6Diet1", "MEPercentFiballDiet1"
+)
+exposures_late <- c(
+  "MDietaryPatterns_2", "MDIINormalDiet2", "MDIIDensityDiet2", "MIDQ2",
+  "MEPercentProDiet2", "MEPercentCHODiet2", "MEPercentFatDiet2",
+  "MEPercentPUFADiet2", "MEPercentMUFADiet2", "MEPercentSFADiet2",
+  "MEPercentFAn3Diet2", "MEPercentFAn6Diet2", "MEPercentFiballDiet2"
+)
+exposure_map <- list(
+  "4" = c(exposures_early, exposures_late),
+  "5" = c(exposures_early, exposures_late),
+  "6" = c(exposures_early, exposures_late),
+  "7" = c(exposures_early, exposures_late)
+)
+
+core_covars <- c(
+  "Intervention", "CGender", "MEthnicity", "MDise"
+)
+sensitivity_covars <- c(
+  "MprepBMI", "MAge1", "MprevGDM_new", "Bfdurationm",
+  "MPRSmoke", "MUniEdu", "CWeightBirth"
+)
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = paste0("visit_", visits)
+)
+
+mae <- analysis_obj$mae
+
+first_non_missing <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) == 0) return(NA)
+  x[[idx[1]]]
+}
+```
+
+## Objective-specific context
+
+Maternal baseline characteristics, prenatal diet exposures, and child-age analytic panel characteristics are summarized here.
+
+Early- and late-pregnancy diet exposures are not re-measured across child ages; age-specific rows refer to the child outcome panels linked to those baseline pregnancy measures.
+
+## Sample counts by visit and intervention
+
+```{r}
+#| label: clinical-characteristics-02
+counts_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  if (!"Intervention" %in% names(cd)) {
+    return(data.frame(
+      visit = v,
+      Intervention = "missing",
+      n = nrow(cd),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  cd %>%
+    mutate(Intervention = as.character(Intervention)) %>%
+    group_by(child_age = visit_label(v), Intervention) %>%
+    summarise(n = n(), .groups = "drop")
+}))
+
+make_table(counts_tbl, caption = "Child-age panel counts by intervention")
+```
+
+## Continuous variables by visit
+
+```{r}
+#| label: clinical-characteristics-03
+continuous_summary <- function(df, vars, group_var = "Intervention") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  num_vars <- vars[vapply(df[vars], function(x) {
+    x_num <- suppressWarnings(as.numeric(x))
+    sum(is.finite(x_num)) >= 20L && length(unique(x_num[is.finite(x_num)])) >= 8L
+  }, logical(1))]
+
+  if (length(num_vars) == 0) return(data.frame())
+
+  out <- bind_rows(lapply(num_vars, function(vn) {
+    x <- suppressWarnings(as.numeric(df[[vn]]))
+
+    overall <- data.frame(
+      variable = pretty_var(vn),
+      variable_code = vn,
+      group = "Overall",
+      n = sum(is.finite(x)),
+      mean = mean(x, na.rm = TRUE),
+      sd = stats::sd(x, na.rm = TRUE),
+      median = stats::median(x, na.rm = TRUE),
+      q1 = stats::quantile(x, 0.25, na.rm = TRUE),
+      q3 = stats::quantile(x, 0.75, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      by_group <- bind_rows(lapply(sort(unique(as.character(df[[group_var]]))), function(g) {
+        idx <- as.character(df[[group_var]]) == g
+        gx <- x[idx]
+        data.frame(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g,
+          n = sum(is.finite(gx)),
+          mean = mean(gx, na.rm = TRUE),
+          sd = stats::sd(gx, na.rm = TRUE),
+          median = stats::median(gx, na.rm = TRUE),
+          q1 = stats::quantile(gx, 0.25, na.rm = TRUE),
+          q3 = stats::quantile(gx, 0.75, na.rm = TRUE),
+          stringsAsFactors = FALSE
+        )
+      }))
+    }
+
+    bind_rows(overall, by_group)
+  }))
+
+  out
+}
+
+cont_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  vars <- unique(c(exposure_map[[as.character(v)]], core_covars, sensitivity_covars))
+  tab <- continuous_summary(cd, vars, group_var = "Intervention")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, n, mean, sd, median, q1, q3)
+
+make_table(round_numeric(cont_tbl, 3), caption = "Continuous clinical and panel-linked exposure summaries by child age")
+```
+
+## Categorical variables by visit
+
+```{r}
+#| label: clinical-characteristics-04
+categorical_summary <- function(df, vars, group_var = "Intervention") {
+  vars <- intersect(vars, names(df))
+  if (length(vars) == 0) return(data.frame())
+
+  cat_vars <- vars[vapply(df[vars], function(x) {
+    x_chr <- as.character(x)
+    n_non_na <- sum(!is.na(x_chr) & nzchar(x_chr))
+    n_non_na >= 20L && length(unique(x_chr[!is.na(x_chr) & nzchar(x_chr)])) <= 10L
+  }, logical(1))]
+
+  if (length(cat_vars) == 0) return(data.frame())
+
+  bind_rows(lapply(cat_vars, function(vn) {
+    xv <- as.character(df[[vn]])
+    xv[is.na(xv) | xv == ""] <- "<missing>"
+
+    overall <- as.data.frame(table(xv), stringsAsFactors = FALSE) %>%
+      transmute(
+        variable = pretty_var(vn),
+        variable_code = vn,
+        group = "Overall",
+        level = xv,
+        n = Freq,
+        pct = 100 * Freq / sum(Freq)
+      )
+
+    by_group <- data.frame()
+    if (group_var %in% names(df)) {
+      g <- as.character(df[[group_var]])
+      g[is.na(g) | g == ""] <- "<missing_group>"
+      by_group <- as.data.frame(table(g, xv), stringsAsFactors = FALSE) %>%
+        group_by(g) %>%
+        mutate(pct = 100 * Freq / sum(Freq)) %>%
+        ungroup() %>%
+        transmute(
+          variable = pretty_var(vn),
+          variable_code = vn,
+          group = g,
+          level = xv,
+          n = Freq,
+          pct = pct
+        )
+    }
+
+    bind_rows(overall, by_group)
+  }))
+}
+
+cat_tbl <- bind_rows(lapply(visits, function(v) {
+  vn <- paste0("visit_", v)
+  if (!vn %in% names(experiments(mae))) return(NULL)
+  cd <- as.data.frame(SummarizedExperiment::colData(experiments(mae)[[vn]]), stringsAsFactors = FALSE)
+  vars <- unique(c(exposure_map[[as.character(v)]], core_covars, sensitivity_covars))
+  tab <- categorical_summary(cd, vars, group_var = "Intervention")
+  if (nrow(tab) == 0) return(NULL)
+  tab$child_age <- visit_label(v)
+  tab
+})) %>%
+  select(child_age, variable, variable_code, group, level, n, pct)
+
+make_table(round_numeric(cat_tbl, 3), caption = "Categorical clinical and panel-linked exposure summaries by child age")
+```
+
+## Maternal baseline characteristics
+
+```{r}
+#| label: clinical-characteristics-02b
+maternal_baseline_vars <- unique(c(core_covars, sensitivity_covars))
+maternal_baseline_vars <- maternal_baseline_vars[maternal_baseline_vars %in% names(analysis_obj$data)]
+
+maternal_df <- analysis_obj$data %>%
+  arrange(StudyID, visit_num) %>%
+  group_by(StudyID) %>%
+  summarise(across(all_of(c("Intervention", maternal_baseline_vars)), first_non_missing), .groups = "drop")
+
+maternal_cont_tbl <- continuous_summary(
+  maternal_df,
+  vars = maternal_baseline_vars,
+  group_var = "Intervention"
+) %>%
+  select(variable, variable_code, group, n, mean, sd, median, q1, q3)
+
+maternal_cat_tbl <- categorical_summary(
+  maternal_df,
+  vars = maternal_baseline_vars,
+  group_var = "Intervention"
+) %>%
+  select(variable, variable_code, group, level, n, pct)
+
+if (nrow(maternal_cont_tbl) > 0) {
+  make_table(round_numeric(maternal_cont_tbl, 3), caption = "Maternal baseline continuous characteristics")
+}
+
+if (nrow(maternal_cat_tbl) > 0) {
+  make_table(round_numeric(maternal_cat_tbl, 3), caption = "Maternal baseline categorical characteristics")
+}
+```
+
+## Requested table of characteristics
+
+Table 1 summarizes baseline maternal and child characteristics using one record per child/mother pair, taking the first non-missing value when a variable appears across visits. Continuous variables are mean (SD); categorical variables are n (%).
+
+Table 2 summarizes maternal diet variables in early and late pregnancy. Continuous early-late comparisons use paired t-tests; categorical early-late comparisons use McNemar tests where applicable.
+
+```{r}
+#| label: clinical-characteristics-04b
+prenatal_diet_table1_path <- "../data/prenatal_diet_characteristics_table1.csv"
+prenatal_diet_table2_path <- "../data/prenatal_diet_characteristics_table2.csv"
+
+if (file.exists(prenatal_diet_table1_path)) {
+  make_table(
+    read.csv(prenatal_diet_table1_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics: maternal and child baseline characteristics"
+  )
+}
+
+if (file.exists(prenatal_diet_table2_path)) {
+  make_table(
+    read.csv(prenatal_diet_table2_path, check.names = FALSE, colClasses = "character", na.strings = character()),
+    caption = "Table of characteristics: maternal diet characteristics, early versus late pregnancy"
+  )
+}
+```
+
+## Session info
+
+::: {.callout-note collapse="true" title="Show session information"}
+```{r}
+#| label: clinical-characteristics-05
+#| echo: false
+sessionInfo()
+```
+:::

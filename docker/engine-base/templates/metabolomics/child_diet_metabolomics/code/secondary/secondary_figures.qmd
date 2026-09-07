@@ -1,0 +1,645 @@
+---
+title: "Secondary figures: child diet and metabolites"
+---
+
+These figures show exposure-level detail, adjustment robustness, and cross-question pattern coherence for the linear-model components (`Q1`-`Q3`). They are not the primary inferential summaries and do not cover the warning-heavy repeated-measures `Q4` analysis.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+results <- readRDS("../output/results/targeted_v2/child_diet_study1_results_v2.rds")
+q1 <- results$q1
+q2 <- results$q2
+q3 <- results$q3
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_6", "visit_7")
+)
+
+mae <- analysis_obj$mae
+df_all <- analysis_obj$data
+metabolite_cols <- analysis_obj$metabolite_cols
+tse6 <- experiments(mae)[["visit_6"]]
+tse7 <- experiments(mae)[["visit_7"]]
+
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+feature_meta$feature_group <- if ("Group" %in% names(feature_meta)) as.character(feature_meta$Group) else "Unknown"
+feature_meta$feature_group[is.na(feature_meta$feature_group) | feature_meta$feature_group == ""] <- "Unknown"
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group")], by = "feature")
+}
+
+safe_logp <- function(p) {
+  p <- as.numeric(p)
+  p[p <= 0 | is.na(p)] <- NA_real_
+  -log10(p)
+}
+
+label_exposure <- function(x) {
+  gsub("_", " ", x, fixed = TRUE)
+}
+
+build_corr_heatmap_df <- function(df, feature_cols) {
+  feature_cols <- intersect(feature_cols, names(df))
+  if (length(feature_cols) < 2) return(NULL)
+
+  mat <- as.matrix(df[, feature_cols, drop = FALSE])
+  storage.mode(mat) <- "numeric"
+  keep <- colSums(is.finite(mat)) >= 20
+  mat <- mat[, keep, drop = FALSE]
+  if (ncol(mat) < 2) return(NULL)
+
+  cor_mat <- suppressWarnings(stats::cor(mat, use = "pairwise.complete.obs"))
+  cor_mat[!is.finite(cor_mat)] <- 0
+  diag(cor_mat) <- 1
+  cor_mat <- pmax(pmin(cor_mat, 1), -1)
+
+  ord <- stats::hclust(stats::as.dist(1 - cor_mat), method = "average")$order
+  cor_mat <- cor_mat[ord, ord, drop = FALSE]
+
+  expand.grid(
+    row = seq_len(nrow(cor_mat)),
+    col = seq_len(ncol(cor_mat))
+  ) %>%
+    mutate(correlation = as.vector(cor_mat))
+}
+
+strip_visit_suffix <- function(x) {
+  sub("(6|7)$", "", as.character(x))
+}
+
+is_numeric_exposure <- function(tse, exposure) {
+  cd <- as.data.frame(colData(tse), stringsAsFactors = FALSE)
+  exposure %in% names(cd) && is.numeric(cd[[exposure]])
+}
+
+pick_representative_numeric_exposure <- function(res_df, tse) {
+  if (is.null(res_df) || nrow(res_df) == 0) return(NA_character_)
+  cand <- res_df %>%
+    distinct(exposure, q.value) %>%
+    filter(is.finite(q.value)) %>%
+    group_by(exposure) %>%
+    summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+    arrange(best_q)
+  if (nrow(cand) == 0) return(NA_character_)
+  for (exp_i in cand$exposure) {
+    if (is_numeric_exposure(tse, exp_i)) return(exp_i)
+  }
+  NA_character_
+}
+
+fit_lm_exposure <- function(df, outcome, exposure, covars = character(0), min_n = 30L) {
+  vars <- unique(c(outcome, exposure, covars))
+  vars <- vars[vars %in% names(df)]
+  if (!(outcome %in% vars) || !(exposure %in% vars)) return(NULL)
+
+  sub_df <- df[, vars, drop = FALSE]
+  sub_df <- sub_df[complete.cases(sub_df), , drop = FALSE]
+  if (nrow(sub_df) < min_n) return(NULL)
+
+  sub_df[[outcome]] <- suppressWarnings(as.numeric(sub_df[[outcome]]))
+  sub_df[[exposure]] <- suppressWarnings(as.numeric(sub_df[[exposure]]))
+  if (!is.numeric(sub_df[[exposure]]) || length(unique(sub_df[[exposure]][is.finite(sub_df[[exposure]])])) < 3) return(NULL)
+  if (!is.numeric(sub_df[[outcome]]) || all(!is.finite(sub_df[[outcome]]))) return(NULL)
+
+  y_sd <- stats::sd(sub_df[[outcome]], na.rm = TRUE)
+  if (!is.finite(y_sd) || y_sd <= 0) return(NULL)
+  sub_df[[outcome]] <- (sub_df[[outcome]] - mean(sub_df[[outcome]], na.rm = TRUE)) / y_sd
+
+  covars <- setdiff(intersect(covars, names(sub_df)), c(outcome, exposure))
+  rhs <- c(exposure, covars)
+  f <- stats::as.formula(paste0("`", outcome, "` ~ ", paste(rhs, collapse = " + ")))
+  fit <- tryCatch(stats::lm(f, data = sub_df), error = function(e) NULL)
+  if (is.null(fit)) return(NULL)
+
+  coef_tbl <- summary(fit)$coefficients
+  term <- if (exposure %in% rownames(coef_tbl)) exposure else grep(paste0("^", exposure, "$"), rownames(coef_tbl), value = TRUE)[1]
+  if (!is.character(term) || length(term) == 0 || is.na(term)) return(NULL)
+
+  ci <- tryCatch(stats::confint(fit, parm = term, level = 0.95), error = function(e) c(NA_real_, NA_real_))
+  data.frame(
+    n = nrow(sub_df),
+    estimate = unname(coef_tbl[term, "Estimate"]),
+    conf.low = unname(ci[1]),
+    conf.high = unname(ci[2]),
+    p.value = unname(coef_tbl[term, "Pr(>|t|)"]),
+    stringsAsFactors = FALSE
+  )
+}
+
+as_panel_df <- function(tse) {
+  cd <- as.data.frame(colData(tse), stringsAsFactors = FALSE)
+  ft <- as.data.frame(t(assay(tse, "mbo")), check.names = FALSE)
+  cd$sample_id <- rownames(cd)
+  ft$sample_id <- rownames(ft)
+  out <- left_join(cd, ft, by = "sample_id")
+  out$StudyID <- as.character(out$StudyID)
+  out
+}
+
+df6 <- as_panel_df(tse6)
+df7 <- as_panel_df(tse7)
+
+core_v6 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+core_v7 <- c(
+  "Intervention", "MPrimipara", "MUniEdu", "MGDMOGTT1OR2Fi",
+  "CGender", "CWeightBirth", "Bfdurationm"
+)
+minimal_v6 <- c("Intervention", "CGender")
+minimal_v7 <- c("Intervention", "CGender")
+technical_v6 <- c(core_v6, "CHealthy6")
+technical_v7 <- c(core_v7, "CHealthy7")
+
+rep_q1 <- pick_representative_numeric_exposure(q1, tse6)
+rep_q2 <- pick_representative_numeric_exposure(q2, tse7)
+rep_q3 <- pick_representative_numeric_exposure(q3, tse6)
+
+rep_tbl <- data.frame(
+  analysis = c(
+    "Concurrent: 2-year diet and 2-year metabolites",
+    "Concurrent: 5-6-year diet and 5-6-year metabolites",
+    "Prospective: 2-year diet and 5-6-year metabolites"
+  ),
+  selected_exposure = c(rep_q1, rep_q2, rep_q3),
+  selection_rule = c(
+    "Best q-value among numeric visit-6 exposures",
+    "Best q-value among numeric visit-7 exposures",
+    "Best q-value among numeric visit-6 exposures"
+  ),
+  stringsAsFactors = FALSE
+)
+```
+
+Selected exposures used in this page. These are rule-based appendix exemplars, not hand-picked headline results:
+
+```{r}
+#| label: secondary-figures-01
+make_table(rep_tbl, caption = "Selected representative exposures for secondary figures")
+```
+
+## Figure A1. Global association screen
+
+```{r}
+#| label: fig-global-screen
+#| fig-cap: "Global association screen (p-value ranking) for selected dietary exposures at 2 and 5-6 years. Points colored by metabolite class."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+screen_df <- bind_rows(
+  q1 %>% filter(exposure == rep_q1) %>% mutate(analysis = "Concurrent: 2-year diet and 2-year metabolites"),
+  q2 %>% filter(exposure == rep_q2) %>% mutate(analysis = "Concurrent: 5-6-year diet and 5-6-year metabolites"),
+  q3 %>% filter(exposure == rep_q3) %>% mutate(analysis = "Prospective: 2-year diet and 5-6-year metabolites")
+) %>%
+  add_feature_meta() %>%
+  group_by(analysis) %>%
+  arrange(p.value, .by_group = TRUE) %>%
+  mutate(rank = row_number(), logp = safe_logp(p.value), sig = q.value < 0.1) %>%
+  ungroup()
+
+screen_df %>%
+  ggplot(aes(x = rank, y = logp, color = feature_group)) +
+  geom_point(alpha = 0.7, size = 1.4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey45") +
+  facet_wrap(~ analysis, scales = "free_x") +
+  labs(
+    x = "Ordered metabolite rank",
+    y = "-log10(p)",
+    color = "Metabolite class",
+    title = "Global association screens for selected exposures"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Figure A2. Main forest plot of top hits
+
+```{r}
+#| label: fig-forest-main
+#| fig-cap: "Forest plots showing standardized beta coefficients and 95% confidence intervals for top metabolic associations."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 12
+forest_primary <- bind_rows(
+  q1 %>% filter(exposure == rep_q1) %>% mutate(analysis = "Concurrent: 2-year diet and 2-year metabolites"),
+  q2 %>% filter(exposure == rep_q2) %>% mutate(analysis = "Concurrent: 5-6-year diet and 5-6-year metabolites"),
+  q3 %>% filter(exposure == rep_q3) %>% mutate(analysis = "Prospective: 2-year diet and 5-6-year metabolites")
+) %>%
+  add_feature_meta() %>%
+  group_by(analysis) %>%
+  slice_min(q.value, n = 15, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(
+    feature_lab = paste0(feature_group, " | ", feature)
+  )
+
+analysis_order <- c(
+  "Concurrent: 2-year diet and 2-year metabolites",
+  "Concurrent: 5-6-year diet and 5-6-year metabolites",
+  "Prospective: 2-year diet and 5-6-year metabolites"
+)
+
+for (analysis_i in analysis_order) {
+  panel_df <- forest_primary %>% filter(analysis == analysis_i)
+  exp_name <- unique(panel_df$exposure)
+  exp_label <- if (length(exp_name) == 1) pretty_exposure(exp_name) else paste(pretty_exposure(exp_name), collapse = ", ")
+  p <- panel_df %>%
+    ggplot(aes(x = estimate, y = fct_reorder(feature_lab, estimate), color = feature_group)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey45") +
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, color = "grey55") +
+    geom_point(size = 1.9) +
+    labs(
+      x = "Standardized beta (95% CI)",
+      y = NULL,
+      color = "Metabolite class",
+      title = paste0("Main forest plot: ", analysis_i),
+      subtitle = paste0("Selected diet exposure: ", exp_label, " (top 15 most significant associations shown)")
+    ) +
+    theme_minimal(base_size = 16)
+  print(p)
+}
+```
+
+## Figure A3. Sensitivity and model comparison
+
+```{r}
+#| label: fig-sensitivity
+#| fig-cap: "Sensitivity analysis comparing coefficient estimates across minimal, primary, and technical adjustment sets."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 11
+top_features_q1 <- q1 %>%
+  filter(exposure == rep_q1) %>%
+  slice_min(q.value, n = 10, with_ties = FALSE) %>%
+  pull(feature)
+
+top_features_q2 <- q2 %>%
+  filter(exposure == rep_q2) %>%
+  slice_min(q.value, n = 10, with_ties = FALSE) %>%
+  pull(feature)
+
+top_features_q3 <- q3 %>%
+  filter(exposure == rep_q3) %>%
+  slice_min(q.value, n = 10, with_ties = FALSE) %>%
+  pull(feature)
+
+fit_cross_models <- function(df, exposure, features, model_sets, analysis_name) {
+  bind_rows(lapply(features, function(ft) {
+    bind_rows(lapply(names(model_sets), function(model_nm) {
+      fit <- fit_lm_exposure(
+        df = df,
+        outcome = ft,
+        exposure = exposure,
+        covars = model_sets[[model_nm]]
+      )
+      if (is.null(fit)) return(NULL)
+      fit %>%
+        mutate(
+          analysis = analysis_name,
+          model = model_nm,
+          feature = ft
+        )
+    }))
+  }))
+}
+
+comp_q1 <- fit_cross_models(
+  df = df6,
+  exposure = rep_q1,
+  features = top_features_q1,
+  model_sets = list(
+    "Minimally adjusted" = minimal_v6,
+    "Primary adjusted" = core_v6,
+    "Technical/acute-state adjusted" = technical_v6
+  ),
+  analysis_name = "Concurrent: 2-year diet and 2-year metabolites"
+)
+
+comp_q2 <- fit_cross_models(
+  df = df7,
+  exposure = rep_q2,
+  features = top_features_q2,
+  model_sets = list(
+    "Minimally adjusted" = minimal_v7,
+    "Primary adjusted" = core_v7,
+    "Technical/acute-state adjusted" = technical_v7
+  ),
+  analysis_name = "Concurrent: 5-6-year diet and 5-6-year metabolites"
+)
+
+fit_prospective_models <- function(df6, df7, exposure, features, core_covars_v6) {
+  bind_rows(lapply(features, function(ft) {
+    if (!(ft %in% names(df6)) || !(ft %in% names(df7))) return(NULL)
+
+    dat <- inner_join(
+      df7 %>% select(StudyID, outcome = all_of(ft)),
+      df6 %>% select(StudyID, exposure_value = all_of(exposure), all_of(core_covars_v6), baseline = all_of(ft)),
+      by = "StudyID"
+    )
+
+    base_covars <- intersect(core_covars_v6, names(dat))
+    bind_rows(
+      fit_lm_exposure(dat, outcome = "outcome", exposure = "exposure_value", covars = character(0)) %>%
+        mutate(model = "Unadjusted"),
+      fit_lm_exposure(dat, outcome = "outcome", exposure = "exposure_value", covars = base_covars) %>%
+        mutate(model = "Primary adjusted"),
+      fit_lm_exposure(dat, outcome = "outcome", exposure = "exposure_value", covars = c(base_covars, "baseline")) %>%
+        mutate(model = "Baseline-metabolite adjusted")
+    ) %>%
+      mutate(feature = ft)
+  }))
+}
+
+comp_q3 <- fit_prospective_models(
+  df6 = df6,
+  df7 = df7,
+  exposure = rep_q3,
+  features = top_features_q3,
+  core_covars_v6 = core_v6
+) %>%
+  mutate(analysis = "Prospective: 2-year diet and 5-6-year metabolites")
+
+comp_all <- bind_rows(comp_q1, comp_q2, comp_q3) %>%
+  add_feature_meta() %>%
+  mutate(
+    feature_lab = paste0(feature_group, " | ", feature),
+    model = factor(
+      model,
+      levels = c(
+        "Unadjusted",
+        "Minimally adjusted",
+        "Primary adjusted",
+        "Technical/acute-state adjusted",
+        "Baseline-metabolite adjusted"
+      )
+    )
+  )
+
+for (analysis_i in analysis_order) {
+  panel_df <- comp_all %>% filter(analysis == analysis_i)
+  if (nrow(panel_df) == 0) next
+
+  p <- panel_df %>%
+    ggplot(aes(x = feature_lab, y = estimate, color = model)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+    geom_pointrange(
+      aes(ymin = conf.low, ymax = conf.high),
+      position = position_dodge(width = 0.7),
+      fatten = 1.5,
+      linewidth = 0.35
+    ) +
+    coord_flip() +
+    labs(
+      x = NULL,
+      y = "Standardized beta (95% CI)",
+      color = "Model",
+      title = paste0("Sensitivity/model comparison: ", analysis_i)
+    ) +
+    theme_minimal(base_size = 16)
+  print(p)
+}
+```
+
+## Figure A4. Comparative pattern across Q1-Q3
+
+```{r}
+#| label: fig-age-comp
+#| fig-cap: "Comparative effect sizes across the two concurrent models and the prospective model for one matched exposure family selected by the best observed q-value across Q1-Q3."
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 11
+bases_q1 <- unique(strip_visit_suffix(q1$exposure))
+bases_q2 <- unique(strip_visit_suffix(q2$exposure))
+bases_q3 <- unique(strip_visit_suffix(q3$exposure))
+common_bases <- intersect(intersect(bases_q1, bases_q2), bases_q3)
+
+base_score <- bind_rows(
+  q1 %>% mutate(base = strip_visit_suffix(exposure)),
+  q2 %>% mutate(base = strip_visit_suffix(exposure)),
+  q3 %>% mutate(base = strip_visit_suffix(exposure))
+) %>%
+  filter(base %in% common_bases) %>%
+  group_by(base) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(best_q)
+
+selected_base <- if (nrow(base_score) > 0) base_score$base[[1]] else NA_character_
+
+exp_q1 <- q1 %>% filter(strip_visit_suffix(exposure) == selected_base) %>% distinct(exposure) %>% slice_head(n = 1) %>% pull(exposure)
+exp_q2 <- q2 %>% filter(strip_visit_suffix(exposure) == selected_base) %>% distinct(exposure) %>% slice_head(n = 1) %>% pull(exposure)
+exp_q3 <- q3 %>% filter(strip_visit_suffix(exposure) == selected_base) %>% distinct(exposure) %>% slice_head(n = 1) %>% pull(exposure)
+
+comp_age <- bind_rows(
+  q1 %>% filter(exposure == exp_q1) %>% mutate(model = "Concurrent at 2 years"),
+  q2 %>% filter(exposure == exp_q2) %>% mutate(model = "Concurrent at 5-6 years"),
+  q3 %>% filter(exposure == exp_q3) %>% mutate(model = "Prospective 2-year to 5-6-year")
+) %>%
+  add_feature_meta()
+
+top_comp_features <- comp_age %>%
+  group_by(feature) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  slice_min(best_q, n = 20, with_ties = FALSE)
+
+comp_age_plot <- comp_age %>%
+  semi_join(top_comp_features, by = "feature") %>%
+  mutate(
+    feature_lab = paste0(feature_group, " | ", feature),
+    model = factor(
+      model,
+      levels = c("Concurrent at 2 years", "Concurrent at 5-6 years", "Prospective 2-year to 5-6-year")
+    )
+  )
+
+comp_age_plot %>%
+  ggplot(aes(x = feature_lab, y = estimate, color = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey45") +
+  geom_pointrange(
+    aes(ymin = conf.low, ymax = conf.high),
+    position = position_dodge(width = 0.7),
+    fatten = 1.4,
+    linewidth = 0.35
+  ) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Standardized beta (95% CI)",
+    color = "Analysis frame",
+    title = paste0("Comparative summary across ages for exposure family: ", selected_base)
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Figure A5. Metabolite-class composition of significant hits
+
+```{r}
+#| label: fig-class-composition
+#| fig-cap: "Metabolite-class composition of significant associations (q < 0.10) across the three study linear-model question families."
+class_comp <- bind_rows(
+  add_exposure_family(q1) %>% mutate(analysis = "Q1 concurrent"),
+  add_exposure_family(q2) %>% mutate(analysis = "Q2 concurrent"),
+  add_exposure_family(q3) %>% mutate(analysis = "Q3 prospective")
+) %>%
+  filter(q.value < 0.1) %>%
+  add_feature_meta() %>%
+  count(analysis, exposure_family, feature_group, name = "n_hits") %>%
+  group_by(analysis, exposure_family) %>%
+  mutate(hit_fraction = n_hits / sum(n_hits)) %>%
+  ungroup() %>%
+  mutate(exposure_family = factor(exposure_family, levels = family_order))
+
+make_table(
+  class_comp %>% mutate(hit_fraction = round(hit_fraction, 3)),
+  caption = "Metabolite-class composition of significant study hits"
+)
+
+class_comp %>%
+  ggplot(aes(x = analysis, y = hit_fraction, fill = feature_group)) +
+  geom_col(position = "fill", width = 0.65) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  facet_wrap(~ exposure_family) +
+  labs(
+    x = "Question family",
+    y = "Share of significant hits",
+    fill = "Metabolite class",
+    title = "Class composition of significant study findings"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+## Figure A6. Metabolite correlation heatmap
+
+```{r}
+#| label: fig-metabolite-correlation
+#| fig-cap: "Correlation heatmap across all 250 metabolite features. Correlations are computed from the pooled standardized metabolite matrix and ordered by official NMR group."
+#| classes: fig-medium
+#| fig-width: 11
+#| fig-height: 9
+
+mat_data <- as.matrix(df_all[, intersect(metabolite_cols, names(df_all)), drop = FALSE])
+storage.mode(mat_data) <- "numeric"
+keep_cols <- colSums(is.finite(mat_data)) >= 20
+mat_data <- mat_data[, keep_cols, drop = FALSE]
+
+if (ncol(mat_data) < 2) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "Metabolite correlation heatmap unavailable") +
+    theme_void()
+} else {
+  cor_mat <- suppressWarnings(cor(mat_data, use = "pairwise.complete.obs"))
+  cor_mat[!is.finite(cor_mat)] <- 0
+  diag(cor_mat) <- 1
+  cor_mat <- pmax(pmin(cor_mat, 1), -1)
+
+  # Fetch NMR group metadata
+  rd <- as.data.frame(rowData(experiments(mae)[["visit_all"]]), stringsAsFactors = FALSE)
+  rd$Feature <- rownames(rd)
+  rd$Group <- as.character(rd$Group)
+  rd$Group[is.na(rd$Group) | rd$Group == ""] <- "Unknown"
+
+  feature_meta_here <- rd %>%
+    filter(Feature %in% colnames(cor_mat)) %>%
+    arrange(match(Feature, colnames(cor_mat)))
+
+  group_order <- unique(feature_meta_here$Group)
+  
+  ordered_names <- unlist(lapply(group_order, function(group_nm) {
+    members <- feature_meta_here$Feature[feature_meta_here$Group == group_nm]
+    if (length(members) > 2) {
+      group_cor <- cor_mat[members, members, drop = FALSE]
+      members[hclust(as.dist(1 - abs(group_cor)))$order]
+    } else {
+      members
+    }
+  }), use.names = FALSE)
+  ordered_names <- intersect(ordered_names, colnames(cor_mat))
+
+  feature_order <- data.frame(
+    Feature = ordered_names,
+    Position = seq_along(ordered_names),
+    stringsAsFactors = FALSE
+  ) %>%
+    left_join(feature_meta_here[, c("Feature", "Group")], by = "Feature")
+
+  group_ranges <- feature_order %>%
+    group_by(Group) %>%
+    summarise(
+      start = min(Position) - 0.5,
+      end = max(Position) + 0.5,
+      center = mean(Position),
+      n_features = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(Group = factor(Group, levels = group_order)) %>%
+    arrange(Group)
+
+  group_label_df <- group_ranges %>%
+    mutate(Label = stringr::str_wrap(as.character(Group), width = 24))
+
+  boundary_pos <- sort(unique(c(group_ranges$start, group_ranges$end)))
+  boundary_pos <- boundary_pos[boundary_pos > 0.5 & boundary_pos < length(ordered_names) + 0.5]
+
+  cor_long_df <- as.data.frame(cor_mat[ordered_names, ordered_names]) %>%
+    mutate(Feature1 = rownames(cor_mat[ordered_names, ordered_names])) %>%
+    pivot_longer(-Feature1, names_to = "Feature2", values_to = "Correlation") %>%
+    left_join(feature_order %>% select(Feature1 = Feature, X = Position), by = "Feature1") %>%
+    left_join(feature_order %>% select(Feature2 = Feature, Y = Position), by = "Feature2")
+
+  ggplot(cor_long_df, aes(x = X, y = Y, fill = Correlation)) +
+    geom_tile() +
+    geom_vline(xintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+    geom_hline(yintercept = boundary_pos, color = "grey45", linewidth = 0.18) +
+    ggrepel::geom_text_repel(
+      data = group_label_df,
+      aes(x = 0.5, y = center, label = Label),
+      inherit.aes = FALSE,
+      nudge_x = -45,
+      direction = "y",
+      hjust = 1,
+      size = 2.35,
+      segment.color = "grey35",
+      segment.size = 0.18,
+      min.segment.length = 0,
+      box.padding = 0.12,
+      point.padding = 0.05,
+      max.overlaps = Inf
+    ) +
+    scale_fill_gradient2(
+      low = "#2166AC",
+      mid = "white",
+      high = "#B2182B",
+      midpoint = 0,
+      limits = c(-1, 1)
+    ) +
+    scale_x_continuous(limits = c(-70, length(ordered_names) + 0.5), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0.5, length(ordered_names) + 0.5), expand = c(0, 0)) +
+    coord_fixed(clip = "off") +
+    labs(x = NULL, y = NULL, fill = "r", title = "Metabolite correlation structure") +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      plot.margin = margin(5.5, 5.5, 5.5, 120),
+      legend.position = "right"
+    )
+}
+```

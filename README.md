@@ -8,14 +8,15 @@ This is the primary OmicsBase implementation, previously named `omicsbase3`. The
 
 This repository is a source checkpoint of the existing implementation, not yet a turnkey distribution. It preserves the current customizations before architectural cleanup. Upstream upgrades require review; see [UPSTREAM.md](UPSTREAM.md).
 
-The current deployment uses `omicsbase3-engine:dev`. Its recovered Dockerfile and requirements are in `engine/`. It extends the shared `omicsbase-backend:dev` image used by both earlier OmicsBase implementations; see [engine provenance](docs/ENGINE_IMAGE.md). The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
+The engine and its shared analysis base can now be built entirely from this repository with `python3 scripts/build_engine.py`. The base recipe and all its source inputs are under `docker/engine-base/`; no OB2 or archived directory is required. See [engine build instructions](docs/ENGINE_IMAGE.md). The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
 
 ## Layout
 
 - `engine/`: R execution, MCP/HTTP endpoints, and knowledge search/indexing.
 - `upstream/`: pinned upstream commits, patches to existing files, and new integration files. Includes note cells, workspace UI, and OpenHands backend/runtime customizations.
 - `deployment/`: configuration templates and a non-secret inventory of current deployment image identities.
-- `scripts/`: source snapshot and restoration tools.
+- `scripts/`: source snapshot, restoration, and engine image build tools.
+- `docker/engine-base/`: imported analysis-base Dockerfile and all build inputs.
 - `licenses/`: retained upstream notices.
 - `docs/`: maintenance findings and retirement records.
 
@@ -43,7 +44,7 @@ python3 scripts/restore_upstream.py /tmp/omicsbase-restored
 
 The helper checks snapshot hashes, clones the recorded upstream repositories, checks out exact commits, applies the patches, and copies new files. It needs network access and only reconstructs the two source checkouts. It never replaces an existing checkout or starts containers.
 
-For a complete development layout, place the restored checkouts alongside this repository's `engine/` directory. Install/build dependencies using each pinned upstream's instructions. Copy `.env.example` to `librechat/.env` and populate it locally. Copy `deployment/librechat.yaml` and `deployment/docker-compose.override.yml` into `librechat/`. The override paths are relative to that directory. Supply the engine image and required knowledge assets before starting services.
+For a complete development layout, place the restored checkouts alongside this repository's `engine/` directory. Install/build dependencies using each pinned upstream's instructions. Copy `.env.example` to `librechat/.env` and populate it locally. Copy `deployment/librechat.yaml` and `deployment/docker-compose.override.yml` into `librechat/`. The override paths are relative to that directory. Build the engine with `python3 scripts/build_engine.py` and provision required knowledge assets before starting services. The command builds `omicsbase-engine-base:dev` and `omicsbase-engine:dev`; the deployment template uses the latter by default. Existing running containers are not updated automatically.
 
 ## Existing local deployment
 

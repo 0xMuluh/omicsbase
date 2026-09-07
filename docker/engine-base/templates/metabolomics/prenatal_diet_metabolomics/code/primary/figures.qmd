@@ -1,0 +1,605 @@
+---
+title: "Figures: maternal diet and child metabolites"
+---
+
+Figures from the early-pregnancy, late-pregnancy, mutual-timing, and longitudinal analyses. The longitudinal component now returns coefficient-level output across all attempted exposures, but it still generated substantial execution warnings, so the figures below should be read as supporting context rather than a strong standalone inferential block.
+
+```{r}
+#| label: setup
+#| include: false
+source("analysis_data_utils.R")
+source("report_utils.R")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(MultiAssayExperiment)
+library(SummarizedExperiment)
+
+results <- readRDS("../output/results/targeted/prenatal_diet_study2_results.rds")
+age_res <- results$age_specific
+long_res <- results$longitudinal
+age_res_sens <- results$age_specific_sensitivity
+long_res_sens <- results$longitudinal_sensitivity
+model_status <- results$model_status
+
+analysis_obj <- prepare_analysis_data(
+  mae_path = "../data/MAE_original.rds",
+  visits = c("visit_4", "visit_5", "visit_6", "visit_7")
+)
+
+mae <- analysis_obj$mae
+df_long <- analysis_obj$data
+
+feature_meta <- as.data.frame(
+  SummarizedExperiment::rowData(experiments(mae)[["visit_all"]]),
+  stringsAsFactors = FALSE
+)
+feature_meta$feature <- rownames(feature_meta)
+feature_meta$feature_group <- if ("Group" %in% names(feature_meta)) as.character(feature_meta$Group) else "Unknown"
+feature_meta$feature_group[is.na(feature_meta$feature_group) | feature_meta$feature_group == ""] <- "Unknown"
+feature_meta$metabolite_label <- if ("Biomarker.name" %in% names(feature_meta)) as.character(feature_meta$Biomarker.name) else feature_meta$feature
+
+add_feature_meta <- function(df) {
+  left_join(df, feature_meta[, c("feature", "feature_group", "metabolite_label")], by = "feature")
+}
+
+strip_window_suffix <- function(x) {
+  x <- sub("_[12]$", "", x)
+  sub("[12]$", "", x)
+}
+
+label_exposure <- function(x) {
+  gsub("_", " ", x, fixed = TRUE)
+}
+
+safe_logp <- function(p) {
+  p <- as.numeric(p)
+  p[p <= 0 | is.na(p)] <- NA_real_
+  -log10(p)
+}
+
+early_res <- flatten_age(age_res, "early")
+late_res <- flatten_age(age_res, "late")
+mutual_res <- flatten_age(age_res, "mutual")
+early_res_sens <- flatten_age(age_res_sens, "early")
+late_res_sens <- flatten_age(age_res_sens, "late")
+mutual_res_sens <- flatten_age(age_res_sens, "mutual")
+mutual_early_res <- flatten_mutual_term(mutual_res, "early")
+mutual_late_res <- flatten_mutual_term(mutual_res, "late")
+mutual_early_res_sens <- flatten_mutual_term(mutual_res_sens, "early")
+mutual_late_res_sens <- flatten_mutual_term(mutual_res_sens, "late")
+all_age <- bind_rows(early_res, late_res)
+long_coef_res <- if (!is.null(long_res) && all(c("term", "estimate", "q.value", "feature", "timing") %in% names(long_res))) long_res else data.frame()
+long_coef_res_sens <- if (!is.null(long_res_sens) && all(c("term", "estimate", "q.value", "feature", "timing") %in% names(long_res_sens))) long_res_sens else data.frame()
+
+pick_representative_exposure <- function(df) {
+  cand <- df %>%
+    filter(is.finite(q.value)) %>%
+    group_by(exposure) %>%
+    summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+    arrange(best_q)
+  if (nrow(cand) == 0) return(NA_character_)
+  cand$exposure[[1]]
+}
+```
+
+## Analytic sample structure
+
+```{r}
+#| label: fig-visit-counts
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Visit-level sample sizes for the metabolomics analytical population. N indicates the number of unique participants with valid serum metabolite profiles at each study visit."
+visit_counts <- data.frame(
+  visit = c(4, 5, 6, 7),
+  n = c(
+    nrow(as.data.frame(colData(experiments(mae)[["visit_4"]]))),
+    nrow(as.data.frame(colData(experiments(mae)[["visit_5"]]))),
+    nrow(as.data.frame(colData(experiments(mae)[["visit_6"]]))),
+    nrow(as.data.frame(colData(experiments(mae)[["visit_7"]])))
+  ),
+  stringsAsFactors = FALSE
+)
+visit_counts$child_age <- visit_label(visit_counts$visit)
+
+visit_counts %>%
+  ggplot(aes(x = child_age, y = n, fill = child_age)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.25, size = 3.5) +
+  labs(
+    x = "Child age",
+    y = "Participants"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+```{r}
+#| label: fig-repeated-measures
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Participation profile across visits. This plot shows the number of children who contributed to one, two, three, or all four metabolomics panels."
+all_ids <- bind_rows(lapply(c(4, 5, 6, 7), function(v) {
+  cd <- as.data.frame(colData(experiments(mae)[[paste0("visit_", v)]]), stringsAsFactors = FALSE)
+  data.frame(StudyID = as.character(cd$StudyID), visit = v, stringsAsFactors = FALSE)
+}))
+
+profile_tbl <- all_ids %>%
+  distinct(StudyID, visit) %>%
+  count(StudyID, name = "n_visits") %>%
+  count(n_visits, name = "n_children")
+
+profile_tbl %>%
+  ggplot(aes(x = factor(n_visits), y = n_children)) +
+  geom_col(fill = "#1B6CA8", width = 0.65) +
+  geom_text(aes(label = n_children), vjust = -0.25, size = 3.3) +
+  labs(
+    x = "Number of visits contributed",
+    y = "Children"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+```{r}
+#| label: fig-cc-boxplot
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Complete-case sample sizes for regression models. Each point represents one exposure-metabolite pair, showing the final N used after aligning diet data and confounders."
+cc_tbl <- bind_rows(
+  early_res %>% distinct(timing, exposure, visit, n),
+  late_res %>% distinct(timing, exposure, visit, n)
+)
+
+cc_tbl %>%
+  ggplot(aes(x = factor(visit), y = n, color = timing)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.6) +
+  geom_jitter(width = 0.12, alpha = 0.55) +
+  labs(
+    x = "Child age",
+    y = "Complete-case n",
+    color = "Window"
+  ) +
+  theme_minimal(base_size = 15) +
+  scale_x_discrete(labels = visit_label)
+```
+
+## Maternal exposure distributions and timing windows
+
+```{r}
+#| label: fig-exposure-dist
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Distributions of maternal dietary exposures in early and late pregnancy. Standardized E% values are shown for all nutrients included in the targeted models."
+cd4 <- as.data.frame(colData(experiments(mae)[["visit_4"]]), stringsAsFactors = FALSE)
+
+exp_early <- sort(unique(early_res$exposure))
+exp_late <- sort(unique(late_res$exposure))
+
+num_early <- exp_early[vapply(exp_early, function(v) v %in% names(cd4) && is.numeric(cd4[[v]]), logical(1))]
+num_late <- exp_late[vapply(exp_late, function(v) v %in% names(cd4) && is.numeric(cd4[[v]]), logical(1))]
+
+dist_early <- bind_rows(lapply(num_early, function(v) {
+  data.frame(window = "Early", exposure = v, value = suppressWarnings(as.numeric(cd4[[v]])), stringsAsFactors = FALSE)
+}))
+
+dist_late <- bind_rows(lapply(num_late, function(v) {
+  data.frame(window = "Late", exposure = v, value = suppressWarnings(as.numeric(cd4[[v]])), stringsAsFactors = FALSE)
+}))
+
+dist_all <- bind_rows(dist_early, dist_late)
+
+if (nrow(dist_all) > 0) {
+  dist_all %>%
+    filter(is.finite(value)) %>%
+    mutate(exposure = label_exposure(exposure)) %>%
+    ggplot(aes(x = exposure, y = value, fill = window)) +
+    geom_boxplot(outlier.alpha = 0.2) +
+    coord_flip() +
+    facet_wrap(~ window, scales = "free_y") +
+    labs(
+      x = NULL,
+      y = "Value"
+    ) +
+    theme_minimal(base_size = 15)
+}
+```
+
+```{r}
+#| label: fig-pairing-scatter
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Intra-individual correlations between early and late pregnancy diet measurements. These pairings inform the mutual-timing models."
+pair_key <- intersect(strip_window_suffix(exp_early), strip_window_suffix(exp_late))
+
+pair_df <- bind_rows(lapply(pair_key, function(k) {
+  e <- exp_early[strip_window_suffix(exp_early) == k][1]
+  l <- exp_late[strip_window_suffix(exp_late) == k][1]
+  if (is.na(e) || is.na(l) || !(e %in% names(cd4)) || !(l %in% names(cd4))) return(NULL)
+
+  data.frame(
+    pair = k,
+    early = suppressWarnings(as.numeric(cd4[[e]])),
+    late = suppressWarnings(as.numeric(cd4[[l]])),
+    stringsAsFactors = FALSE
+  )
+})) %>%
+  filter(is.finite(early), is.finite(late))
+
+if (nrow(pair_df) > 0) {
+  pair_df %>%
+    mutate(pair = label_exposure(pair)) %>%
+    ggplot(aes(x = early, y = late)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+    geom_point(alpha = 0.55, size = 1.3, color = "#1B6CA8") +
+    facet_wrap(~ pair, scales = "free") +
+    labs(
+      x = "Early pregnancy value",
+      y = "Late pregnancy value"
+    ) +
+    theme_minimal(base_size = 15)
+}
+```
+
+## Reported result rows
+
+```{r}
+#| label: fig-testing-burden
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Count of reported result rows by analysis component. This avoids mixing feature-level association rows with exposure-level longitudinal attempts in one metric."
+burden_tbl <- data.frame(
+  component = c(
+    "Q1 early pregnancy age-specific",
+    "Q2 late pregnancy age-specific",
+    "Q3 mutual timing",
+    "Q4 longitudinal"
+  ),
+  result_rows = c(nrow(early_res), nrow(late_res), nrow(mutual_res), nrow(long_res)),
+  stringsAsFactors = FALSE
+)
+
+burden_tbl %>%
+  ggplot(aes(x = fct_reorder(component, result_rows), y = result_rows, fill = component)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::comma(result_rows)), hjust = -0.1, size = 3.2) +
+  coord_flip() +
+  labs(x = NULL, y = "Reported result rows") +
+  theme_minimal(base_size = 16)
+```
+
+## Inferential signal summary
+
+```{r}
+#| label: fig-signal-summary
+#| classes: fig-wide
+#| fig-cap: "Significant result-row counts and fractions across analysis components. The mutual model is split into early-term and late-term summaries because it yields two coefficient families."
+signal_tbl <- bind_rows(
+  early_res %>% mutate(component = paste0("Q1 early pregnancy | ", visit_label(visit))) %>% group_by(component) %>% summarise(significant_rows = sum(q.value < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop"),
+  late_res %>% mutate(component = paste0("Q2 late pregnancy | ", visit_label(visit))) %>% group_by(component) %>% summarise(significant_rows = sum(q.value < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop"),
+  mutual_res %>% mutate(component = paste0("Q3 mutual timing: early term | ", visit_label(visit))) %>% group_by(component) %>% summarise(significant_rows = sum(q_early < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop"),
+  mutual_res %>% mutate(component = paste0("Q3 mutual timing: late term | ", visit_label(visit))) %>% group_by(component) %>% summarise(significant_rows = sum(q_late < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop"),
+  if (nrow(long_coef_res) > 0) {
+    long_coef_res %>%
+      group_by(timing) %>%
+      summarise(component = paste0("Q4 longitudinal | ", timing), significant_rows = sum(q.value < 0.1, na.rm = TRUE), total_rows = n(), .groups = "drop")
+  } else {
+    data.frame(component = "Q4 longitudinal | no coefficient rows", significant_rows = 0L, total_rows = 0L, stringsAsFactors = FALSE)
+  }
+) %>%
+  mutate(significant_fraction = ifelse(total_rows > 0, significant_rows / total_rows, NA_real_))
+
+signal_tbl %>%
+  filter(!is.na(significant_fraction)) %>%
+  ggplot(aes(x = fct_reorder(component, significant_fraction), y = significant_fraction, fill = component)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(
+    aes(label = paste0(scales::percent(significant_fraction, accuracy = 0.1), "\n(", significant_rows, "/", total_rows, ")")),
+    hjust = -0.05,
+    size = 2.9
+  ) +
+  coord_flip() +
+  labs(x = NULL, y = "Fraction of rows with q < 0.10") +
+  theme_minimal(base_size = 15)
+```
+
+## Primary-vs-sensitivity stability
+
+```{r}
+#| label: fig-stability
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Visual summary of how much reported estimates move under expanded covariate adjustment. Reclassification uses the q < 0.10 threshold."
+stability_comp <- bind_rows(
+  compare_primary_sensitivity(early_res, early_res_sens, c("exposure", "feature", "visit")) %>% mutate(component = "Q1 early pregnancy age-specific"),
+  compare_primary_sensitivity(late_res, late_res_sens, c("exposure", "feature", "visit")) %>% mutate(component = "Q2 late pregnancy age-specific"),
+  compare_primary_sensitivity(mutual_early_res, mutual_early_res_sens, c("exposure_pair", "feature", "visit")) %>% mutate(component = "Q3 mutual timing: early term"),
+  compare_primary_sensitivity(mutual_late_res, mutual_late_res_sens, c("exposure_pair", "feature", "visit")) %>% mutate(component = "Q3 mutual timing: late term"),
+  compare_primary_sensitivity(long_coef_res, long_coef_res_sens, c("exposure", "feature", "term")) %>% mutate(component = "Q4 longitudinal")
+)
+
+if (nrow(stability_comp) > 0) {
+  stability_tbl <- stability_comp %>%
+    group_by(component) %>%
+    summarise(
+      pairs_compared = n(),
+      median_abs_delta = median(abs_delta, na.rm = TRUE),
+      q_reclassification_fraction = mean(q_reclassified, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      median_abs_delta = round(median_abs_delta, 3),
+      q_reclassification_fraction = round(q_reclassification_fraction, 3)
+    )
+
+  stability_tbl %>%
+    pivot_longer(cols = c(median_abs_delta, q_reclassification_fraction), names_to = "metric", values_to = "value") %>%
+    mutate(metric = recode(metric,
+      median_abs_delta = "Median absolute beta change",
+      q_reclassification_fraction = "Fraction reclassified at q < 0.10"
+    )) %>%
+    ggplot(aes(x = component, y = value, fill = component)) +
+    geom_col(width = 0.65, show.legend = FALSE) +
+    facet_wrap(~ metric, scales = "free_y") +
+    labs(x = "Component", y = "Value") +
+    theme_minimal(base_size = 15) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Volcano plots (representative early and late exposures)
+
+```{r}
+#| label: fig-volcano
+#| classes: fig-wide
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Illustrative volcano plots for one post hoc exemplar exposure from the early and late pregnancy model families. Exemplar exposures are selected by the smallest observed q-value within each family and are not pre-specified headline exposures."
+rep_early <- pick_representative_exposure(early_res)
+rep_late <- pick_representative_exposure(late_res)
+
+volcano_df <- bind_rows(
+  early_res %>% filter(exposure == rep_early) %>% mutate(window = "Early", sig = q.value < 0.1),
+  late_res %>% filter(exposure == rep_late) %>% mutate(window = "Late", sig = q.value < 0.1)
+) %>%
+  mutate(
+    logp = safe_logp(p.value),
+    visit = factor(visit_label(visit), levels = c("6 Months", "12 Months", "24 Months", "5-6 Years"))
+  )
+
+volcano_df %>%
+  ggplot(aes(x = estimate, y = logp, color = sig)) +
+  geom_point(alpha = 0.65, size = 1.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey45") +
+  facet_grid(window ~ visit, scales = "free") +
+  scale_color_manual(values = c("FALSE" = "grey65", "TRUE" = "firebrick")) +
+  labs(
+    x = "Beta",
+    y = "-log10(p)",
+    color = "q < 0.10"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Age-specific heatmaps
+
+```{r}
+#| label: fig-heatmaps
+#| classes: fig-wide
+#| fig-cap: "Heatmaps of effect sizes (Beta) across childhood visits for the top diet-metabolite associations identified in cross-sectional models."
+#| fig-width: 14
+#| fig-height: 10
+all_age_meta <- all_age %>%
+  filter(is.finite(q.value)) %>%
+  add_feature_meta()
+
+top_exposures <- all_age_meta %>%
+  group_by(timing, exposure) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  group_by(timing) %>%
+  slice_min(best_q, n = 4, with_ties = FALSE) %>%
+  ungroup()
+
+heat_pool <- all_age_meta %>%
+  inner_join(top_exposures, by = c("timing", "exposure"))
+
+top_features <- heat_pool %>%
+  group_by(timing, feature, feature_group) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  group_by(timing) %>%
+  slice_min(best_q, n = 20, with_ties = FALSE) %>%
+  ungroup()
+
+heat_df <- heat_pool %>%
+  inner_join(top_features, by = c("timing", "feature", "feature_group")) %>%
+  mutate(
+    panel = paste0(timing, " | ", label_exposure(exposure)),
+    feature_lab = paste0(feature_group, " | ", feature)
+  )
+
+panel_order <- heat_df %>%
+  group_by(panel) %>%
+  summarise(best_q = min(q.value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(best_q) %>%
+  pull(panel)
+
+for (panel_i in panel_order) {
+  panel_df <- heat_df %>%
+    filter(panel == panel_i) %>%
+    mutate(feature_lab = fct_reorder(feature_lab, q.value, .desc = FALSE))
+
+  # Extract the clean exposure and timing names for the title/subtitle
+  current_exposure <- label_exposure(unique(panel_df$exposure))
+  current_timing <- unique(panel_df$timing)
+  current_timing_label <- ifelse(tolower(current_timing) == "early", "Early Pregnancy", "Late Pregnancy")
+
+  p <- panel_df %>%
+    ggplot(aes(x = factor(visit), y = feature_lab, fill = estimate)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+    labs(
+      title = paste("Maternal Diet:", current_exposure),
+      subtitle = paste("Pregnancy Window:", current_timing_label),
+      x = "Child age",
+      y = "Metabolite (Group | Feature)",
+      fill = "Beta"
+    ) +
+    theme_minimal(base_size = 18) +
+    theme(
+      plot.title = element_text(face = "bold", size = 16),
+      plot.subtitle = element_text(size = 12, color = "grey35"),
+      axis.text.y = element_text(size = 13)
+    ) +
+    scale_x_discrete(labels = visit_label)
+
+  print(p)
+}
+```
+
+## Timing comparison: early vs late window
+
+```{r}
+#| label: fig-timing-comp
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Direct comparison of early vs. late pregnancy diet effect sizes for top-ranked associations. Points on the diagonal indicate consistent effects across windows."
+mutual_plot <- mutual_res %>%
+  add_feature_meta() %>%
+  mutate(
+    best_p = pmin(p_early, p_late, na.rm = TRUE),
+    visit = factor(visit_label(visit), levels = c("6 Months", "12 Months", "24 Months", "5-6 Years"))
+  ) %>%
+  group_by(visit) %>%
+  slice_min(best_p, n = 60, with_ties = FALSE) %>%
+  ungroup()
+
+mutual_plot %>%
+  ggplot(aes(x = estimate_early, y = estimate_late, color = feature_group)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey60") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "black") +
+  geom_point(alpha = 0.7, size = 1.6) +
+  facet_wrap(~ visit) +
+  labs(
+    x = "Early-window beta",
+    y = "Late-window beta",
+    color = "Metabolite group"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+## Q4 Longitudinal model status and descriptive support
+
+The saved longitudinal output now covers all attempted longitudinal models, but these panels are still intended as cautionary context because the mixed-effects fits generated substantial warnings.
+
+```{r}
+#| label: fig-q7-yield
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "Q4 longitudinal output yield by timing window. Attempted exposures come from the saved execution log; returned coefficient rows come from the saved longitudinal result object."
+q7_attempt_tbl <- model_status %>%
+  filter(question == "Q7") %>%
+  count(timing, name = "attempted_exposures")
+
+q7_return_tbl <- if (nrow(long_coef_res) > 0) {
+  long_coef_res %>%
+    count(timing, name = "returned_rows")
+} else {
+  q7_attempt_tbl %>% transmute(timing, returned_rows = 0L)
+}
+
+q7_yield_tbl <- full_join(q7_attempt_tbl, q7_return_tbl, by = "timing") %>%
+  mutate(
+    attempted_exposures = ifelse(is.na(attempted_exposures), 0L, attempted_exposures),
+    returned_rows = ifelse(is.na(returned_rows), 0L, returned_rows)
+  )
+
+q7_yield_tbl %>%
+  pivot_longer(cols = c(attempted_exposures, returned_rows), names_to = "quantity", values_to = "count") %>%
+  mutate(quantity = recode(quantity,
+    attempted_exposures = "Attempted exposures",
+    returned_rows = "Returned coefficient rows"
+  )) %>%
+  ggplot(aes(x = timing, y = count, fill = quantity)) +
+  geom_col(position = "dodge", width = 0.65) +
+  geom_text(aes(label = count), position = position_dodge(width = 0.65), vjust = -0.2, size = 3.1) +
+  labs(x = "Timing window", y = "Count", fill = NULL) +
+  theme_minimal(base_size = 15)
+```
+
+```{r}
+#| label: fig-long-status
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "Status report for longitudinal mixed-effects models based on the saved execution log. Status reflects whether saved output rows were produced, not whether the fits were warning-free."
+status_tbl <- model_status %>%
+  filter(question == "Q7") %>%
+  count(timing, status, name = "n")
+
+status_tbl %>%
+  ggplot(aes(x = timing, y = n, fill = status)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = n), vjust = -0.25, size = 3.3) +
+  labs(
+    x = "Timing window",
+    y = "Exposure attempts",
+    fill = "Status"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+```{r}
+#| label: fig-trajectories
+#| classes: fig-medium
+#| fig-width: 10
+#| fig-height: 7
+#| fig-cap: "Descriptive trajectories for the top age-specific association, shown by exposure tertile. This is a companion descriptive figure and is not itself a longitudinal-model result."
+# Descriptive trajectories are shown as a companion view to the age-specific results, not as a replacement for longitudinal-model inference.
+best_row <- all_age %>%
+  filter(is.finite(q.value)) %>%
+  arrange(q.value) %>%
+  slice_head(n = 1)
+
+if (nrow(best_row) > 0) {
+  exp0 <- best_row$exposure[[1]]
+  feat0 <- best_row$feature[[1]]
+
+  traj_df <- df_long %>%
+    filter(visit_num %in% c(4, 5, 6, 7)) %>%
+    mutate(
+      exposure_value = suppressWarnings(as.numeric(.data[[exp0]])),
+      metabolite_value = suppressWarnings(as.numeric(.data[[feat0]])),
+      exposure_tertile = make_exposure_tertiles(exposure_value)
+    ) %>%
+    filter(is.finite(metabolite_value), !is.na(exposure_tertile)) %>%
+    group_by(visit_num, exposure_tertile) %>%
+    summarise(
+      mean_value = mean(metabolite_value, na.rm = TRUE),
+      se = sd(metabolite_value, na.rm = TRUE) / sqrt(dplyr::n()),
+      .groups = "drop"
+    )
+
+  traj_df %>%
+    ggplot(aes(x = factor(visit_num), y = mean_value, color = exposure_tertile, group = exposure_tertile)) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2) +
+    geom_errorbar(aes(ymin = mean_value - 1.96 * se, ymax = mean_value + 1.96 * se), width = 0.1) +
+    labs(
+      x = "Child age",
+      y = "Mean standardized metabolite",
+      color = "Exposure tertile"
+    ) +
+    theme_minimal(base_size = 16) +
+    scale_x_discrete(labels = visit_label)
+}
+```

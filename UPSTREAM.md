@@ -25,4 +25,4 @@ The copied `action_execution_server.py`, `files.py`, `fn_call_converter.py`, and
 4. Build/typecheck affected workspaces and exercise notes, uploads, R execution, cancellation, workspace launch, identity separation, reports, and embedded UI.
 5. Update the manifest by rerunning `scripts/snapshot_upstream.py` only once the local baseline and customizations are intentional.
 
-Priorities: eliminate minified-JavaScript replacement; isolate branding/theme edits; replace full copied backend modules with small versioned patches or supported extension points; bring the shared backend base recipe and its inputs into the primary repository before removing the retired projects.
+Priorities: eliminate minified-JavaScript replacement; isolate branding/theme edits; replace full copied backend modules with small versioned patches or supported extension points; pin dependency versions and simplify the imported analysis base after validating compatibility. The shared base recipe and all COPY inputs are now preserved under `docker/engine-base/`.
