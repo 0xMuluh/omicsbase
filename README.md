@@ -8,7 +8,7 @@ This is the primary OmicsBase implementation, previously named `omicsbase3`. The
 
 This repository is a source checkpoint of the existing implementation, not yet a turnkey distribution. It preserves the current customizations before architectural cleanup. Upstream upgrades require review; see [UPSTREAM.md](UPSTREAM.md).
 
-The current deployment relies on a locally built `omicsbase3-engine:dev` image whose Dockerfile has not been located. The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
+The current deployment uses `omicsbase3-engine:dev`. Its recovered Dockerfile and requirements are in `engine/`. It extends the shared `omicsbase-backend:dev` image used by both earlier OmicsBase implementations; see [engine provenance](docs/ENGINE_IMAGE.md). The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
 
 ## Layout
 
