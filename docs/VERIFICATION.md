@@ -29,3 +29,32 @@ The active Compose services and persistent OpenHands runtime were recreated with
 Fetched all five pinned public source repositories over the network into a new repository-local cache. The generated index contains 2,409 chunks and its indexed content matches the previous local library exactly. Source commits, notice links, and attribution are embedded in the database and exposed by search results. The standard local database was then installed atomically using the verified cache.
 
 Installer tests cover actual local Git fetches, complete book coverage, repeated installation, attribution, rejection of a modified cache, and preservation of the previous database on indexing failure. Both tests pass. No book source chunks are evaluated. Source licenses are recorded independently of OmicsBase's MIT license.
+
+## Maintenance refactor checks
+
+From the restored LibreChat checkout, with Node 24:
+
+```bash
+npm run frontend
+(cd packages/api && npx tsc --noEmit)
+(cd packages/client && npx tsc --noEmit)
+(cd client && npx tsc --noEmit)
+(cd packages/api && npx jest --runInBand --watch=false src/notes/service.spec.ts src/notes/agent.spec.ts)
+```
+
+From the OmicsBase root:
+
+```bash
+python3 scripts/build_openhands.py --context default
+docker --context default run --rm --network none \
+  -e PYTHONPATH=/app:/app/tests \
+  -e OPENHANDS_CONFIG_CLS=omicsbase_shared.config.OmicsBaseConfig \
+  -e OPENHANDS_CONVERSATION_VALIDATOR_CLS=omicsbase_shared.validator.OmicsBaseConversationValidator \
+  -e OMICSBASE_AUTH_SECRET=test -e FILE_STORE_PATH=/tmp/oh-state \
+  -e WORKSPACE_BASE=/tmp/projects \
+  -v "$PWD/librechat/patches/tests:/app/tests:ro" \
+  --entrypoint bash omicsbase-openhands:dev \
+  -c 'python -m unittest test_modules test_identity && python /app/tests/auth_integration.py'
+```
+
+The last command uses disposable state and no host Docker socket or project data.

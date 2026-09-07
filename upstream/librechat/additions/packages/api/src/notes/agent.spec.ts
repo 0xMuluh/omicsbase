@@ -87,22 +87,35 @@ test('rejects another conversation and preserves cancellation event history', as
 
 test('updates existing cell in place when targetCellId is provided', async () => {
   const initial = await lifecycle.start('test-conversation', 'test-user', 'x <- 1');
-  await lifecycle.finish('test-conversation', initial.executionId, { success: false, error: 'syntax error' });
+  await lifecycle.finish('test-conversation', initial.executionId, {
+    success: false,
+    error: 'syntax error',
+  });
 
   // Update in place
-  const updated = await lifecycle.start('test-conversation', 'test-user', 'x <- 2', 180, initial.cellId);
+  const updated = await lifecycle.start(
+    'test-conversation',
+    'test-user',
+    'x <- 2',
+    180,
+    initial.cellId,
+  );
   expect(updated.cellId).toBe(initial.cellId);
   expect(updated.revisionId).not.toBe(initial.revisionId);
   expect(updated.executionId).not.toBe(initial.executionId);
 
-  const revisions = await models.NoteCellRevision.find({ cellId: initial.cellId }).sort({ revision: 1 });
+  const revisions = await models.NoteCellRevision.find({ cellId: initial.cellId }).sort({
+    revision: 1,
+  });
   expect(revisions).toHaveLength(2);
   expect(revisions[0].revision).toBe(1);
   expect(revisions[0].content).toBe('x <- 1');
   expect(revisions[1].revision).toBe(2);
   expect(revisions[1].content).toBe('x <- 2');
 
-  const executions = await models.NoteCellExecution.find({ cellId: initial.cellId }).sort({ attempt: 1 });
+  const executions = await models.NoteCellExecution.find({ cellId: initial.cellId }).sort({
+    attempt: 1,
+  });
   expect(executions).toHaveLength(2);
   expect(executions[0].attempt).toBe(1);
   expect(executions[1].attempt).toBe(2);
@@ -111,4 +124,3 @@ test('updates existing cell in place when targetCellId is provided', async () =>
   expect(String(cell.latestRevisionId)).toBe(updated.revisionId);
   expect(String(cell.latestExecutionId)).toBe(updated.executionId);
 });
-

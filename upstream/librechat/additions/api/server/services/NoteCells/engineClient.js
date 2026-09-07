@@ -67,7 +67,17 @@ async function fetchArtifactFromEngine(threadId, relativePath) {
   return { buffer, contentType };
 }
 
+async function signalCancel(conversationId, executionId) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (INTERNAL_SECRET) headers['X-Internal-Secret'] = INTERNAL_SECRET;
+  await fetch(`${ENGINE_URL}/api/cancel`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ thread_id: conversationId, execution_id: executionId }),
+  });
+}
+
 module.exports = {
+  signalCancel,
   ENGINE_URL,
   INTERNAL_SECRET,
   executeOnEngine,

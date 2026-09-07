@@ -367,92 +367,24 @@ index 8df1f1e995b853637db49cf5b88b45d7209cb3f8..0b14045521f49e5f2ad01b88317b41a3
                textAlign="center"
                animationFrom={greetingAnimationFrom}
 diff --git a/client/src/components/Chat/Messages/Content/ToolCall.tsx b/client/src/components/Chat/Messages/Content/ToolCall.tsx
-index 25f0d3d3cc2f04c5540f310c2562ff7336576ee9..ee1de0b227504379978239a8a007dc24ab280299 100644
+index 25f0d3d3cc2f04c5540f310c2562ff7336576ee9..362a5a364ecd77917b9419e8d6a82a427386f3cc 100644
 --- a/client/src/components/Chat/Messages/Content/ToolCall.tsx
 +++ b/client/src/components/Chat/Messages/Content/ToolCall.tsx
 @@ -18,6 +18,7 @@ import { useToolCallIntent } from './Parts/intent';
  import { AttachmentGroup } from './Parts';
  import ToolCallInfo from './ToolCallInfo';
  import ProgressText from './ProgressText';
-+import RCellBlock from '~/components/Messages/Content/RCellBlock';
++import { useNoteTool } from '~/components/Notes/ToolCall';
  import { logger } from '~/utils';
  import store from '~/store';
  
-@@ -254,6 +255,79 @@ export default function ToolCall({
+@@ -254,6 +255,11 @@ export default function ToolCall({
      return localize('com_assistants_completed_function', { 0: function_name });
    };
  
-+  const isRCellTool = function_name === 'execute_r_cell' || name?.includes('execute_r_cell');
-+  const parsedRCode = useMemo(() => {
-+    if (!_args) return '';
-+    if (typeof _args === 'object' && _args !== null) {
-+      return String((_args as Record<string, unknown>).code || '').trim();
-+    }
-+    if (typeof _args === 'string') {
-+      try {
-+        const obj = JSON.parse(_args);
-+        if (obj && typeof obj === 'object') {
-+          return String((obj as Record<string, unknown>).code || '').trim();
-+        }
-+      } catch {
-+        // Streamed JSON chunk: extract code content while streaming
-+        const match = /"code"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(_args);
-+        if (match && match[1]) {
-+          try {
-+            return JSON.parse(`"${match[1]}"`);
-+          } catch {
-+            return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-+          }
-+        }
-+        if (!_args.trim().startsWith('{')) {
-+          return _args.trim();
-+        }
-+        return '';
-+      }
-+    }
-+    return '';
-+  }, [_args]);
-+
-+  const parsedCellId = useMemo(() => {
-+    if (!_args) return undefined;
-+    if (typeof _args === 'object' && _args !== null) {
-+      const id = String((_args as Record<string, unknown>).cell_id || '').trim();
-+      return id || undefined;
-+    }
-+    if (typeof _args === 'string') {
-+      try {
-+        const obj = JSON.parse(_args);
-+        if (obj && typeof obj === 'object') {
-+          const id = String((obj as Record<string, unknown>).cell_id || '').trim();
-+          return id || undefined;
-+        }
-+      } catch {
-+        const match = /"cell_id"\s*:\s*"([^"\\]*)"/.exec(_args);
-+        if (match && match[1]) {
-+          return match[1].trim() || undefined;
-+        }
-+      }
-+    }
-+    return undefined;
-+  }, [_args]);
-+
-+  if (isRCellTool && (parsedRCode || output)) {
-+    const metaMatch = output
-+      ? /<!--\s*noteCell\s+cellId=([^\s]+)\s+executionId=([^\s]+)/.exec(output)
-+      : null;
-+    return (
-+      <div className="my-2 w-full">
-+        <RCellBlock
-+          initialCode={parsedRCode}
-+          initialOutput={output ?? undefined}
-+          isAgentGenerated={true}
-+          isParentRunning={phase === 'running'}
-+          cellId={metaMatch?.[1] || parsedCellId}
-+          executionId={metaMatch?.[2]}
-+          blockKey={toolCallId ? `tool-${toolCallId}` : undefined}
-+        />
-+      </div>
-+    );
++  const noteTool = useNoteTool({ function_name, name, _args, output, phase, toolCallId });
++  if (noteTool) {
++    return noteTool;
 +  }
 +
    if (!isLast && (!function_name || function_name.length === 0) && !output) {
@@ -2990,29 +2922,30 @@ index b16b498b354575a566a21daa21249f75cf436e28..fce43fdbdd138b872b2bfe52b5df5911
  }
 +
 diff --git a/packages/api/src/index.ts b/packages/api/src/index.ts
-index f78709aca835c1e7a78e9bd8171b9fea9568a0ce..8f9059ea5fd159168a18bf8ac0758d6740a62d95 100644
+index f78709aca835c1e7a78e9bd8171b9fea9568a0ce..c352ada653d5b9ec36c370797e1105f48850410f 100644
 --- a/packages/api/src/index.ts
 +++ b/packages/api/src/index.ts
-@@ -111,3 +111,4 @@ export * from './rum/proxy';
+@@ -111,3 +111,6 @@ export * from './rum/proxy';
  export type * from './mcp/types';
  export type * from './flow/types';
  export type * from './types';
 +export { createNoteAgentLifecycle, buildNoteArtifacts } from './notes/agent';
++
++export { createNoteService } from './notes/service';
 diff --git a/packages/api/src/mcp/MCPManager.ts b/packages/api/src/mcp/MCPManager.ts
-index f3f703faa1b931535a5dcaf281f87a8d8d352752..b370c7838334031579b5861b0945e415c53e8286 100644
+index f3f703faa1b931535a5dcaf281f87a8d8d352752..6e40d8fcaa56713bff53f7bea1470bcc23278724 100644
 --- a/packages/api/src/mcp/MCPManager.ts
 +++ b/packages/api/src/mcp/MCPManager.ts
-@@ -851,6 +851,13 @@ Please follow these instructions when using tools from the respective MCP server
+@@ -1,3 +1,4 @@
++import { bindNoteThread } from '~/notes/mcp';
+ import pick from 'lodash/pick';
+ import { logger } from '@librechat/data-schemas';
+ import { Permissions, PermissionTypes } from 'librechat-data-provider';
+@@ -851,6 +852,7 @@ Please follow these instructions when using tools from the respective MCP server
      upstreamTokenProvider?: UpstreamTokenProvider;
      oboIdentityContext?: AuthIdentityContext;
    }): Promise<t.FormattedToolResponse> {
-+    if (
-+      serverName === 'notethreads' &&
-+      toolName === 'execute_r_cell' &&
-+      requestBody?.conversationId
-+    ) {
-+      toolArguments = { ...toolArguments, thread_id: requestBody.conversationId };
-+    }
++    toolArguments = bindNoteThread(serverName, toolName, toolArguments, requestBody?.conversationId);
      const userId = user?.id;
      const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
      this.bindRequestScopedConnectionStore(requestScopedConnections);
@@ -3106,371 +3039,28 @@ index faf16e8e5b177e5470de140f17702bce5f4d9812..1c9e04f5c5680c59a46efef34c9fe9bc
 +    "unrun": "^0.2.39"
    }
  }
-diff --git a/packages/client/src/theme/themes/dark.ts b/packages/client/src/theme/themes/dark.ts
-index b2e377f76c1e57b22146e8f592f591646a84138b..e0da53fee2eb6d3a2fdda770697d71e1a7eab525 100644
---- a/packages/client/src/theme/themes/dark.ts
-+++ b/packages/client/src/theme/themes/dark.ts
-@@ -1,105 +1,103 @@
- import { IThemeRGB } from '../types';
+diff --git a/packages/client/src/theme/registry.ts b/packages/client/src/theme/registry.ts
+index c9e5aec4486ac1249f03aa63c7e82613d44eebd2..c6f5e37c0816afad1421bfe851faea44e2977d68 100644
+--- a/packages/client/src/theme/registry.ts
++++ b/packages/client/src/theme/registry.ts
+@@ -8,8 +8,7 @@ import type {
+   ThemeDefinition,
+   ThemeMode,
+ } from './types';
+-import { defaultTheme } from './themes/default';
+-import { darkTheme } from './themes/dark';
++import { omicsbaseLight as defaultTheme, omicsbaseDark as darkTheme } from './themes/omicsbase';
+ export const THEME_VERSION = 1 as const;
  
  /**
-- * Dark theme
-- * RGB values extracted from the existing dark mode CSS variables
-+ * Dark theme — Soft Daisy atmosphere (OmicsBase1)
-+ * Teal-tinted near-blacks + bright cyan accents (not ChatGPT flat grey)
-  */
- export const darkTheme: IThemeRGB = {
-   // Text colors
--  'rgb-text-primary': '236 236 236', // #ececec (gray-100)
--  'rgb-text-secondary': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-text-secondary-alt': '153 150 150', // #999696 (gray-400)
--  'rgb-text-tertiary': '153 150 150', // #999696 (gray-400)
--  'rgb-text-warning': '245 158 11', // #f59e0b (amber-500)
--  'rgb-text-destructive': '248 113 113', // #f87171 (red-400)
--  'rgb-shimmer-base': '255 255 255', // #ffffff, carried at 0.8 alpha
--  'rgb-shimmer-dip': '179 179 179', // #b3b3b3
-+  'rgb-text-primary': '246 246 243', // #f6f6f3 Soft Daisy warm white
-+  'rgb-text-secondary': '203 213 225', // #cbd5e1
-+  'rgb-text-secondary-alt': '148 163 184', // #94a3b8
-+  'rgb-text-tertiary': '148 163 184', // #94a3b8
-+  'rgb-text-warning': '245 158 11', // #f59e0b
-+  'rgb-text-destructive': '248 113 113', // #f87171
-+  'rgb-shimmer-base': '255 255 255',
-+  'rgb-shimmer-dip': '179 179 179',
- 
-   // Link and accent colors
--  'rgb-link': '96 165 250', // #60a5fa (blue-400)
--  'rgb-link-hover': '147 197 253', // #93c5fd (blue-300)
--  'rgb-link-visited': '192 132 252', // #c084fc (purple-400)
--  'rgb-accent-primary': '65 167 157', // #41a79d
--  'rgb-accent-primary-hover': '109 200 185', // #6dc8b9
-+  'rgb-link': '96 165 250', // #60a5fa
-+  'rgb-link-hover': '147 197 253', // #93c5fd
-+  'rgb-link-visited': '192 132 252', // #c084fc
-+  'rgb-accent-primary': '99 204 192', // #63ccc0 Soft Daisy primary
-+  'rgb-accent-primary-hover': '133 225 213', // #85e1d5
- 
--  // Ring colors (not defined in dark mode, using default)
--  'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
-+  // Ring colors
-+  'rgb-ring-primary': '45 212 191', // #2dd4bf teal-400
- 
--  // Header colors
--  'rgb-header-primary': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-header-hover': '66 66 66', // #424242 (gray-600)
--  'rgb-header-button-hover': '47 47 47', // #2f2f2f (gray-700)
-+  // Header colors — teal-charcoal
-+  'rgb-header-primary': '12 18 22', // #0c1216
-+  'rgb-header-hover': '18 28 32', // #121c20
-+  'rgb-header-button-hover': '18 28 32', // #121c20
- 
--  // Surface colors
--  'rgb-surface-active': '89 89 89', // #595959 (gray-500)
--  'rgb-surface-active-alt': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-surface-hover': '57 57 57', // #393939 (gray-650)
--  'rgb-surface-hover-alt': '66 66 66', // #424242 (gray-600)
--  'rgb-surface-composer-hover': '66 66 66', // #424242 (gray-600)
--  'rgb-surface-primary': '13 13 13', // #0d0d0d (gray-900)
--  'rgb-surface-primary-alt': '23 23 23', // #171717 (gray-850)
--  'rgb-surface-primary-contrast': '23 23 23', // #171717 (gray-850)
--  'rgb-surface-secondary': '33 33 33', // #212121 (gray-800)
--  'rgb-surface-secondary-alt': '33 33 33', // #212121 (gray-800)
--  'rgb-surface-tertiary': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-surface-tertiary-alt': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-surface-dialog': '18 18 18', // #121212 (legacy dark dialog)
--  'rgb-surface-overlay': '0 0 0', // #000 (black)
--  'rgb-surface-submit': '4 120 87', // #047857 (green-700)
--  'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
--  'rgb-surface-destructive': '153 27 27', // #991b1b (red-800)
--  'rgb-surface-destructive-hover': '127 29 29', // #7f1d1d (red-900)
--  'rgb-surface-chat': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-surface-inverted': '255 255 255', // #fff (white)
--  'rgb-surface-inverted-hover': '236 236 236', // #ececec (gray-100)
--  'rgb-text-inverted': '23 23 23', // #171717 (gray-850)
--  'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
--  'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
--  'rgb-text-fixed': '33 33 33', // #212121 (gray-800) — same in light + dark
-+  // Surface colors — teal-black hierarchy (OB1 #05080c family)
-+  'rgb-surface-active': '28 87 87', // #1c5757 Soft Daisy teal
-+  'rgb-surface-active-alt': '22 50 51', // #163233
-+  'rgb-surface-hover': '18 36 38', // #122426
-+  'rgb-surface-hover-alt': '22 50 51', // #163233
-+  'rgb-surface-composer-hover': '23 25 36', // #171924
-+  'rgb-surface-primary': '5 8 12', // #05080c Soft Daisy hero base
-+  'rgb-surface-primary-alt': '12 18 22', // #0c1216 sidebar/card
-+  'rgb-surface-primary-contrast': '18 28 32', // #121c20
-+  'rgb-surface-secondary': '12 18 22', // #0c1216
-+  'rgb-surface-secondary-alt': '18 28 32', // #121c20
-+  'rgb-surface-tertiary': '22 40 42', // #16282a
-+  'rgb-surface-tertiary-alt': '22 40 42', // #16282a
-+  'rgb-surface-dialog': '18 20 28', // #12141c Soft Daisy composer
-+  'rgb-surface-overlay': '0 0 0',
-+  'rgb-surface-submit': '28 87 87', // #1c5757
-+  'rgb-surface-submit-hover': '45 212 191', // #2dd4bf
-+  'rgb-surface-destructive': '153 27 27',
-+  'rgb-surface-destructive-hover': '127 29 29',
-+  'rgb-surface-chat': '12 18 22', // #0c1216
-+  'rgb-surface-inverted': '255 255 255',
-+  'rgb-surface-inverted-hover': '237 247 246',
-+  'rgb-text-inverted': '5 8 12',
-+  'rgb-surface-fixed': '255 255 255',
-+  'rgb-surface-fixed-hover': '237 247 246',
-+  'rgb-text-fixed': '21 27 33',
- 
--  // Border colors
--  'rgb-border-light': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-border-medium': '66 66 66', // #424242 (gray-600)
--  'rgb-border-medium-alt': '66 66 66', // #424242 (gray-600)
--  'rgb-border-heavy': '89 89 89', // #595959 (gray-500)
--  'rgb-border-xheavy': '153 150 150', // #999696 (gray-400)
--  'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
-+  // Border colors — teal-tinted
-+  'rgb-border-light': '22 40 42', // #16282a
-+  'rgb-border-medium': '28 60 58', // #1c3c3a
-+  'rgb-border-medium-alt': '28 60 58',
-+  'rgb-border-heavy': '45 90 88', // #2d5a58
-+  'rgb-border-xheavy': '99 204 192', // #63ccc0
-+  'rgb-border-destructive': '239 68 68',
- 
-   // Status colors
--  'rgb-status-success': '110 231 183', // #6ee7b7 (green-300)
--  'rgb-status-success-subtle': '2 44 34', // #022c22 (green-950)
--  'rgb-status-success-border': '6 95 70', // #065f46 (green-800)
--  'rgb-status-success-strong': '6 95 70', // #065f46 (green-800)
--  'rgb-status-info': '147 197 253', // #93c5fd (blue-300)
--  'rgb-status-info-subtle': '23 37 84', // #172554 (blue-950)
--  'rgb-status-info-border': '30 64 175', // #1e40af (blue-800)
--  'rgb-status-info-strong': '66 66 66', // #424242 (gray-600)
--  'rgb-status-warning': '252 211 77', // #fcd34d (amber-300)
--  'rgb-status-warning-subtle': '69 26 3', // #451a03 (amber-950)
--  'rgb-status-warning-border': '146 64 14', // #92400e (amber-800)
--  'rgb-status-warning-strong': '146 64 14', // #92400e (amber-800)
--  'rgb-status-error': '252 165 165', // #fca5a5 (red-300)
--  'rgb-status-error-subtle': '69 10 10', // #450a0a (red-950)
--  'rgb-status-error-border': '153 27 27', // #991b1b (red-800)
--  'rgb-status-error-strong': '153 27 27', // #991b1b (red-800)
--  'rgb-status-neutral': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-status-neutral-subtle': '33 33 33', // #212121 (gray-800)
--  'rgb-status-neutral-border': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-text-on-status': '255 255 255', // #fff (white)
-+  'rgb-status-success': '99 204 192',
-+  'rgb-status-success-subtle': '5 26 21',
-+  'rgb-status-success-border': '10 67 67',
-+  'rgb-status-success-strong': '28 87 87',
-+  'rgb-status-info': '147 197 253',
-+  'rgb-status-info-subtle': '23 37 84',
-+  'rgb-status-info-border': '30 64 175',
-+  'rgb-status-info-strong': '66 66 66',
-+  'rgb-status-warning': '252 211 77',
-+  'rgb-status-warning-subtle': '69 26 3',
-+  'rgb-status-warning-border': '146 64 14',
-+  'rgb-status-warning-strong': '146 64 14',
-+  'rgb-status-error': '252 165 165',
-+  'rgb-status-error-subtle': '69 10 10',
-+  'rgb-status-error-border': '153 27 27',
-+  'rgb-status-error-strong': '153 27 27',
-+  'rgb-status-neutral': '203 213 225',
-+  'rgb-status-neutral-subtle': '12 18 22',
-+  'rgb-status-neutral-border': '22 40 42',
-+  'rgb-text-on-status': '255 255 255',
- 
-   // Brand colors
--  'rgb-brand-purple': '171 104 255', // #ab68ff
-+  'rgb-brand-purple': '171 104 255',
- 
--  /** Categorical series scale — the same seven hues stepped for the #212121
--   *  surface: worst adjacent CVD ΔE 13.0, normal-vision ΔE 19.0, all ≥ 3:1. */
--  'rgb-series-1': '9 140 238', // #098cee (cerulean)
--  'rgb-series-2': '217 87 35', // #d95723 (orange)
--  'rgb-series-3': '6 158 152', // #069e98 (aqua)
--  'rgb-series-4': '200 133 12', // #c8850c (amber)
--  'rgb-series-5': '213 82 130', // #d55282 (magenta)
--  'rgb-series-6': '171 104 254', // #ab68fe (violet)
--  'rgb-series-7': '80 167 49', // #50a731 (green)
-+  'rgb-series-1': '9 140 238',
-+  'rgb-series-2': '217 87 35',
-+  'rgb-series-3': '99 204 192',
-+  'rgb-series-4': '200 133 12',
-+  'rgb-series-5': '213 82 130',
-+  'rgb-series-6': '171 104 254',
-+  'rgb-series-7': '45 212 191',
- 
--  // Presentation
--  'rgb-presentation': '33 33 33', // #212121 (gray-800)
-+  // Presentation — Soft Daisy hero base (teal-black, not flat #0a0a0a)
-+  'rgb-presentation': '5 8 12', // #05080c
- };
-diff --git a/packages/client/src/theme/themes/default.ts b/packages/client/src/theme/themes/default.ts
-index 3d3949cc8b6e3f979b40529baccca00c66871c4a..c7fba3f3400170d01ba2c395b856b262cce98c7e 100644
---- a/packages/client/src/theme/themes/default.ts
-+++ b/packages/client/src/theme/themes/default.ts
-@@ -1,91 +1,91 @@
- import { IThemeRGB } from '../types';
- 
- /**
-- * Default light theme
-- * RGB values extracted from the existing CSS variables
-+ * Default light theme — Soft Daisy–aligned (OmicsBase1)
-+ * Cool teal brand on soft off-white surfaces
-  */
- export const defaultTheme: IThemeRGB = {
--  // Text colors
--  'rgb-text-primary': '33 33 33', // #212121 (gray-800)
--  'rgb-text-secondary': '66 66 66', // #424242 (gray-600)
--  'rgb-text-secondary-alt': '89 89 89', // #595959 (gray-500)
--  'rgb-text-tertiary': '89 89 89', // #595959 (gray-500)
-+  // Text colors (cool blue-greys, hue ~250)
-+  'rgb-text-primary': '21 27 33', // #151b21
-+  'rgb-text-secondary': '35 42 48', // #232a30
-+  'rgb-text-secondary-alt': '87 94 102', // #575e66
-+  'rgb-text-tertiary': '87 94 102', // #575e66
-   'rgb-text-warning': '180 83 9', // #b45309 (amber-700)
-   'rgb-text-destructive': '220 38 38', // #dc2626 (red-600)
--  'rgb-shimmer-base': '33 33 33', // #212121 (gray-800), matching text-primary
-+  'rgb-shimmer-base': '21 27 33', // #151b21
-   'rgb-shimmer-dip': '129 130 134', // #818286
- 
-   // Link and accent colors
-   'rgb-link': '37 99 235', // #2563eb (blue-600)
-   'rgb-link-hover': '29 78 216', // #1d4ed8 (blue-700)
-   'rgb-link-visited': '147 51 234', // #9333ea (purple-600)
--  'rgb-accent-primary': '18 110 107', // #126e6b
--  'rgb-accent-primary-hover': '10 79 83', // #0a4f53
-+  'rgb-accent-primary': '28 87 87', // #1c5757 Soft Daisy primary
-+  'rgb-accent-primary-hover': '10 67 67', // #0a4343
- 
-   // Ring colors
--  'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
-+  'rgb-ring-primary': '56 126 126', // #387e7e Soft Daisy ring
- 
-   // Header colors
--  'rgb-header-primary': '255 255 255', // #fff (white)
--  'rgb-header-hover': '247 247 248', // #f7f7f8 (gray-50)
--  'rgb-header-button-hover': '247 247 248', // #f7f7f8 (gray-50)
-+  'rgb-header-primary': '255 255 255', // #fff
-+  'rgb-header-hover': '237 247 246', // #edf7f6 Soft Daisy accent
-+  'rgb-header-button-hover': '237 247 246', // #edf7f6
- 
-   // Surface colors
--  'rgb-surface-active': '236 236 236', // #ececec (gray-100)
--  'rgb-surface-active-alt': '227 227 227', // #e3e3e3 (gray-200)
--  'rgb-surface-hover': '227 227 227', // #e3e3e3 (gray-200)
--  'rgb-surface-hover-alt': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-surface-composer-hover': '227 227 227', // #e3e3e3 (gray-200)
--  'rgb-surface-primary': '255 255 255', // #fff (white)
--  'rgb-surface-primary-alt': '247 247 248', // #f7f7f8 (gray-50)
--  'rgb-surface-primary-contrast': '236 236 236', // #ececec (gray-100)
--  'rgb-surface-secondary': '247 247 248', // #f7f7f8 (gray-50)
--  'rgb-surface-secondary-alt': '227 227 227', // #e3e3e3 (gray-200)
--  'rgb-surface-tertiary': '236 236 236', // #ececec (gray-100)
--  'rgb-surface-tertiary-alt': '255 255 255', // #fff (white)
--  'rgb-surface-dialog': '255 255 255', // #fff (white)
--  'rgb-surface-overlay': '89 89 89', // #595959 (gray-500)
--  'rgb-surface-submit': '4 120 87', // #047857 (green-700)
--  'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
-+  'rgb-surface-active': '237 247 246', // #edf7f6 Soft Daisy accent
-+  'rgb-surface-active-alt': '220 240 237', // #dcf0ed stronger Soft Daisy wash
-+  'rgb-surface-hover': '237 247 246', // #edf7f6 Soft Daisy accent
-+  'rgb-surface-hover-alt': '220 240 237', // #dcf0ed
-+  'rgb-surface-composer-hover': '237 247 246', // #edf7f6
-+  'rgb-surface-primary': '255 255 255', // #fff cards
-+  'rgb-surface-primary-alt': '244 244 246', // #f4f4f6
-+  'rgb-surface-primary-contrast': '237 247 246', // #edf7f6
-+  'rgb-surface-secondary': '244 244 246', // #f4f4f6
-+  'rgb-surface-secondary-alt': '237 247 246', // #edf7f6
-+  'rgb-surface-tertiary': '237 247 246', // #edf7f6
-+  'rgb-surface-tertiary-alt': '255 255 255', // #fff
-+  'rgb-surface-dialog': '255 255 255', // #fff
-+  'rgb-surface-overlay': '87 94 102', // #575e66
-+  'rgb-surface-submit': '28 87 87', // #1c5757 Soft Daisy primary
-+  'rgb-surface-submit-hover': '10 67 67', // #0a4343
-   'rgb-surface-destructive': '185 28 28', // #b91c1c (red-700)
-   'rgb-surface-destructive-hover': '153 27 27', // #991b1b (red-800)
--  'rgb-surface-chat': '255 255 255', // #fff (white)
--  'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
--  'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
--  'rgb-text-inverted': '255 255 255', // #fff (white)
--  'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
--  'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
--  'rgb-text-fixed': '33 33 33', // #212121 (gray-800) — same in light + dark
-+  'rgb-surface-chat': '255 255 255', // #fff
-+  'rgb-surface-inverted': '23 23 23', // #171717
-+  'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f
-+  'rgb-text-inverted': '255 255 255', // #fff
-+  'rgb-surface-fixed': '255 255 255', // #fff — same in light + dark
-+  'rgb-surface-fixed-hover': '237 247 246', // #edf7f6
-+  'rgb-text-fixed': '21 27 33', // #151b21 — same in light + dark
- 
--  // Border colors
--  'rgb-border-light': '227 227 227', // #e3e3e3 (gray-200)
--  'rgb-border-medium': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-border-medium-alt': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-border-heavy': '153 150 150', // #999696 (gray-400)
--  'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
--  'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
-+  // Border colors — soft teal-grey (Soft Daisy)
-+  'rgb-border-light': '220 232 230', // #dce8e6
-+  'rgb-border-medium': '196 216 214', // #c4d8d6
-+  'rgb-border-medium-alt': '196 216 214', // #c4d8d6
-+  'rgb-border-heavy': '148 180 176', // #94b4b0
-+  'rgb-border-xheavy': '87 94 102', // #575e66
-+  'rgb-border-destructive': '220 38 38', // #dc2626
- 
--  // Status colors
--  'rgb-status-success': '4 120 87', // #047857 (green-700)
--  'rgb-status-success-subtle': '236 253 245', // #ecfdf5 (green-50)
--  'rgb-status-success-border': '110 231 183', // #6ee7b7 (green-300)
--  'rgb-status-success-strong': '2 133 94', // #02855e
--  'rgb-status-info': '37 99 235', // #2563eb (blue-600)
--  'rgb-status-info-subtle': '239 246 255', // #eff6ff (blue-50)
--  'rgb-status-info-border': '147 197 253', // #93c5fd (blue-300)
--  'rgb-status-info-strong': '89 89 89', // #595959 (gray-500)
--  'rgb-status-warning': '180 83 9', // #b45309 (amber-700)
--  'rgb-status-warning-subtle': '255 251 235', // #fffbeb (amber-50)
--  'rgb-status-warning-border': '252 211 77', // #fcd34d (amber-300)
-+  // Status colors (success in Soft Daisy teal family)
-+  'rgb-status-success': '28 87 87', // #1c5757
-+  'rgb-status-success-subtle': '237 247 246', // #edf7f6
-+  'rgb-status-success-border': '121 189 180', // #79bdb4
-+  'rgb-status-success-strong': '10 67 67', // #0a4343
-+  'rgb-status-info': '37 99 235', // #2563eb
-+  'rgb-status-info-subtle': '239 246 255', // #eff6ff
-+  'rgb-status-info-border': '147 197 253', // #93c5fd
-+  'rgb-status-info-strong': '87 94 102', // #575e66
-+  'rgb-status-warning': '180 83 9', // #b45309
-+  'rgb-status-warning-subtle': '255 251 235', // #fffbeb
-+  'rgb-status-warning-border': '252 211 77', // #fcd34d
-   'rgb-status-warning-strong': '199 82 9', // #c75209
--  'rgb-status-error': '185 28 28', // #b91c1c (red-700)
--  'rgb-status-error-subtle': '254 242 242', // #fef2f2 (red-50)
--  'rgb-status-error-border': '252 165 165', // #fca5a5 (red-300)
-+  'rgb-status-error': '185 28 28', // #b91c1c
-+  'rgb-status-error-subtle': '254 242 242', // #fef2f2
-+  'rgb-status-error-border': '252 165 165', // #fca5a5
-   'rgb-status-error-strong': '224 47 31', // #e02f1f
--  'rgb-status-neutral': '66 66 66', // #424242 (gray-600)
--  'rgb-status-neutral-subtle': '236 236 236', // #ececec (gray-100)
--  'rgb-status-neutral-border': '205 205 205', // #cdcdcd (gray-300)
--  'rgb-text-on-status': '255 255 255', // #fff (white)
-+  'rgb-status-neutral': '35 42 48', // #232a30
-+  'rgb-status-neutral-subtle': '244 244 246', // #f4f4f6
-+  'rgb-status-neutral-border': '205 205 205', // #cdcdcd
-+  'rgb-text-on-status': '255 255 255', // #fff
- 
-   // Brand colors
-   'rgb-brand-purple': '126 34 206', // #7e22ce (purple-700)
-@@ -99,8 +99,8 @@ export const defaultTheme: IThemeRGB = {
-   'rgb-series-4': '182 123 5', // #b67b05 (amber)
-   'rgb-series-5': '216 90 142', // #d85a8e (magenta)
-   'rgb-series-6': '126 35 205', // #7e23cd (violet)
--  'rgb-series-7': '1 131 1', // #018301 (green)
-+  'rgb-series-7': '28 87 87', // #1c5757 Soft Daisy teal
- 
--  // Presentation
--  'rgb-presentation': '255 255 255', // #fff (white)
-+  // Presentation — Soft Daisy background (#fafafa)
-+  'rgb-presentation': '250 250 250', // #fafafa
- };
+diff --git a/packages/client/src/theme/themes/index.ts b/packages/client/src/theme/themes/index.ts
+index 89b1b0e2516ba75b49dba5b076461e19f6e414d3..d594f0b63bd057ccabd7c8d99059410f31a1491c 100644
+--- a/packages/client/src/theme/themes/index.ts
++++ b/packages/client/src/theme/themes/index.ts
+@@ -1,2 +1 @@
+-export { defaultTheme } from './default';
+-export { darkTheme } from './dark';
++export { omicsbaseLight as defaultTheme, omicsbaseDark as darkTheme } from './omicsbase';
 diff --git a/packages/client/src/theme/utils/createTailwindColors.js b/packages/client/src/theme/utils/createTailwindColors.js
 index 00f82ba2e07f9b9f7ab76f0052b1c371c489cbfe..b2700d53743279dffa2e2a4ea22659209aa2b4db 100644
 --- a/packages/client/src/theme/utils/createTailwindColors.js

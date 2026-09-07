@@ -1,69 +1,15 @@
 import { Types } from 'mongoose';
 import type { Model } from 'mongoose';
-
-type Status = 'queued' | 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled';
-interface Cell {
-  conversationId: string;
-  user: string;
-  latestRevisionId: Types.ObjectId;
-  latestExecutionId: Types.ObjectId;
-}
-interface Revision {
-  cellId: Types.ObjectId;
-  conversationId: string;
-  user: string;
-  revision: number;
-  content: string;
-}
-interface Execution {
-  cellId: Types.ObjectId;
-  revisionId: Types.ObjectId;
-  conversationId: string;
-  user: string;
-  status: Status;
-  attempt: number;
-  timeoutSeconds: number;
-  startedAt: Date;
-  finishedAt?: Date;
-  cancelRequested?: boolean;
-  stdout?: string;
-  markdown?: string;
-  error?: string | null;
-  engineCellId?: string | null;
-  engineRunDir?: string | null;
-}
-interface Event {
-  executionId: Types.ObjectId;
-  conversationId: string;
-  sequence: number;
-  eventType: string;
-  status: Status;
-}
-interface Artifact {
-  executionId: Types.ObjectId;
-  conversationId: string;
-  user: string;
-  artifactType: 'console' | 'plot' | 'table';
-  relativePath: string;
-  mimeType: string;
-  byteSize: number;
-  previewMarkdown?: string | null;
-  rows?: number | null;
-  cols?: number | null;
-}
-export interface NoteEngineResult {
-  success?: boolean;
-  cancelled?: boolean;
-  timed_out?: boolean;
-  stdout?: string;
-  markdown?: string;
-  error?: string;
-  cell_id?: string;
-  engine_run_dir?: string;
-  run_dir?: string;
-  plots?: string[];
-  tables?: { url?: string; file?: string; markdown?: string; rows?: number; cols?: number }[];
-}
+import type {
+  Cell,
+  Revision,
+  Execution,
+  Event,
+  Artifact,
+  Status,
+  NoteEngineResult,
+} from './contracts';
+export type { NoteEngineResult } from './contracts';
 
 export function buildNoteArtifacts(
   execution: Pick<Execution, 'conversationId' | 'user'> & { _id: Types.ObjectId },
@@ -167,11 +113,15 @@ export function createNoteAgentLifecycle(models: {
         });
         if (existingCell) {
           cellId = existingCell._id as Types.ObjectId;
-          const lastRevision = await models.NoteCellRevision.findOne({ cellId }).sort({ revision: -1 });
+          const lastRevision = await models.NoteCellRevision.findOne({ cellId }).sort({
+            revision: -1,
+          });
           if (lastRevision && typeof lastRevision.revision === 'number') {
             revisionNumber = lastRevision.revision + 1;
           }
-          const lastExecution = await models.NoteCellExecution.findOne({ cellId }).sort({ attempt: -1 });
+          const lastExecution = await models.NoteCellExecution.findOne({ cellId }).sort({
+            attempt: -1,
+          });
           if (lastExecution && typeof lastExecution.attempt === 'number') {
             attemptNumber = lastExecution.attempt + 1;
           }

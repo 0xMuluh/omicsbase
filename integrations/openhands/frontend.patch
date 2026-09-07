@@ -1,0 +1,308 @@
+diff --git a/frontend/__tests__/integrations/omicsbase.test.ts b/frontend/__tests__/integrations/omicsbase.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..36b7174edb046e927f09d9ba3afcd7d560cdae1a
+--- /dev/null
++++ b/frontend/__tests__/integrations/omicsbase.test.ts
+@@ -0,0 +1,21 @@
++import { describe, expect, it } from "vitest";
++import { parseStoredValue, webHosts, workspaceTab } from "../../src/integrations/omicsbase/policy";
++
++describe("OmicsBase workspace contract", () => {
++  it("retains editor and changes selection, recovering unsupported or missing tabs to Report", () => {
++    expect(workspaceTab("vscode")).toBe("vscode");
++    expect(workspaceTab("editor")).toBe("editor");
++    for (const tab of [null, "browser", "terminal", "jupyter", "served"] as const) {
++      expect(workspaceTab(tab)).toBe("served");
++    }
++  });
++  it("recovers corrupt storage and preserves valid stored preferences", () => {
++    expect(parseStoredValue("broken json", "served")).toBe("served");
++    expect(parseStoredValue(null, true)).toBe(true);
++    expect(parseStoredValue("false", true)).toBe(false);
++  });
++  it("accepts both backend web-host response shapes", () => {
++    expect(webHosts(["http://report"])).toEqual(["http://report"]);
++    expect(webHosts({"http://report": 3001})).toEqual(["http://report"]);
++  });
++});
+diff --git a/frontend/src/api/conversation-service/conversation-service.api.ts b/frontend/src/api/conversation-service/conversation-service.api.ts
+index f426b56a489208802682fba09c258d6801451878..d94e05898c93efd798480a190c9a1890a78995aa 100644
+--- a/frontend/src/api/conversation-service/conversation-service.api.ts
++++ b/frontend/src/api/conversation-service/conversation-service.api.ts
+@@ -1,3 +1,4 @@
++import { webHosts } from "#/integrations/omicsbase/policy";
+ import { AxiosHeaders } from "axios";
+ import {
+   Feedback,
+@@ -181,7 +182,7 @@ class ConversationService {
+     const response = await openHands.get(url, {
+       headers: this.getConversationHeaders(),
+     });
+-    return Object.keys(response.data.hosts);
++    return webHosts(response.data.hosts);
+   }
+ 
+   /**
+diff --git a/frontend/src/components/features/conversation/conversation-tabs/conversation-tab-content/conversation-tab-content.tsx b/frontend/src/components/features/conversation/conversation-tabs/conversation-tab-content/conversation-tab-content.tsx
+index 271e7a750a07749acb7302ac0722cb9579657e1d..2df4cbac7227259525ceef5912b0bf54b4a49f19 100644
+--- a/frontend/src/components/features/conversation/conversation-tabs/conversation-tab-content/conversation-tab-content.tsx
++++ b/frontend/src/components/features/conversation/conversation-tabs/conversation-tab-content/conversation-tab-content.tsx
+@@ -1,6 +1,6 @@
++import { workspaceTab } from "#/integrations/omicsbase/policy";
+ import { lazy, useMemo } from "react";
+ import { useTranslation } from "react-i18next";
+-import { ConversationLoading } from "../../conversation-loading";
+ import { I18nKey } from "#/i18n/declaration";
+ import { TabWrapper } from "./tab-wrapper";
+ import { TabContainer } from "./tab-container";
+@@ -17,7 +17,8 @@ const ServedTab = lazy(() => import("#/routes/served-tab"));
+ const VSCodeTab = lazy(() => import("#/routes/vscode-tab"));
+ 
+ export function ConversationTabContent() {
+-  const { selectedTab, shouldShownAgentLoading } = useConversationStore();
++  const { selectedTab: storedTab } = useConversationStore();
++  const selectedTab = workspaceTab(storedTab);
+ 
+   const { t } = useTranslation();
+ 
+@@ -62,10 +63,10 @@ export function ConversationTabContent() {
+       return t(I18nKey.COMMON$JUPYTER);
+     }
+     if (isServedActive) {
+-      return t(I18nKey.COMMON$APP);
++      return "Report";
+     }
+     if (isVSCodeActive) {
+-      return t(I18nKey.COMMON$CODE);
++      return "Editor";
+     }
+     if (isTerminalActive) {
+       return t(I18nKey.COMMON$TERMINAL);
+@@ -80,9 +81,6 @@ export function ConversationTabContent() {
+     isTerminalActive,
+   ]);
+ 
+-  if (shouldShownAgentLoading) {
+-    return <ConversationLoading />;
+-  }
+ 
+   return (
+     <TabContainer>
+diff --git a/frontend/src/components/features/conversation/conversation-tabs/conversation-tabs.tsx b/frontend/src/components/features/conversation/conversation-tabs/conversation-tabs.tsx
+index 7a72305c3be4bc5492ce653ccaf81a9ecc1d3629..79fe7c86173e954e205f158325768415bbc08737 100644
+--- a/frontend/src/components/features/conversation/conversation-tabs/conversation-tabs.tsx
++++ b/frontend/src/components/features/conversation/conversation-tabs/conversation-tabs.tsx
+@@ -1,9 +1,7 @@
+ import { useEffect } from "react";
+ import { useTranslation } from "react-i18next";
+-import { useLocalStorage } from "@uidotdev/usehooks";
+-import JupyterIcon from "#/icons/jupyter.svg?react";
+-import TerminalIcon from "#/icons/terminal.svg?react";
+-import GlobeIcon from "#/icons/globe.svg?react";
++import { useWorkspaceStorage as useLocalStorage } from "#/integrations/omicsbase/storage";
++import { workspaceTab } from "#/integrations/omicsbase/policy";
+ import ServerIcon from "#/icons/server.svg?react";
+ import GitChanges from "#/icons/git_changes.svg?react";
+ import VSCodeIcon from "#/icons/vscode.svg?react";
+@@ -11,7 +9,6 @@ import { cn } from "#/utils/utils";
+ import { ConversationTabNav } from "./conversation-tab-nav";
+ import { ChatActionTooltip } from "../../chat/chat-action-tooltip";
+ import { I18nKey } from "#/i18n/declaration";
+-import { VSCodeTooltipContent } from "./vscode-tooltip-content";
+ import {
+   useConversationStore,
+   type ConversationTab,
+@@ -29,14 +26,14 @@ export function ConversationTabs() {
+   const [persistedSelectedTab, setPersistedSelectedTab] =
+     useLocalStorage<ConversationTab | null>(
+       "conversation-selected-tab",
+-      "editor",
++      "served",
+     );
+ 
+   const [persistedIsRightPanelShown, setPersistedIsRightPanelShown] =
+     useLocalStorage<boolean>("conversation-right-panel-shown", true);
+ 
+   const onTabChange = (value: ConversationTab | null) => {
+-    setSelectedTab(value);
++    setSelectedTab(workspaceTab(value));
+     // Persist the selected tab to localStorage
+     setPersistedSelectedTab(value);
+   };
+@@ -44,7 +41,7 @@ export function ConversationTabs() {
+   // Initialize Zustand state from localStorage on component mount
+   useEffect(() => {
+     // Initialize selectedTab from localStorage if available
+-    setSelectedTab(persistedSelectedTab);
++    setSelectedTab(workspaceTab(persistedSelectedTab));
+     setHasRightPanelToggled(persistedIsRightPanelShown);
+   }, [
+     setSelectedTab,
+@@ -58,7 +55,7 @@ export function ConversationTabs() {
+       if (isRightPanelShown) {
+         // If no tab is selected, default to editor tab
+         if (!selectedTab) {
+-          onTabChange("editor");
++          onTabChange("served");
+         }
+       }
+     };
+@@ -87,48 +84,9 @@ export function ConversationTabs() {
+     isRightPanelShown && selectedTab === tab;
+ 
+   const tabs = [
+-    {
+-      isActive: isTabActive("editor"),
+-      icon: GitChanges,
+-      onClick: () => onTabSelected("editor"),
+-      tooltipContent: t(I18nKey.COMMON$CHANGES),
+-      tooltipAriaLabel: t(I18nKey.COMMON$CHANGES),
+-    },
+-    {
+-      isActive: isTabActive("vscode"),
+-      icon: VSCodeIcon,
+-      onClick: () => onTabSelected("vscode"),
+-      tooltipContent: <VSCodeTooltipContent />,
+-      tooltipAriaLabel: t(I18nKey.COMMON$CODE),
+-    },
+-    {
+-      isActive: isTabActive("terminal"),
+-      icon: TerminalIcon,
+-      onClick: () => onTabSelected("terminal"),
+-      tooltipContent: t(I18nKey.COMMON$TERMINAL),
+-      tooltipAriaLabel: t(I18nKey.COMMON$TERMINAL),
+-    },
+-    {
+-      isActive: isTabActive("jupyter"),
+-      icon: JupyterIcon,
+-      onClick: () => onTabSelected("jupyter"),
+-      tooltipContent: t(I18nKey.COMMON$JUPYTER),
+-      tooltipAriaLabel: t(I18nKey.COMMON$JUPYTER),
+-    },
+-    {
+-      isActive: isTabActive("served"),
+-      icon: ServerIcon,
+-      onClick: () => onTabSelected("served"),
+-      tooltipContent: t(I18nKey.COMMON$APP),
+-      tooltipAriaLabel: t(I18nKey.COMMON$APP),
+-    },
+-    {
+-      isActive: isTabActive("browser"),
+-      icon: GlobeIcon,
+-      onClick: () => onTabSelected("browser"),
+-      tooltipContent: t(I18nKey.COMMON$BROWSER),
+-      tooltipAriaLabel: t(I18nKey.COMMON$BROWSER),
+-    },
++    { isActive: isTabActive("served"), icon: ServerIcon, onClick: () => onTabSelected("served"), tooltipContent: "Report", tooltipAriaLabel: "Report" },
++    { isActive: isTabActive("vscode"), icon: VSCodeIcon, onClick: () => onTabSelected("vscode"), tooltipContent: "Editor", tooltipAriaLabel: "Editor" },
++    { isActive: isTabActive("editor"), icon: GitChanges, onClick: () => onTabSelected("editor"), tooltipContent: t(I18nKey.COMMON$CHANGES), tooltipAriaLabel: t(I18nKey.COMMON$CHANGES) },
+   ];
+ 
+   return (
+diff --git a/frontend/src/integrations/omicsbase/policy.ts b/frontend/src/integrations/omicsbase/policy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a1058ff4d3d193c25bf2ce97fa3d4afadd03da4
+--- /dev/null
++++ b/frontend/src/integrations/omicsbase/policy.ts
+@@ -0,0 +1,19 @@
++import type { ConversationTab } from "#/state/conversation-store";
++
++export function isEmbedded(): boolean {
++  return typeof window !== "undefined" &&
++    (window.self !== window.top || new URLSearchParams(window.location.search).get("embedded") === "true");
++}
++
++export function workspaceTab(value: ConversationTab | null): ConversationTab {
++  return value === "vscode" || value === "editor" ? value : "served";
++}
++
++export function parseStoredValue<T>(raw: string | null, fallback: T): T {
++  if (raw === null) return fallback;
++  try { return JSON.parse(raw) as T; } catch { return fallback; }
++}
++
++export function webHosts(hosts: string[] | Record<string, number>): string[] {
++  return Array.isArray(hosts) ? hosts : Object.keys(hosts);
++}
+diff --git a/frontend/src/integrations/omicsbase/storage.ts b/frontend/src/integrations/omicsbase/storage.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..605966b2e6a0d5ddff33ea75819f1ffbdb604f51
+--- /dev/null
++++ b/frontend/src/integrations/omicsbase/storage.ts
+@@ -0,0 +1,20 @@
++import { useCallback, useEffect, useState } from "react";
++import { parseStoredValue } from "./policy";
++
++export function useWorkspaceStorage<T>(key: string, fallback: T) {
++  const read = useCallback(() => {
++    try { return parseStoredValue(window.localStorage.getItem(key), fallback); }
++    catch { return fallback; }
++  }, [key, fallback]);
++  const [value, setValue] = useState<T>(read);
++  useEffect(() => {
++    const update = (event: StorageEvent) => { if (event.key === key) setValue(read()); };
++    window.addEventListener("storage", update);
++    return () => window.removeEventListener("storage", update);
++  }, [key, read]);
++  const write = useCallback((next: T) => {
++    setValue(next);
++    try { window.localStorage.setItem(key, JSON.stringify(next)); } catch { /* Storage may be disabled. */ }
++  }, [key]);
++  return [value, write] as const;
++}
+diff --git a/frontend/src/routes/root-layout.tsx b/frontend/src/routes/root-layout.tsx
+index 930451dae9ceca832d42e1a51a2bc51116064349..2e8f8d11e2976d9d9ade9953614f03af50d57cef 100644
+--- a/frontend/src/routes/root-layout.tsx
++++ b/frontend/src/routes/root-layout.tsx
+@@ -1,3 +1,4 @@
++import { isEmbedded } from "#/integrations/omicsbase/policy";
+ import React from "react";
+ import {
+   useRouteError,
+@@ -205,12 +206,13 @@ export default function MainApp() {
+     <div
+       data-testid="root-layout"
+       className={cn(
+-        "h-screen lg:min-w-[1024px] flex flex-col md:flex-row bg-base",
+-        pathname === "/" ? "p-0" : "p-0 md:p-3 md:pl-0",
++        "h-screen flex flex-col md:flex-row bg-base",
++        !isEmbedded() && "lg:min-w-[1024px]",
++        isEmbedded() ? "p-0 md:p-3" : pathname === "/" ? "p-0" : "p-0 md:p-3 md:pl-0",
+         isMobileDevice() && "overflow-hidden",
+       )}
+     >
+-      <Sidebar />
++      {!isEmbedded() && <Sidebar />}
+ 
+       <div className="flex flex-col w-full h-[calc(100%-50px)] md:h-full gap-3">
+         {config.data?.MAINTENANCE && (
+diff --git a/frontend/src/utils/file-validation.ts b/frontend/src/utils/file-validation.ts
+index 490912d506f730e8afef1c439c3587216ed4e91a..d54a6a4f5656e5e7487bc762513e1e8d617b1744 100644
+--- a/frontend/src/utils/file-validation.ts
++++ b/frontend/src/utils/file-validation.ts
+@@ -1,5 +1,5 @@
+-export const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB maximum file size
+-export const MAX_TOTAL_SIZE = 3 * 1024 * 1024; // 3MB maximum total size for all files combined
++export const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB maximum file size
++export const MAX_TOTAL_SIZE = 20 * 1024 * 1024; // 20MB maximum total size for all files combined
+ 
+ export interface FileValidationResult {
+   isValid: boolean;
+@@ -19,7 +19,7 @@ export function validateIndividualFileSizes(
+     const fileNames = oversizedFiles.map((f) => f.name);
+     return {
+       isValid: false,
+-      errorMessage: `Files exceeding 3MB are not allowed: ${fileNames.join(", ")}`,
++      errorMessage: `Files exceeding 20MB are not allowed: ${fileNames.join(", ")}`,
+       oversizedFiles: fileNames,
+     };
+   }
+@@ -45,7 +45,7 @@ export function validateTotalFileSize(
+     const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(1);
+     return {
+       isValid: false,
+-      errorMessage: `Total file size would be ${totalSizeMB}MB, exceeding the 3MB limit. Please select fewer or smaller files.`,
++      errorMessage: `Total file size would be ${totalSizeMB}MB, exceeding the 20MB limit. Please select fewer or smaller files.`,
+     };
+   }
+ 
