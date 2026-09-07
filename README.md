@@ -53,4 +53,4 @@ The parent workspace currently has a temporary `omicsbase3 -> omicsbase` symlink
 
 ## Licensing
 
-A license for original OmicsBase code has not yet been selected. No project-wide open-source license is declared by this checkpoint. Existing third-party license notices remain applicable to their respective code; see [LICENSE.md](LICENSE.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Resolve the original-code license before public publication.
+Original OmicsBase code is available under the [MIT License](LICENSE). Third-party code retains its respective copyrights and license notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
