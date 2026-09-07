@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+from urllib.parse import quote
 import re
 import sqlite3
 from pathlib import Path
@@ -86,6 +88,9 @@ def search_bioc_knowledge(
             "markdown": f"Search query failed: {e}"
         }
 
+    source_metadata = {}
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_sources'").fetchone():
+        source_metadata = {slug: json.loads(data) for slug, data in conn.execute('SELECT book_slug, metadata_json FROM knowledge_sources')}
     conn.close()
 
     matches = []
@@ -104,11 +109,23 @@ def search_bioc_knowledge(
             "source_file": source_file,
             "score": round(abs(rank), 3),
         }
+        provenance = source_metadata.get(book_slug)
+        if provenance:
+            match['source_url'] = f"{provenance['repository']}/blob/{provenance['commit']}/{quote(source_file)}"
+            match['source_commit'] = provenance['commit']
+            match['attribution'] = provenance['attribution']
+            match['license_statements'] = provenance['license_statements']
         matches.append(match)
 
         # Build clean markdown excerpt for the LLM
         sec = f"### [{book_title}] {chapter_title} - {heading_path}\n"
-        sec += f"*Source: `{book_slug}/{source_file}`*\n\n"
+        if provenance:
+            sec += f"*Source: [{book_slug}/{source_file}]({match['source_url']})*\n"
+            sec += f"*Attribution: {provenance['attribution']}*\n"
+            terms = '; '.join(item['statement'] for item in provenance['license_statements'])
+            sec += f"*Source license statements: {terms}*\n\n"
+        else:
+            sec += f"*Source: `{book_slug}/{source_file}`*\n\n"
         if prose:
             sec += f"{prose.strip()}\n\n"
         if code:

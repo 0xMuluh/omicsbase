@@ -23,3 +23,9 @@
 The active Compose services and persistent OpenHands runtime were recreated with canonical paths. Mount identities and live image versions were preserved; database and HTTP/MCP/runtime health checks passed. The compatibility symlink was removed and web/MCP checks repeated successfully. See `PATH_MIGRATION.md`.
 
 `restore_upstream.py --in-place` now supports a fresh repository clone and refuses existing checkouts before modifying anything. End-to-end clean-machine setup and model-provider validation remain unverified; `SETUP.md` documents the required manual configuration.
+
+## Reproducible curated knowledge
+
+Fetched all five pinned public source repositories over the network into a new repository-local cache. The generated index contains 2,409 chunks and its indexed content matches the previous local library exactly. Source commits, notice links, and attribution are embedded in the database and exposed by search results. The standard local database was then installed atomically using the verified cache.
+
+Installer tests cover actual local Git fetches, complete book coverage, repeated installation, attribution, rejection of a modified cache, and preservation of the previous database on indexing failure. Both tests pass. No book source chunks are evaluated. Source licenses are recorded independently of OmicsBase's MIT license.

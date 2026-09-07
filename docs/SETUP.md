@@ -54,15 +54,13 @@ Use the same explicit Docker context for builds and startup. Visit `http://local
 
 ## Knowledge search and data
 
-New clones do not contain anyone's projects, login data, or the generated `engine/knowledge/knowledge.db`. Analysis starts with new local data. The knowledge search function reports the absent index until one is provisioned; the database is not required to import the engine module or run R cells.
-
-To build the optional index, obtain the curated book repositories listed in `engine/knowledge/indexer.py` under a directory you control, then pass explicit source and database paths:
+Populate the curated five-source knowledge library after building the engine image:
 
 ```bash
-python3 -m engine.knowledge.indexer /absolute/path/to/book-repositories "$PWD/engine/knowledge/knowledge.db"
+docker --context default run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/app" --entrypoint python3 omicsbase-engine:dev /app/scripts/setup_knowledge.py
 ```
 
-The old indexer's implicit source-directory default is historical; do not rely on it. Book source acquisition and pinning are not automated yet.
+This downloads pinned public sources and builds `engine/knowledge/knowledge.db`. It was verified to reproduce all 2,409 chunks in the existing library. The operation is separate from private project and login data, which new users create locally. See [knowledge setup](../knowledge/README.md) for a Python-only alternative and [source attribution](../knowledge/ATTRIBUTION.md) for the books' own license statements. The books are not covered by OmicsBase's MIT license.
 
 ## What has actually been verified
 

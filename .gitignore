@@ -20,3 +20,6 @@ build/
 .Rhistory
 .RData
 .DS_Store
+
+# Downloaded knowledge sources; reproducible from knowledge/sources.json.
+/.knowledge/

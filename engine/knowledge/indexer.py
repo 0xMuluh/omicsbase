@@ -18,7 +18,7 @@ BOOKS = [
     {"slug": "metabonaut", "title": "Metabonaut (Metabolomics)"},
 ]
 
-def build_index(repos_dir: str | Path, db_path: str | Path) -> Dict[str, int]:
+def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = False) -> Dict[str, int]:
     repos_path = Path(repos_dir).resolve()
     db_file = Path(db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -54,9 +54,13 @@ def build_index(repos_dir: str | Path, db_path: str | Path) -> Dict[str, int]:
         if not book_repo.exists():
             book_repo = repos_path / slug
         if not book_repo.exists():
+            if strict:
+                conn.close()
+                raise FileNotFoundError(f"Missing knowledge source: {slug}")
             print(f"Warning: Repository for {slug} not found at {book_repo}")
             continue
 
+        book_repo = book_repo.resolve()
         qmd_files = list(iter_qmd_files(book_repo))
         print(f"Indexing {slug} ({len(qmd_files)} files)...")
 
@@ -66,6 +70,9 @@ def build_index(repos_dir: str | Path, db_path: str | Path) -> Dict[str, int]:
                 text = f.read_text(encoding="utf-8", errors="ignore")
                 doc = parse_qmd(text, relative_path=str(f.relative_to(book_repo)))
             except Exception as e:
+                if strict:
+                    conn.close()
+                    raise ValueError(f"Cannot parse knowledge source: {f}") from e
                 print(f"  Error parsing {f.name}: {e}")
                 continue
 
@@ -106,10 +113,7 @@ def build_index(repos_dir: str | Path, db_path: str | Path) -> Dict[str, int]:
     return stats
 
 if __name__ == "__main__":
-    default_repos = Path(__file__).resolve().parent.parent.parent.parent / "omicsbase" / "backend" / "knowledge" / "repositories"
+    if len(sys.argv) < 2:
+        raise SystemExit("Use scripts/setup_knowledge.py to download pinned sources, or pass an explicit source directory here.")
     default_db = Path(__file__).resolve().parent / "knowledge.db"
-
-    repos_arg = sys.argv[1] if len(sys.argv) > 1 else str(default_repos)
-    db_arg = sys.argv[2] if len(sys.argv) > 2 else str(default_db)
-
-    build_index(repos_arg, db_arg)
+    build_index(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else default_db)

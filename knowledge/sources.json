@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "books": [
+    {
+      "slug": "osca",
+      "title": "Orchestrating Single-Cell Analysis with Bioconductor",
+      "repository": "https://github.com/OSCA-source/OSCA",
+      "commit": "b1d002f82d1d17286a889c08b31f36c19bd83c15",
+      "book_url": "https://bioconductor.org/books/release/OSCA/",
+      "attribution": "The authors and contributors identified in the pinned source repository",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY 4.0",
+          "url": "https://github.com/OSCA-source/OSCA/blob/b1d002f82d1d17286a889c08b31f36c19bd83c15/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "osta",
+      "title": "Orchestrating Spatial Transcriptomics Analysis with Bioconductor",
+      "repository": "https://github.com/lmweber/OSTA",
+      "commit": "de4d0c826c43ceddcaed58dda37868dbcf512d80",
+      "book_url": "https://bioconductor.org/books/release/OSTA/",
+      "attribution": "The authors and contributors identified in the pinned source repository",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY 4.0",
+          "url": "https://github.com/lmweber/OSTA/blob/de4d0c826c43ceddcaed58dda37868dbcf512d80/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "oma",
+      "title": "Orchestrating Microbiome Analysis with Bioconductor",
+      "repository": "https://github.com/microbiome/OMA",
+      "commit": "22d30d95bd3994e8838a1b9401e9e70563f316de",
+      "book_url": "https://bioconductor.org/books/release/OMA/",
+      "attribution": "The authors and contributors identified in the pinned source repository",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY-NC-SA 4.0",
+          "url": "https://github.com/microbiome/OMA/blob/22d30d95bd3994e8838a1b9401e9e70563f316de/DESCRIPTION"
+        },
+        {
+          "path": "inst/index.qmd",
+          "statement": "CC BY-NC 3.0 US (book text; differs from package metadata)",
+          "url": "https://github.com/microbiome/OMA/blob/22d30d95bd3994e8838a1b9401e9e70563f316de/inst/index.qmd"
+        }
+      ]
+    },
+    {
+      "slug": "r-for-mass-spectrometry",
+      "title": "R for Mass Spectrometry",
+      "repository": "https://github.com/rformassspectrometry/rformassspectrometry.github.io",
+      "commit": "a7bcd7e2ec078d6d30004ec67928fb7450f574ee",
+      "book_url": "https://www.RforMassSpectrometry.org",
+      "attribution": "The authors and contributors identified in the pinned source repository",
+      "license_statements": [
+        {
+          "path": "README.md",
+          "statement": "CC BY-SA (version unspecified)",
+          "url": "https://github.com/rformassspectrometry/rformassspectrometry.github.io/blob/a7bcd7e2ec078d6d30004ec67928fb7450f574ee/README.md"
+        }
+      ]
+    },
+    {
+      "slug": "metabonaut",
+      "title": "Metabonaut (Metabolomics)",
+      "repository": "https://github.com/rformassspectrometry/Metabonaut",
+      "commit": "35a1a9b99fb9434348ae7c1e05ea801d754a16db",
+      "book_url": "https://rformassspectrometry.github.io/Metabonaut/",
+      "attribution": "The authors and contributors identified in the pinned source repository",
+      "license_statements": [
+        {
+          "path": "README.md",
+          "statement": "CC BY-NC 4.0 (book badge)",
+          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/35a1a9b99fb9434348ae7c1e05ea801d754a16db/README.md"
+        },
+        {
+          "path": "DESCRIPTION",
+          "statement": "Artistic-2.0 (package metadata)",
+          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/35a1a9b99fb9434348ae7c1e05ea801d754a16db/DESCRIPTION"
+        }
+      ]
+    }
+  ]
+}

@@ -10,7 +10,7 @@ For a new clone, follow [fresh-clone setup](docs/SETUP.md). This is a developer 
 
 This repository is a source checkpoint of the existing implementation, not yet a turnkey distribution. It preserves the current customizations before architectural cleanup. Upstream upgrades require review; see [UPSTREAM.md](UPSTREAM.md).
 
-The engine and its shared analysis base can now be built entirely from this repository with `python3 scripts/build_engine.py`. The base recipe and all its source inputs are under `docker/engine-base/`; no OB2 or archived directory is required. See [engine build instructions](docs/ENGINE_IMAGE.md). The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
+The engine and its shared analysis base can now be built entirely from this repository with `python3 scripts/build_engine.py`. The base recipe and all its source inputs are under `docker/engine-base/`; no OB2 or archived directory is required. See [engine build instructions](docs/ENGINE_IMAGE.md). The curated knowledge library is reproducible using [knowledge setup](knowledge/README.md), which downloads pinned public sources and builds the local index. Private analysis/project data and running sessions are not distributed.
 
 ## Layout
 
@@ -19,6 +19,7 @@ The engine and its shared analysis base can now be built entirely from this repo
 - `deployment/`: configuration templates and a non-secret inventory of current deployment image identities.
 - `scripts/`: source snapshot, restoration, and engine image build tools.
 - `docker/engine-base/`: imported analysis-base Dockerfile and all build inputs.
+- `knowledge/`: pinned book sources, attribution, and setup instructions.
 - `licenses/`: retained upstream notices.
 - `docs/`: maintenance findings and retirement records.
 
