@@ -17,3 +17,9 @@
 - Built `omicsbase-engine-base:dev` and `omicsbase-engine:dev` using only `docker/engine-base/` and `engine/` build contexts; cached layers were used where available.
 - Ran all three existing engine tests against the rebuilt image in a temporary read-only container with no host mounts or external network. Real R execution, persistence failure handling, errors, and cancellation passed. Existing kernel cleanup ResourceWarnings were emitted; they did not fail the tests.
 - Running deployment images and containers were not replaced.
+
+## Follow-up path migration and setup
+
+The active Compose services and persistent OpenHands runtime were recreated with canonical paths. Mount identities and live image versions were preserved; database and HTTP/MCP/runtime health checks passed. The compatibility symlink was removed and web/MCP checks repeated successfully. See `PATH_MIGRATION.md`.
+
+`restore_upstream.py --in-place` now supports a fresh repository clone and refuses existing checkouts before modifying anything. End-to-end clean-machine setup and model-provider validation remain unverified; `SETUP.md` documents the required manual configuration.

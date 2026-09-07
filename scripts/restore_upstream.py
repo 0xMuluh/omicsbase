@@ -12,11 +12,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('destination', type=Path, help='New, nonexistent directory for both checkouts')
+    parser.add_argument('destination', nargs='?', type=Path, help='New directory for both checkouts')
+    parser.add_argument('--in-place', action='store_true', help='Restore into this repository; both checkout paths must be absent')
     args = parser.parse_args()
-    dest = args.destination.resolve()
-    if dest.exists():
-        parser.error('Destination must not exist; existing checkouts are never overwritten.')
+    if args.in_place:
+        if args.destination is not None:
+            parser.error('Do not combine --in-place with a destination.')
+        dest = ROOT
+        if any((dest / name).exists() for name in ('librechat', 'openhands')):
+            parser.error('Existing upstream checkout found; refusing to overwrite it.')
+    else:
+        if args.destination is None:
+            parser.error('Provide a new destination or --in-place.')
+        dest = args.destination.resolve()
+        if dest.exists():
+            parser.error('Destination must not exist; existing checkouts are never overwritten.')
     manifest = json.loads((ROOT / 'upstream/manifest.json').read_text())
     # Validate the entire snapshot before cloning or applying anything.
     for name, entry in manifest.items():
@@ -26,7 +36,7 @@ def main():
         for relative, sha in checks.items():
             if hashlib.sha256((source / relative).read_bytes()).hexdigest() != sha:
                 raise ValueError(f'Snapshot checksum mismatch: {name}/{relative}')
-    dest.mkdir(parents=True)
+    dest.mkdir(parents=True, exist_ok=args.in_place)
     for name, entry in manifest.items():
         repo = dest / name
         subprocess.run(['git', 'clone', '--no-checkout', entry['url'], str(repo)], check=True)

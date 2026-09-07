@@ -6,6 +6,8 @@ This is the primary OmicsBase implementation, previously named `omicsbase3`. The
 
 ## Development status
 
+For a new clone, follow [fresh-clone setup](docs/SETUP.md). This is a developer setup, not a one-command packaged release.
+
 This repository is a source checkpoint of the existing implementation, not yet a turnkey distribution. It preserves the current customizations before architectural cleanup. Upstream upgrades require review; see [UPSTREAM.md](UPSTREAM.md).
 
 The engine and its shared analysis base can now be built entirely from this repository with `python3 scripts/build_engine.py`. The base recipe and all its source inputs are under `docker/engine-base/`; no OB2 or archived directory is required. See [engine build instructions](docs/ENGINE_IMAGE.md). The engine also uses a local knowledge database and analysis/project data that are intentionally not committed. Restoring source does not restore those assets or running sessions.
@@ -50,7 +52,7 @@ For a complete development layout, place the restored checkouts alongside this r
 
 The inspected running stack uses Docker context `default`; this machine's selected context was `desktop-linux`, which shows different containers. Use an explicit context when inspecting this deployment. Do not use this machine-specific context assumption on other hosts without checking.
 
-The parent workspace currently has a temporary `omicsbase3 -> omicsbase` symlink because existing containers record old absolute bind-mount paths. It is outside this Git repository. Keep it until the Compose containers and persistent OpenHands user runtimes have been deliberately recreated with the new paths. See [maintenance notes](docs/MAINTENANCE.md).
+The active Compose services and persistent OpenHands runtime were recreated with `omicsbase/` paths on 2026-09-07. The temporary `omicsbase3 -> omicsbase` link has been removed. See [migration verification](docs/PATH_MIGRATION.md).
 
 ## Licensing
 
