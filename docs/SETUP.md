@@ -111,3 +111,50 @@ The production reverse-proxy configuration used by the cPouta deployment is
 recorded in:
 
     deployment/Caddyfile.production
+
+
+## Analysis sandbox image
+
+The OpenHands server image and its execution sandbox are separate. The sandbox
+must contain both the analysis environment and OpenHands runtime server. A stock
+OpenHands runtime image is insufficient: it may not contain R or Quarto.
+The deployment selects `OMICSBASE_RUNTIME_IMAGE` (default `omicsbase-runtime:dev`).
+
+With the analysis image built and the OpenHands server running, build the combined
+image using that server's runtime builder before opening a workspace:
+
+```bash
+docker exec -i openhands-engine /app/.venv/bin/python -u - <<'PYBUILD'
+import docker
+from openhands.runtime.utils.runtime_build import build_runtime_image
+from openhands.runtime.builder.docker import DockerRuntimeBuilder
+client = docker.from_env()
+try:
+    image = build_runtime_image(
+        base_image="omicsbase-engine:dev",
+        runtime_builder=DockerRuntimeBuilder(client),
+        platform="linux/amd64",
+        enable_browser=False,
+    )
+    if not client.images.get(image).tag("omicsbase-runtime", tag="dev"):
+        raise RuntimeError("Failed to tag analysis runtime")
+    print("BUILD COMPLETE:", image)
+finally:
+    client.close()
+PYBUILD
+
+docker run --rm --entrypoint /bin/bash omicsbase-runtime:dev \
+  -lc 'set -e; Rscript --version; quarto --version; test -f /openhands/code/openhands/runtime/action_execution_server.py'
+```
+
+The builder may install Docker CLI/build tools inside the server container; it
+uses the host Docker daemon through the mounted socket. This build was verified
+on the VM with R 4.6.1 and Quarto 1.6.42. Dependency downloads are not fully locked,
+so this is a repeatable build procedure, not a guarantee of identical image bytes.
+
+Changing the image setting does not replace an existing per-user sandbox.
+Stop the OpenHands server, then stop and rename the old sandbox for rollback,
+and recreate the server before reopening the workspace. Verify the sandbox's
+`/workspace` host mount first. Preserve its files and any unmounted container data.
+The custom execution server initializes PATH for each new conversation shell;
+existing shells need a runtime restart to receive startup code changes.

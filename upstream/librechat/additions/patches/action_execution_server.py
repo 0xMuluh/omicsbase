@@ -286,6 +286,14 @@ class ActionExecutor:
                 max_memory_mb=self.max_memory_gb * 1024 if self.max_memory_gb else None,
             )
             bash_session.initialize()
+            # Login-shell setup can replace PATH. Apply this to every shell,
+            # including the separate shells created for shared-runtime conversations.
+            action = CmdRunAction(command='export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"')
+            action.set_hard_timeout(30)
+            result = bash_session.execute(action)
+            if result.exit_code != 0:
+                bash_session.close()
+                raise RuntimeError('Could not initialize analysis tool PATH')
             return bash_session
 
     async def ainit(self):

@@ -61,7 +61,7 @@ services:
       - SANDBOX_USER_ID=0
       - WORKSPACE_BASE=/opt/workspace_base
       - SANDBOX_BASE_CONTAINER_IMAGE=${OMICSBASE_ENGINE_IMAGE:-omicsbase-engine:dev}
-      - SANDBOX_RUNTIME_CONTAINER_IMAGE=ghcr.io/all-hands-ai/runtime:oh_v0.59.0_u881h6h98jxfnexp_0gxh9m4gcqv5hyox
+      - SANDBOX_RUNTIME_CONTAINER_IMAGE=${OMICSBASE_RUNTIME_IMAGE:-omicsbase-runtime:dev}
       - LOG_ALL_EVENTS=true
       - RUN_AS_OPENHANDS=false
       - LLM_MODEL=openai/glm-5.3-flash
