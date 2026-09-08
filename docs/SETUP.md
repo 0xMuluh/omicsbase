@@ -42,7 +42,7 @@ python3 scripts/build_engine.py --context default
 python3 scripts/build_openhands.py --context default
 ```
 
-The frontend command builds LibreChat's shared packages and UI. Its outputs are mounted by the deployment override. The engine command builds both analysis images from repository-local contexts. The OpenHands command fetches its pinned frontend source, applies the checked-in customization, runs typechecks and contract tests, and packages the UI and integration into the pinned backend image. It stops on patch conflicts or failed checks.
+The frontend command builds LibreChat's shared packages and UI inside the image build context. The production override runs those image-built outputs directly; it does not require generated `client/dist` or `packages/api/dist` directories in the checkout. The engine command builds both analysis images from repository-local contexts. The OpenHands command fetches its pinned frontend source, applies the checked-in customization, runs typechecks and contract tests, and packages the UI and integration into the pinned backend image. It stops on patch conflicts or failed checks.
 
 ## Start
 

@@ -42,13 +42,14 @@ export function createWorkspaceHandler(
       });
       res.cookie(`omicsbase_project_${projectId}`, session, {
         httpOnly: true,
-        secure: urls.openhandsBaseUrl.startsWith('https://'),
+        secure: urls.secureCookies,
         sameSite: 'lax',
         path: '/',
         maxAge: 60 * 60 * 1000,
       });
       res.setHeader('Cache-Control', 'no-store');
-      return res.json({ ticket, userId, ...urls });
+      const { secureCookies: _secureCookies, ...publicUrls } = urls;
+      return res.json({ ticket, userId, ...publicUrls });
     } catch {
       return res.status(500).json({ error: 'Could not authorize workspace' });
     }

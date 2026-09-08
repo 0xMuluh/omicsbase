@@ -1,6 +1,7 @@
 export interface WorkspaceURLs {
   openhandsBaseUrl: string;
   engineBaseUrl: string;
+  secureCookies: boolean;
 }
 
 export function workspaceURLs(): WorkspaceURLs {
@@ -17,5 +18,9 @@ export function workspaceURLs(): WorkspaceURLs {
   if (app.protocol === 'https:' && openhands.protocol !== 'https:') {
     throw new Error('OpenHands must use HTTPS when LibreChat uses HTTPS');
   }
-  return { openhandsBaseUrl: openhands.origin, engineBaseUrl: local ? 'http://localhost:8001' : '/omics-engine' };
+  return {
+    openhandsBaseUrl: openhands.origin,
+    engineBaseUrl: local ? 'http://localhost:8001' : '/omics-engine',
+    secureCookies: app.protocol === 'https:',
+  };
 }

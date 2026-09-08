@@ -20,13 +20,9 @@ services:
       - ./api/server/services/Files/process.js:/app/api/server/services/Files/process.js:ro
       - ./api/server/services/NoteCells:/app/api/server/services/NoteCells:ro
       - ../projects:/app/projects:rw
-      - ./packages/api/dist:/app/packages/api/dist:ro
       - type: bind
         source: ./librechat.yaml
         target: /app/librechat.yaml
-      - type: bind
-        source: ./client/dist
-        target: /app/client/dist
     depends_on:
       - engine
 
