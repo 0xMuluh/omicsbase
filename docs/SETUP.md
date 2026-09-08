@@ -1,6 +1,6 @@
 # Fresh clone setup (local development)
 
-The repository contains the source and image build inputs. It is not a one-command packaged release. A new developer needs Git, Python 3, Docker Engine with Compose/build support, Node.js 24.16 or compatible Node 24, npm, internet access, and their own model-provider credentials. The inherited base build targets Linux amd64 and installs a substantial R/Bioconductor environment. Allow adequate disk, memory, and build time.
+The repository contains the source and image build inputs. It is not a one-command packaged release. A new developer needs Git, Python 3.12+, Docker Engine with Compose/build support, Node.js 24.16 or compatible Node 24, npm, internet access, and their own model-provider credentials. The inherited base build targets Linux amd64 and installs a substantial R/Bioconductor environment. Allow adequate disk, memory, and build time.
 
 ## Restore the customized upstream sources
 

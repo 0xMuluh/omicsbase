@@ -41,7 +41,7 @@ Before building the LibreChat image, `python3 scripts/build_librechat.py --verif
 
 ## Restore source
 
-Python 3 and Git are required. From this repository, choose a destination that does not exist:
+Python 3.12+ and Git are required. From this repository, choose a destination that does not exist:
 
 ```bash
 python3 scripts/restore_upstream.py /tmp/omicsbase-restored
