@@ -97,6 +97,19 @@ Generate it independently from the LibreChat JWT secrets, for example:
 The same `OMICSBASE_AUTH_SECRET` is supplied to LibreChat, the OmicsBase engine,
 and OpenHands through `deployment/docker-compose.override.yml`.
 
+Set the browser-facing values in the deployment environment:
+
+    DOMAIN_CLIENT=https://omicsbase.learnpanta.com
+    OMICSBASE_APP_HOST=omicsbase.learnpanta.com
+    OMICSBASE_OPENHANDS_PUBLIC_URL=https://openhands.learnpanta.com
+    OMICSBASE_WORKSPACE_HOST=openhands.learnpanta.com
+    OMICSBASE_ENGINE_PUBLIC_URL=https://omicsbase.learnpanta.com/omics-engine
+    OMICSBASE_ADMIN_HOST=admin.omicsbase.learnpanta.com
+
+The Caddy template uses these host variables, and the engine uses the configured
+public URL when it creates report links. Keep the application and workspace
+hosts on HTTPS in an internet-facing deployment.
+
 The production reverse-proxy configuration used by the cPouta deployment is
 recorded in:
 

@@ -15,3 +15,6 @@ for router in (launch.router, editor.router, reports.router, assets.router):
 install_frontend()
 
 from openhands.server.listen import app
+from openhands.server.shared import sio
+from omicsbase_shared.sockets import install_socket_sessions
+install_socket_sessions(sio)

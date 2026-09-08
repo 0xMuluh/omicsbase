@@ -1,9 +1,13 @@
 services:
   api:
-    image: omicsbase-librechat:f9f1b2fb9
+    image: ${OMICSBASE_LIBRECHAT_IMAGE:-omicsbase-librechat:f9f1b2fb9}
     pull_policy: never
+    ports: !override
+      - "127.0.0.1:3080:3080"
     environment:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
+      - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
+      - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:3000
       - NOTEKERNEL_URL=http://engine:8001
       - PROJECTS_DIR=/app/projects
     volumes:
@@ -31,10 +35,11 @@ services:
     container_name: omicsbase-engine
     restart: always
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       - PROJECTS_DIR=/app/projects
-      - BASE_URL=https://omicsbase.learnpanta.com/omics-engine
+      - BASE_URL=${OMICSBASE_ENGINE_PUBLIC_URL:-http://localhost:8001}
+      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - LIBRECHAT_INTERNAL_URL=http://api:3080
     volumes:
@@ -47,11 +52,11 @@ services:
     container_name: openhands-engine
     restart: always
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - PERMITTED_CORS_ORIGINS=https://openhands.learnpanta.com,https://omicsbase.learnpanta.com
+      - PERMITTED_CORS_ORIGINS=${DOMAIN_CLIENT:-http://localhost:3080},${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - OPENHANDS_CONFIG_CLS=omicsbase_shared.config.OmicsBaseConfig
       - OPENHANDS_CONVERSATION_VALIDATOR_CLS=omicsbase_shared.validator.OmicsBaseConversationValidator
       - RUNTIME=omicsbase_shared.runtime.UserRuntime
@@ -68,8 +73,8 @@ services:
       - LLM_API_KEY=${BAI_API_KEY}
       - ENABLE_VSCODE=false
       - FILE_STORE_PATH=/.openhands
-      - OMICSBASE_WORKSPACE_SESSION_TTL=43200
-      - OMICSBASE_OPENHANDS_PUBLIC_URL=https://openhands.learnpanta.com
+      - OMICSBASE_WORKSPACE_SESSION_TTL=${OMICSBASE_WORKSPACE_SESSION_TTL:-43200}
+      - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/.openhands
@@ -88,3 +93,9 @@ services:
         exec uvicorn omicsbase_shared.app:app --host 0.0.0.0 --port 3000
 
 
+
+  admin-panel:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    environment:
+      ADMIN_SSO_ENABLED: "${ADMIN_SSO_ENABLED:-true}"

@@ -12,6 +12,10 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+UPSTREAM_URLS = {
+    "librechat": "https://github.com/danny-avila/LibreChat.git",
+    "openhands": "https://github.com/all-hands-ai/OpenHands.git",
+}
 
 
 def git(repo, *args):
@@ -48,7 +52,7 @@ def main():
                 shutil.copy2(source, target)
                 additions[item] = digest(source.read_bytes())
             manifest[name] = {
-                'url': git(repo, 'remote', 'get-url', 'origin').decode().strip(),
+                'url': UPSTREAM_URLS[name],
                 'commit': base,
                 'patch_sha256': digest(patch),
                 'addition_sha256': additions,

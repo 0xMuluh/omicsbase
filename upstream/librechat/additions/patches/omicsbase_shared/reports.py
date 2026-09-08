@@ -1,10 +1,12 @@
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import Depends, APIRouter, HTTPException
 from starlette.responses import FileResponse, HTMLResponse
 from omicsbase_shared.workspace import _get_project_dir, _resolve_safe_path
 from omicsbase_shared.reporting import _inspect_project_report
 
-router = APIRouter()
+from omicsbase_shared.access import authorize_project
+
+router = APIRouter(dependencies=[Depends(authorize_project)])
 
 @router.get('/api/omicsbase/report/{conversation_id}')
 @router.get('/api/omicsbase/report/{conversation_id}/')

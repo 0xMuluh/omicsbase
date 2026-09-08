@@ -35,7 +35,9 @@ git diff --stat
 git diff
 ```
 
-Review and commit the snapshot along with relevant engine/configuration changes. The helper captures the current `HEAD` baseline, tracked edits, and untracked source additions. It does not alter either checkout or commit automatically. If deployment configuration changes, update the corresponding template under `deployment/` separately; never copy live secrets into this repository.
+Review and commit the snapshot along with relevant engine/configuration changes. The helper captures the current `HEAD` baseline, tracked edits, and untracked source additions. It does not alter either checkout or commit automatically.
+
+Before building the LibreChat image, `python3 scripts/build_librechat.py --verify-only` checks the pinned commit, patch hash, and every captured source addition. The normal build runs the same check in a temporary build context. If deployment configuration changes, update the corresponding template under `deployment/` separately; never copy live secrets into this repository.
 
 ## Restore source
 

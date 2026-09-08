@@ -22,6 +22,8 @@ class IntegrationModulesTests(unittest.TestCase):
             self.assertEqual(report['project_title'], 'Study')
             self.assertEqual(report['chapters'][0]['status'], 'completed')
             app = FastAPI()
+            from omicsbase_shared.access import authorize_project
+            app.dependency_overrides[authorize_project] = lambda: None
             for router in (editor.router, reports.router, assets.router): app.include_router(router)
             with patch.object(editor, '_get_project_dir', return_value=root), patch.object(reports, '_get_project_dir', return_value=root), TestClient(app) as client:
                 self.assertEqual(client.get('/api/omicsbase/editor/chat').status_code, 200)

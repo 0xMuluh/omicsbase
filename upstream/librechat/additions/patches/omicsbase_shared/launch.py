@@ -1,10 +1,15 @@
 import uuid
+import os
+import json
+from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from openhands.server.user_auth.user_auth import get_user_auth
 from openhands.server.services.conversation_service import create_new_conversation
 from omicsbase_shared.identity import COOKIE, issue_session_ticket, verify_ticket, workspace_session_ttl
-from omicsbase_shared.registry import bind_project
+from omicsbase_shared.registry import bind_project, state_root
+from omicsbase_shared.identity import identifier
+from omicsbase_shared.sessions import revoke
 
 router = APIRouter()
 
@@ -44,16 +49,59 @@ async def launch(data: LaunchRequest, request: Request, response: Response):
             'the intended URL before inspecting a page.'
         ),
     )
+    set_session(response, request, user_id)
+    return {'status': 'ok', 'conversation_id': conversation_id, 'conversation_status': info.status}
+
+
+
+def set_session(response, request, user_id):
     session_ttl = workspace_session_ttl()
     session_token = issue_session_ticket(user_id, expires_in=session_ttl)
     response.set_cookie(
         key=COOKIE,
         value=session_token,
         httponly=True,
-        secure=True,
+        secure=urlsplit(os.environ.get('OMICSBASE_OPENHANDS_PUBLIC_URL', str(request.base_url))).scheme == 'https',
         samesite='lax',
         path='/',
         max_age=session_ttl,
     )
-    return {'status': 'ok', 'conversation_id': conversation_id, 'conversation_status': info.status}
+    response.headers['Cache-Control'] = 'no-store'
 
+
+class SessionRequest(LaunchRequest):
+    conversation_id: str | None = None
+
+
+@router.post('/api/omicsbase/session')
+async def renew_session(data: SessionRequest, request: Request, response: Response):
+    auth = await get_user_auth(request)
+    user_id = await auth.get_user_id()
+    try:
+        claims = verify_ticket(data.ticket)
+        if claims['sub'] != user_id or claims.get('purpose') != 'launch':
+            raise ValueError('Invalid launch credential')
+        if data.conversation_id:
+            record = state_root() / f'{identifier(data.conversation_id)}.json'
+            binding = json.loads(record.read_text())
+            if binding['user_id'] != user_id or binding['project_id'] != claims['project_id']:
+                raise ValueError('Conversation/project mismatch')
+    except (ValueError, KeyError, TypeError, FileNotFoundError):
+        raise HTTPException(403, 'Invalid workspace authorization')
+    set_session(response, request, user_id)
+    return {'status': 'ok', 'expires_in': workspace_session_ttl()}
+
+
+@router.post('/api/omicsbase/revoke')
+async def revoke_sessions(request: Request):
+    try:
+        header = request.headers.get('authorization', '')
+        if not header.startswith('Bearer '):
+            raise ValueError('Missing authorization')
+        claims = verify_ticket(header[7:])
+        if claims.get('purpose') != 'logout':
+            raise ValueError('Invalid purpose')
+        revoke(claims['sub'])
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(401, 'Invalid revocation authorization')
+    return {'status': 'ok'}

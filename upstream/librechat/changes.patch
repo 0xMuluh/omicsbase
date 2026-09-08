@@ -1,12 +1,34 @@
 diff --git a/api/server/controllers/auth/LogoutController.js b/api/server/controllers/auth/LogoutController.js
-index cdf540456985b9055873cec518e2fc7b4c326714..4bfa4dc0be2851d2f77061eba5b02d6c3a4182bf 100644
+index cdf540456985b9055873cec518e2fc7b4c326714..902c6e93cc474d870086a2117e8952d1f319ac02 100644
 --- a/api/server/controllers/auth/LogoutController.js
 +++ b/api/server/controllers/auth/LogoutController.js
-@@ -80,6 +80,7 @@ const logoutController = async (req, res) => {
+@@ -1,5 +1,5 @@
+ const cookies = require('cookie');
+-const { isEnabled, math, clearCloudFrontCookies } = require('@librechat/api');
++const { isEnabled, math, clearCloudFrontCookies, revokeWorkspaceSessions } = require('@librechat/api');
+ const { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } = require('@librechat/data-schemas');
+ const { logoutUser } = require('~/server/services/AuthService');
+ const { deleteAllRefreshTokenBridges } = require('~/server/services/RefreshTokenBridge');
+@@ -42,6 +42,11 @@ const logoutController = async (req, res) => {
+     : [refreshToken];
+ 
+   try {
++    try {
++      await revokeWorkspaceSessions(req.user?.id ?? req.user?._id?.toString?.() ?? '');
++    } catch (err) {
++      logger.warn('[logoutController] Workspace session revocation failed:', err);
++    }
+     if (isOpenIdUser) {
+       const userId = req.user?.id ?? req.user?._id?.toString?.();
+       const refreshIdentity = {
+@@ -80,6 +85,10 @@ const logoutController = async (req, res) => {
      const { status, message } = logout;
  
      res.clearCookie('refreshToken');
 +    res.clearCookie('omicsbase_openhands', { path: '/' });
++    for (const name of Object.keys(parsedCookies)) {
++      if (name.startsWith('omicsbase_project_')) res.clearCookie(name, { path: '/' });
++    }
      res.clearCookie('openid_access_token');
      res.clearCookie('openid_id_token');
      res.clearCookie('openid_user_id');
@@ -414,7 +436,7 @@ index 95a10655cc774bafca2f46bbacdf0d7916c53248..d7145bd9fdfcba0f4a360011bdeabf74
              </main>
            </SidePanelGroup>
 diff --git a/client/src/components/Chat/ProjectLandingChip.tsx b/client/src/components/Chat/ProjectLandingChip.tsx
-index acd3b7782690d76a32d6fc120c06d7200d573e91..47a899cce5eae0a08018839ef0840c2728f89aee 100644
+index acd3b7782690d76a32d6fc120c06d7200d573e91..123e273c0953ad472856a2a432f4d99f256f1df3 100644
 --- a/client/src/components/Chat/ProjectLandingChip.tsx
 +++ b/client/src/components/Chat/ProjectLandingChip.tsx
 @@ -1,6 +1,6 @@
@@ -465,11 +487,6 @@ index acd3b7782690d76a32d6fc120c06d7200d573e91..47a899cce5eae0a08018839ef0840c27
        <TooltipAnchor
          description={localize('com_ui_remove_from_project')}
          render={
-@@ -92,3 +108,4 @@ export default function ProjectLandingChip({ project }: { project: TChatProject
-     </div>
-   );
- }
-+
 diff --git a/client/src/components/Projects/ProjectWorkspace.tsx b/client/src/components/Projects/ProjectWorkspace.tsx
 index 2f5a0fdd2764af2f4bbbb6950293e30ed168b35d..df75174f4e78f2515e1bec26309ced6693a2aff2 100644
 --- a/client/src/components/Projects/ProjectWorkspace.tsx
@@ -2747,7 +2764,7 @@ index 8bfdf28f9cbdfc611f6d5e2120bafa131a25e366..498bd7753caaa008951a984ce9c0c475
      "build:watch:prod": "tsdown --watch",
      "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
 diff --git a/packages/api/src/files/context.ts b/packages/api/src/files/context.ts
-index b16b498b354575a566a21daa21249f75cf436e28..fce43fdbdd138b872b2bfe52b5df5911fedfda10 100644
+index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee47c9c75f 100644
 --- a/packages/api/src/files/context.ts
 +++ b/packages/api/src/files/context.ts
 @@ -1,3 +1,4 @@
@@ -2895,7 +2912,7 @@ index b16b498b354575a566a21daa21249f75cf436e28..fce43fdbdd138b872b2bfe52b5df5911
      const source = file.source ?? FileSources.local;
      if (source === FileSources.text && file.text) {
        const { text: limitedText, wasTruncated } = await processTextWithTokenLimit({
-@@ -77,14 +199,23 @@ export async function extractFileContext({
+@@ -77,14 +199,22 @@ export async function extractFileContext({
          );
        }
  
@@ -2920,7 +2937,6 @@ index b16b498b354575a566a21daa21249f75cf436e28..fce43fdbdd138b872b2bfe52b5df5911
 +
    return undefined;
  }
-+
 diff --git a/packages/api/src/index.ts b/packages/api/src/index.ts
 index f78709aca835c1e7a78e9bd8171b9fea9568a0ce..c352ada653d5b9ec36c370797e1105f48850410f 100644
 --- a/packages/api/src/index.ts
@@ -2994,12 +3010,14 @@ index df42a7bdb145b30303643ec935b6b3cc87242acf..ea601e6a7836f0ec8edc7ed1eb5221b7
        const manager = new MCPManager();
        const activeConnection = createConnection();
 diff --git a/packages/api/src/projects/index.ts b/packages/api/src/projects/index.ts
-index 6c6f862d0182ae7ddc34e84f71e730ae642374e9..aa5b84388282c7cbec9d560a4f5529df5cdfa836 100644
+index 6c6f862d0182ae7ddc34e84f71e730ae642374e9..03d2008b3294a6ec988475f3c3fecb2059e6d524 100644
 --- a/packages/api/src/projects/index.ts
 +++ b/packages/api/src/projects/index.ts
-@@ -1 +1,2 @@
+@@ -1 +1,4 @@
  export * from './handlers';
 +export * from './workspace';
++
++export * from './logout';
 diff --git a/packages/api/src/protection/title.ts b/packages/api/src/protection/title.ts
 index 6dffda9b243e88c37ad357b86a07f6c1f0d98d41..4b20c6f80f451019d26e488447c08e69dfd19c84 100644
 --- a/packages/api/src/protection/title.ts

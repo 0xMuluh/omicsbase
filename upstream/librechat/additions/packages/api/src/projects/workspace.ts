@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { workspaceURLs } from './deployment';
 import { isValidObjectIdString } from '@librechat/data-schemas';
 import type { ChatProjectMethods } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
@@ -27,26 +28,27 @@ export function createWorkspaceHandler(
       if (!(await deps.getChatProject(userId, projectId))) {
         return res.status(404).json({ error: 'Project not found' });
       }
+      const urls = workspaceURLs();
       const options = {
         algorithm: 'HS256' as const,
         issuer: 'librechat',
         audience: 'omicsbase-openhands',
         subject: userId,
       };
-      const session = jwt.sign({ purpose: 'session' }, secret, { ...options, expiresIn: '1h' });
+      const session = jwt.sign({ purpose: 'project', project_id: projectId }, secret, { ...options, expiresIn: '1h' });
       const ticket = jwt.sign({ purpose: 'launch', project_id: projectId }, secret, {
         ...options,
         expiresIn: '2m',
       });
-      res.cookie('omicsbase_openhands', session, {
+      res.cookie(`omicsbase_project_${projectId}`, session, {
         httpOnly: true,
-        secure: req.secure,
+        secure: urls.openhandsBaseUrl.startsWith('https://'),
         sameSite: 'lax',
         path: '/',
         maxAge: 60 * 60 * 1000,
       });
       res.setHeader('Cache-Control', 'no-store');
-      return res.json({ ticket, userId });
+      return res.json({ ticket, userId, ...urls });
     } catch {
       return res.status(500).json({ error: 'Could not authorize workspace' });
     }

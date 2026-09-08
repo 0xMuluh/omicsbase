@@ -6,6 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
+from omicsbase_shared.sessions import state
 
 COOKIE = 'omicsbase_openhands'
 AUDIENCE = 'omicsbase-openhands'
@@ -44,6 +45,7 @@ def issue_session_ticket(user_id, expires_in=3600):
     payload = _encode_part({
         'sub': identifier(user_id),
         'purpose': 'session',
+        'generation': state(user_id)['generation'],
         'aud': AUDIENCE,
         'iss': 'librechat',
         'iat': now,
@@ -80,6 +82,11 @@ def verify_ticket(token):
     if not isinstance(claims.get('exp'), (int, float)) or claims['exp'] <= time.time():
         raise ValueError('Expired ticket')
     identifier(claims.get('sub'))
+    current = state(claims['sub'])
+    if claims.get('purpose') == 'session' and claims.get('generation') != current['generation']:
+        raise ValueError('Revoked session')
+    if claims.get('purpose') == 'launch' and claims.get('iat', 0) < current['revoked_at']:
+        raise ValueError('Revoked launch ticket')
     return claims
 
 

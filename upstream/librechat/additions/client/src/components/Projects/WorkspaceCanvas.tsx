@@ -75,8 +75,8 @@ export default function WorkspaceCanvas({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreen]);
 
-  const engineBaseUrl = `${window.location.origin}/omics-engine`;
-  const openhandsBaseUrl = 'https://openhands.learnpanta.com';
+  const [engineBaseUrl, setEngineBaseUrl] = useState('/omics-engine');
+  const [openhandsBaseUrl, setOpenhandsBaseUrl] = useState('');
   const agentFrame = useRef<HTMLIFrameElement>(null);
   const sendAgentTheme = useEmbeddedTheme(agentFrame, openhandsBaseUrl);
 
@@ -86,24 +86,39 @@ export default function WorkspaceCanvas({
     setConversationId(localStorage.getItem(storageKey));
     const authorize = async () => {
       try {
-        await request.post(`/api/projects/${encodeURIComponent(projectId)}/workspace`, {});
-        if (!cancelled) setWorkspaceAuthorized(true);
+        const authorization: { ticket: string; openhandsBaseUrl: string; engineBaseUrl: string } = await request.post(
+          `/api/projects/${encodeURIComponent(projectId)}/workspace`, {},
+        );
+        const saved = localStorage.getItem(storageKey);
+        const response = await fetch(`${authorization.openhandsBaseUrl}/api/omicsbase/session`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.ticket}` },
+          body: JSON.stringify({ ticket: authorization.ticket, conversation_id: saved }),
+        });
+        if (!response.ok) throw new Error('Workspace authorization failed');
+        if (!cancelled) {
+          setOpenhandsBaseUrl(authorization.openhandsBaseUrl);
+          setEngineBaseUrl(authorization.engineBaseUrl);
+          setWorkspaceAuthorized(true);
+        }
       } catch {
         if (!cancelled) setWorkspaceAuthorized(false);
       }
     };
     void authorize();
-    const refresh = setInterval(authorize, 30 * 60 * 1000);
+    window.addEventListener('focus', authorize);
+    const refresh = setInterval(authorize, 2 * 60 * 1000);
     return () => {
       cancelled = true;
       clearInterval(refresh);
+      window.removeEventListener('focus', authorize);
     };
   }, [projectId, storageKey]);
 
   // Fetch project report status from engine
   const fetchProjectStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${engineBaseUrl}/api/projects/${projectId}/status`);
+      const res = await fetch(`${engineBaseUrl}/api/projects/${projectId}/status`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setProjectStatus(data);
@@ -126,6 +141,7 @@ export default function WorkspaceCanvas({
     try {
       const res = await fetch(`${engineBaseUrl}/api/projects/${projectId}/render`, {
         method: 'POST',
+        credentials: 'include',
       });
       const data = await res.json();
       if (data.success) {
@@ -135,8 +151,8 @@ export default function WorkspaceCanvas({
       } else {
         setRenderMessage(`Compilation failed: ${data.stderr || 'Check report R chunks'}`);
       }
-    } catch (err: any) {
-      setRenderMessage(`Error triggering render: ${err.message || 'Engine unreachable'}`);
+    } catch (err) {
+      setRenderMessage(`Error triggering render: ${err instanceof Error ? err.message : 'Engine unreachable'}`);
     } finally {
       setIsRendering(false);
     }
@@ -172,8 +188,8 @@ export default function WorkspaceCanvas({
         localStorage.setItem(storageKey, newConvoId);
         setViewMode('agent');
       }
-    } catch (err: any) {
-      alert(`Could not start Workspace Agent: ${err.message || 'Make sure OpenHands is running'}`);
+    } catch (err) {
+      alert(`Could not start Workspace Agent: ${err instanceof Error ? err.message : 'Make sure OpenHands is running'}`);
     } finally {
       setIsLaunching(false);
     }
@@ -471,7 +487,7 @@ export default function WorkspaceCanvas({
                     variant="default"
                     size="sm"
                     onClick={handleLaunchAgent}
-                    disabled={isLaunching}
+                    disabled={isLaunching || !workspaceAuthorized}
                     className="gap-2 px-4 py-2 text-xs font-medium"
                   >
                     {isLaunching ? (

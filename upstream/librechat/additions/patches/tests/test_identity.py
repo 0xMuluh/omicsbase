@@ -15,7 +15,7 @@ from omicsbase_shared.registry import bind_project, conversation_project
 def ticket(**claims):
     encode = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
     header = encode({'alg': 'HS256'})
-    payload = encode({'sub': 'user-a', 'aud': 'omicsbase-openhands', 'iss': 'librechat', 'exp': time.time() + 60, **claims})
+    payload = encode({'sub': 'user-a', 'purpose': 'session', 'generation': 'initial', 'aud': 'omicsbase-openhands', 'iss': 'librechat', 'exp': time.time() + 60, **claims})
     signature = base64.urlsafe_b64encode(hmac.new(b'test', f'{header}.{payload}'.encode(), hashlib.sha256).digest()).decode().rstrip('=')
     return f'{header}.{payload}.{signature}'
 

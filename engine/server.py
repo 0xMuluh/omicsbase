@@ -223,9 +223,12 @@ app = mcp.sse_app(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
 )
 
+from engine.access import ProjectAccess
+app.add_middleware(ProjectAccess)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.environ.get("DOMAIN_CLIENT", "http://localhost:3080")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

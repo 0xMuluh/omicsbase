@@ -19,6 +19,9 @@ class OmicsBaseAuth(DefaultUserAuth):
             token = authorization[7:]
         try:
             claims = verify_ticket(token)
+            bootstrap = request.url.path in {'/api/omicsbase/conversations', '/api/omicsbase/session'}
+            if claims.get('purpose') != 'session' and not (bootstrap and claims.get('purpose') == 'launch' and authorization.startswith('Bearer ')):
+                raise ValueError('Invalid credential purpose')
         except (ValueError, KeyError, TypeError):
             raise HTTPException(401, 'Open the workspace from LibreChat to authenticate')
         auth = cls()

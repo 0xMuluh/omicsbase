@@ -1,9 +1,7 @@
 import http.cookies
-import json
-import os
 from openhands.storage.conversation.conversation_validator import ConversationValidator
+from socketio.exceptions import ConnectionRefusedError
 from omicsbase_shared.identity import COOKIE, verify_ticket
-from omicsbase_shared.registry import state_root
 
 
 class OmicsBaseConversationValidator(ConversationValidator):
@@ -14,6 +12,7 @@ class OmicsBaseConversationValidator(ConversationValidator):
         authorization_header: str | None = None,
     ) -> str | None:
         user_id = None
+        claims = {}
         token = ''
         if cookies_str:
             try:
@@ -31,12 +30,9 @@ class OmicsBaseConversationValidator(ConversationValidator):
                 user_id = claims.get('sub')
             except Exception:
                 pass
-        if not user_id:
-            path = state_root() / f'{conversation_id}.json'
-            if path.exists():
-                try:
-                    user_id = json.loads(path.read_text()).get('user_id')
-                except Exception:
-                    pass
+        if not user_id or claims.get('purpose') != 'session':
+            raise ConnectionRefusedError('Valid workspace session required')
         metadata = await self._ensure_metadata_exists(conversation_id, user_id)
-        return metadata.user_id or user_id
+        if metadata.user_id != user_id:
+            raise ConnectionRefusedError('Conversation owner mismatch')
+        return user_id

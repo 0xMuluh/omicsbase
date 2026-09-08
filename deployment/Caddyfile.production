@@ -1,4 +1,4 @@
-omicsbase.learnpanta.com {
+{$OMICSBASE_APP_HOST} {
     handle /omics-engine/* {
         @engine_status {
             method GET
@@ -52,10 +52,12 @@ omicsbase.learnpanta.com {
     }
 }
 
-openhands.learnpanta.com {
+{$OMICSBASE_WORKSPACE_HOST} {
+    @internal path /api/omicsbase/revoke
+    respond @internal 404
     reverse_proxy 127.0.0.1:3001
 }
 
-admin.omicsbase.learnpanta.com {
+{$OMICSBASE_ADMIN_HOST} {
     reverse_proxy 127.0.0.1:3000
 }

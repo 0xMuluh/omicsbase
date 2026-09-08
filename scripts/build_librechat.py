@@ -5,6 +5,8 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import tempfile
+from verify_source import stage_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,6 +22,7 @@ def main():
         '--tag',
         help='Override image tag; default is derived from pinned LibreChat commit',
     )
+    parser.add_argument('--verify-only', action='store_true', help='Verify source without invoking Docker')
     args = parser.parse_args()
 
     manifest = json.loads((ROOT / 'upstream/manifest.json').read_text())
@@ -35,20 +38,17 @@ def main():
             'Run scripts/restore_upstream.py --in-place first.'
         )
 
-    cmd = [
-        'docker',
-        '--context',
-        args.context,
-        'build',
-        '--progress=plain',
-        '-t',
-        tag,
-        str(source),
-    ]
+    with tempfile.TemporaryDirectory(prefix='omicsbase-librechat-') as directory:
+        context = Path(directory) / 'source'
+        stage_source(ROOT, 'librechat', context)
+        print(f'Verified LibreChat baseline {commit} and all snapshot customizations')
+        if args.verify_only:
+            return
+        subprocess.run([
+            'docker', '--context', args.context, 'build', '--progress=plain',
+            '--build-arg', f'BUILD_COMMIT={commit}', '-t', tag, str(context),
+        ], check=True)
 
-    print(f'Building LibreChat pinned at {commit}')
-    print(f'Image: {tag}')
-    subprocess.run(cmd, check=True)
     print(f'Built {tag}; running containers were not changed.')
 
 

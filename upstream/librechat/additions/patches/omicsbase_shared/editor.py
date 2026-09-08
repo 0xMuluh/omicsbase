@@ -1,10 +1,12 @@
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import Depends, APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.responses import HTMLResponse, Response
 from omicsbase_shared.workspace import _get_project_dir, _resolve_safe_path, _build_file_tree
 
-router = APIRouter()
+from omicsbase_shared.access import authorize_project
+
+router = APIRouter(dependencies=[Depends(authorize_project)])
 
 @router.get('/api/omicsbase/editor/{conversation_id}')
 async def get_editor_page(conversation_id: str):
