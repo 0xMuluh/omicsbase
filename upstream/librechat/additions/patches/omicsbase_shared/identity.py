@@ -17,6 +17,50 @@ def identifier(value):
     return value
 
 
+def _encode_part(value):
+    raw = json.dumps(value, separators=(',', ':')).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip('=')
+
+
+
+def workspace_session_ttl():
+    raw = os.environ.get('OMICSBASE_WORKSPACE_SESSION_TTL', '43200')
+    try:
+        ttl = int(raw)
+    except (TypeError, ValueError):
+        ttl = 43200
+
+    # Keep accidental configuration within sensible bounds:
+    # minimum 5 minutes, maximum 7 days.
+    return max(300, min(ttl, 604800))
+
+
+def issue_session_ticket(user_id, expires_in=3600):
+    now = int(time.time())
+    header = _encode_part({
+        'alg': 'HS256',
+        'typ': 'JWT',
+    })
+    payload = _encode_part({
+        'sub': identifier(user_id),
+        'purpose': 'session',
+        'aud': AUDIENCE,
+        'iss': 'librechat',
+        'iat': now,
+        'exp': now + expires_in,
+    })
+
+    secret = os.environ['OMICSBASE_AUTH_SECRET'].encode()
+    signature = hmac.new(
+        secret,
+        f'{header}.{payload}'.encode(),
+        hashlib.sha256,
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip('=')
+
+    return f'{header}.{payload}.{encoded_signature}'
+
+
 def verify_ticket(token):
     header, payload, signature = token.split('.')
     secret = os.environ['OMICSBASE_AUTH_SECRET'].encode()

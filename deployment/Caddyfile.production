@@ -1,0 +1,61 @@
+omicsbase.learnpanta.com {
+    handle /omics-engine/* {
+        @engine_status {
+            method GET
+            path_regexp ^/omics-engine/api/projects/[^/]+/status$
+        }
+
+        @engine_render {
+            method POST
+            path_regexp ^/omics-engine/api/projects/[^/]+/render$
+        }
+
+        @engine_site {
+            method GET HEAD
+            path_regexp ^/omics-engine/projects/[^/]+/_site(/.*)?$
+        }
+
+        @engine_runs {
+            method GET HEAD
+            path_regexp ^/omics-engine/projects/[^/]+/runs/[^/]+(/.*)?$
+        }
+
+
+        handle @engine_status {
+            uri strip_prefix /omics-engine
+            reverse_proxy 127.0.0.1:8001
+        }
+
+        handle @engine_render {
+            uri strip_prefix /omics-engine
+            reverse_proxy 127.0.0.1:8001
+        }
+
+        handle @engine_site {
+            uri strip_prefix /omics-engine
+            reverse_proxy 127.0.0.1:8001
+        }
+
+        handle @engine_runs {
+            uri strip_prefix /omics-engine
+            reverse_proxy 127.0.0.1:8001
+        }
+
+
+        handle {
+            respond "Not found" 404
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3080
+    }
+}
+
+openhands.learnpanta.com {
+    reverse_proxy 127.0.0.1:3001
+}
+
+admin.omicsbase.learnpanta.com {
+    reverse_proxy 127.0.0.1:3000
+}

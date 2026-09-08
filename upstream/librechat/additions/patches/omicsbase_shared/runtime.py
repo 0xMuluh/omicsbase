@@ -71,18 +71,27 @@ class UserRuntime(DockerRuntime):
         self.session.headers['X-OmicsBase-Project'] = self.project_dir
 
     @property
+    def public_base_url(self) -> str:
+        return os.environ.get(
+            'OMICSBASE_OPENHANDS_PUBLIC_URL',
+            'http://localhost:3001',
+        ).rstrip('/')
+
+    @property
     def vscode_url(self) -> str | None:
         sid = getattr(self, 'sid', None)
         if not sid:
             return None
-        return f"http://localhost:3001/api/omicsbase/editor/{sid}"
+        return f"{self.public_base_url}/api/omicsbase/editor/{sid}"
 
     @property
     def web_hosts(self) -> dict[str, int]:
         sid = getattr(self, 'sid', None)
         if not sid:
             return {}
-        return {f"http://localhost:3001/api/omicsbase/report/{sid}": 3001}
+        return {
+            f"{self.public_base_url}/api/omicsbase/report/{sid}": 3001
+        }
 
     @property
     def session_api_key(self):

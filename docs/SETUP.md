@@ -66,3 +66,38 @@ This downloads pinned public sources and builds `engine/knowledge/knowledge.db`.
 ## What has actually been verified
 
 The repository-local base and engine builds passed (with available Docker cache), and the rebuilt engine passed its three real-R execution/cancellation tests. Snapshot patches were applied to their recorded Git trees and compared against the development files. The full fresh-machine sequence, including a clean LibreChat dependency install/build and new-user model conversation, has not yet been verified end to end. Treat this as developer setup instructions, not a promise of a turnkey release.
+
+## Production image build and host preparation
+
+Restore the pinned customized upstream source trees:
+
+    python3 scripts/restore_upstream.py --in-place
+
+Prepare writable host directories:
+
+    scripts/prepare_runtime_dirs.sh
+
+Build the pinned application images:
+
+    python3 scripts/build_librechat.py --context default
+    python3 scripts/build_engine.py --context default
+    python3 scripts/build_openhands.py --context default
+
+The LibreChat builder derives its image tag from the pinned LibreChat commit in
+`upstream/manifest.json`.
+
+Production deployments require a dedicated shared authentication secret:
+
+    OMICSBASE_AUTH_SECRET=
+
+Generate it independently from the LibreChat JWT secrets, for example:
+
+    openssl rand -hex 32
+
+The same `OMICSBASE_AUTH_SECRET` is supplied to LibreChat, the OmicsBase engine,
+and OpenHands through `deployment/docker-compose.override.yml`.
+
+The production reverse-proxy configuration used by the cPouta deployment is
+recorded in:
+
+    deployment/Caddyfile.production

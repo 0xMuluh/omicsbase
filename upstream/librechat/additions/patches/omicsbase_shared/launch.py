@@ -1,9 +1,9 @@
 import uuid
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from openhands.server.user_auth.user_auth import get_user_auth
 from openhands.server.services.conversation_service import create_new_conversation
-from omicsbase_shared.identity import verify_ticket
+from omicsbase_shared.identity import COOKIE, issue_session_ticket, verify_ticket, workspace_session_ttl
 from omicsbase_shared.registry import bind_project
 
 router = APIRouter()
@@ -13,7 +13,7 @@ class LaunchRequest(BaseModel):
 
 
 @router.post('/api/omicsbase/conversations')
-async def launch(data: LaunchRequest, request: Request):
+async def launch(data: LaunchRequest, request: Request, response: Response):
     auth = await get_user_auth(request)
     user_id = await auth.get_user_id()
     try:
@@ -43,6 +43,17 @@ async def launch(data: LaunchRequest, request: Request):
             'Run R analysis through Rscript in the terminal. Browser state is shared; open '
             'the intended URL before inspecting a page.'
         ),
+    )
+    session_ttl = workspace_session_ttl()
+    session_token = issue_session_ticket(user_id, expires_in=session_ttl)
+    response.set_cookie(
+        key=COOKIE,
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite='lax',
+        path='/',
+        max_age=session_ttl,
     )
     return {'status': 'ok', 'conversation_id': conversation_id, 'conversation_status': info.status}
 

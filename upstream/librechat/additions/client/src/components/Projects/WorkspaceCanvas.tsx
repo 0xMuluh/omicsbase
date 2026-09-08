@@ -75,9 +75,8 @@ export default function WorkspaceCanvas({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreen]);
 
-  const hostname = window.location.hostname || 'localhost';
-  const engineBaseUrl = `${window.location.protocol}//${hostname}:8001`;
-  const openhandsBaseUrl = `${window.location.protocol}//${hostname}:3001`;
+  const engineBaseUrl = `${window.location.origin}/omics-engine`;
+  const openhandsBaseUrl = 'https://openhands.learnpanta.com';
   const agentFrame = useRef<HTMLIFrameElement>(null);
   const sendAgentTheme = useEmbeddedTheme(agentFrame, openhandsBaseUrl);
 
@@ -153,7 +152,10 @@ export default function WorkspaceCanvas({
       );
       const res = await fetch(`${openhandsBaseUrl}/api/omicsbase/conversations`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authorization.ticket}`,
+        },
         credentials: 'include',
         body: JSON.stringify({ ticket: authorization.ticket }),
       });

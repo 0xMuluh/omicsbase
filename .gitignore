@@ -23,3 +23,5 @@ build/
 
 # Downloaded knowledge sources; reproducible from knowledge/sources.json.
 /.knowledge/
+
+.openhands/
