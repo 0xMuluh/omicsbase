@@ -6,6 +6,7 @@ services:
       - "127.0.0.1:3080:3080"
     environment:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
+      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:3000
       - NOTEKERNEL_URL=http://engine:8001
