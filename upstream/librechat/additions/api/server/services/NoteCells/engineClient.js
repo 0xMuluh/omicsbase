@@ -56,7 +56,9 @@ async function fetchArtifactFromEngine(threadId, relativePath) {
     .split('/')
     .map(encodeURIComponent)
     .join('/')}`;
-  const response = await fetch(url);
+  const headers = {};
+  if (INTERNAL_SECRET) headers['X-Internal-Secret'] = INTERNAL_SECRET;
+  const response = await fetch(url, { headers, redirect: 'error' });
   if (!response.ok) {
     const err = new Error(`Artifact fetch failed (${response.status})`);
     err.status = response.status;
