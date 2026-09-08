@@ -91,7 +91,14 @@ router.post(
         req.params.executionId,
         req.body,
       );
-      res.json(result);
+      res.json(
+        withArtifactUrls(
+          req.params.conversationId,
+          result.cellId,
+          req.params.executionId,
+          result,
+        ),
+      );
     } catch (err) {
       return sendError(res, err);
     }
