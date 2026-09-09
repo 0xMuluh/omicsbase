@@ -4,7 +4,7 @@ import { buildNoteArtifacts } from './agent';
 import { errorMessage, errorCode } from './errors';
 import { toId } from './serialization';
 import { TERMINAL } from './constants';
-import type { Execution, NoteEngineResult } from './contracts';
+import type { Execution, NoteEngineResult, Status } from './contracts';
 import type { NoteDependencies, Identifier } from './serviceTypes';
 import type { createEventStore } from './events';
 
@@ -79,19 +79,25 @@ export function createExecutionWorker(
       execution.engineCellId = result.cell_id || null;
       execution.engineRunDir = result.engine_run_dir || result.run_dir || null;
 
+      let finalStatus: Status = 'completed';
+      let finalError = result.error || null;
       if (result.cancelled || result.timed_out) {
-        execution.status = result.cancelled ? 'cancelled' : 'timed_out';
-        execution.error = result.error || execution.status;
+        finalStatus = result.cancelled ? 'cancelled' : 'timed_out';
+        finalError = result.error || finalStatus;
       } else if (result.success === false) {
-        execution.status = 'failed';
-        execution.error = result.error || 'Execution failed';
-      } else {
-        execution.status = 'completed';
-        execution.error = result.error || null;
+        finalStatus = 'failed';
+        finalError = result.error || 'Execution failed';
       }
+
+      // Keep the execution non-terminal until its artifact rows exist. The
+      // client stops polling as soon as it sees a terminal status, so saving
+      // that status first creates a race where plots are already on disk but
+      // their API metadata is not visible yet.
+      await registerArtifacts(execution, result);
+      execution.status = finalStatus;
+      execution.error = finalError;
       execution.finishedAt = new Date();
       await execution.save();
-      await registerArtifacts(execution, result);
       await appendEvent(
         execution._id,
         execution.conversationId,

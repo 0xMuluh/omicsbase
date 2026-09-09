@@ -168,16 +168,21 @@ export function useRCell(
         setIsBootstrapping(false);
         await loadArtifacts(result);
         if (conversationId && conversationId !== 'new') {
-          noteCellsApi
-            .listExecutions(conversationId, metaFromOutput.cellId)
-            .then((h) => {
-              if (!cancelled && h?.executions?.length) {
-                setHistory(h.executions);
-                const found = h.executions.find((e) => e.id === metaFromOutput.executionId);
-                if (found) {
-                  setExecution(found);
-                }
+          Promise.all([
+            noteCellsApi.getExecution(
+              conversationId,
+              metaFromOutput.cellId,
+              metaFromOutput.executionId,
+            ),
+            noteCellsApi.listExecutions(conversationId, metaFromOutput.cellId),
+          ])
+            .then(async ([full, h]) => {
+              if (cancelled) {
+                return;
               }
+              setExecution(full);
+              setHistory(h?.executions || []);
+              await loadArtifacts(full);
             })
             .catch(() => {});
         }
