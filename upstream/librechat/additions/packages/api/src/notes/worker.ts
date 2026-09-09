@@ -51,11 +51,7 @@ export function createExecutionWorker(
     await appendEvent(execution._id, execution.conversationId, 'running', 'running');
 
     try {
-      try {
-        await bridgeConversationFiles(execution.conversationId, execution.user);
-      } catch (bridgeErr) {
-        logger.warn('[NoteCells] Data bridge pre-execution warning:', errorMessage(bridgeErr));
-      }
+      await bridgeConversationFiles(execution.conversationId, execution.user);
 
       const result = await executeOnEngine({
         code: revision.content,

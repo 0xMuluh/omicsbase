@@ -249,7 +249,7 @@ function resolveSourcePath(file, userId) {
 /**
  * Bridges a single file into the thread workspace (projects/<thread_id>/data/<filename>).
  */
-async function bridgeFileToThread({ conversationId, userId, file }) {
+async function bridgeFileToThread({ conversationId, userId, file, strict = false }) {
   if (!conversationId || conversationId === 'new' || !file) {
     return null;
   }
@@ -259,8 +259,13 @@ async function bridgeFileToThread({ conversationId, userId, file }) {
     return null;
   }
 
+  if (path.basename(filename) !== filename || !/^[a-zA-Z0-9_-]+$/.test(String(conversationId))) {
+    throw new Error("Invalid attachment workspace path");
+  }
+
   const sourcePath = resolveSourcePath(file, userId);
   if (!sourcePath || !fs.existsSync(sourcePath)) {
+    if (strict) throw new Error(`Uploaded file is unavailable: ${filename}`);
     logger.warn(`[noteDataBridge] Source file not found on disk for file_id=${file.file_id}, name=${filename}`);
     return null;
   }
@@ -273,8 +278,14 @@ async function bridgeFileToThread({ conversationId, userId, file }) {
 
     const targetPath = path.join(threadDataDir, filename);
 
-    // Copy file into thread data directory (or update if newer)
-    await fs.promises.copyFile(sourcePath, targetPath);
+    // Preserve the analysis working copy on subsequent executions.
+    try {
+      await fs.promises.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      const stat = await fs.promises.lstat(targetPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Invalid attachment target");
+    }
 
     logger.info(`[noteDataBridge] Successfully bridged ${filename} -> projects/${conversationId}/data/${filename}`);
     return {
@@ -285,6 +296,7 @@ async function bridgeFileToThread({ conversationId, userId, file }) {
       bytes: file.bytes || (await fs.promises.stat(targetPath)).size,
     };
   } catch (err) {
+    if (strict) throw new Error(`Could not prepare attachment ${filename}: ${err.message}`);
     logger.error(`[noteDataBridge] Error bridging file ${filename} to thread ${conversationId}:`, err);
     return null;
   }
@@ -301,12 +313,16 @@ async function bridgeConversationFiles(conversationId, userId) {
   try {
     const database = getDb();
     if (!database || !database.getFiles) {
-      logger.warn('[noteDataBridge] Database models not available for bridgeConversationFiles');
-      return [];
+      throw new Error('Attachment database unavailable');
     }
 
+    if (!userId) throw new Error('Attachment owner required');
+    // Uploads made before a new conversation exists are linked by its messages.
+    const messages = await database.getMessages({ conversationId, user: userId }, 'files');
+    const ids = messages.flatMap((message) => (message.files || []).map((file) => file.file_id)).filter(Boolean);
     const convoFiles = await database.getFiles({
-      $or: [{ conversationId }, { 'metadata.conversationId': conversationId }],
+      user: userId,
+      $or: [{ conversationId }, { 'metadata.conversationId': conversationId }, { file_id: { $in: ids } }],
     });
 
     if (!convoFiles || convoFiles.length === 0) {
@@ -317,8 +333,9 @@ async function bridgeConversationFiles(conversationId, userId) {
     for (const file of convoFiles) {
       const bridged = await bridgeFileToThread({
         conversationId,
-        userId: userId || file.user,
+        userId,
         file,
+        strict: true,
       });
       if (bridged) {
         results.push(bridged);
@@ -327,7 +344,7 @@ async function bridgeConversationFiles(conversationId, userId) {
     return results;
   } catch (err) {
     logger.error(`[noteDataBridge] Error bridging files for conversation ${conversationId}:`, err);
-    return [];
+    throw err;
   }
 }
 

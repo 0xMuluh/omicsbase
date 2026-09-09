@@ -58,3 +58,19 @@ test('keeps execution non-terminal until artifacts are registered', async () => 
     { error: null },
   );
 });
+
+test('does not execute R when attachment preparation fails', async () => {
+  const execution = makeExecution();
+  const executeOnEngine = jest.fn();
+  const worker = createExecutionWorker({
+    models: {
+      NoteCellExecution: { findById: jest.fn(async () => execution) },
+      NoteCellRevision: { findById: jest.fn(async () => ({ content: 'readRDS("data/tse.Rds")' })) },
+    },
+    bridgeConversationFiles: jest.fn(async () => { throw new Error('Attachment permission denied'); }),
+    executeOnEngine,
+  } as never, jest.fn(async () => undefined));
+  await worker.enqueueExecution('execution-1');
+  expect(executeOnEngine).not.toHaveBeenCalled();
+  expect(execution.status).toBe('failed');
+});

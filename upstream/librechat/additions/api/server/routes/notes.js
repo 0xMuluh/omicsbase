@@ -2,6 +2,8 @@ const express = require('express');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const noteCells = require('~/server/services/NoteCells/service');
 
+const { bridgeConversationFiles } = require('~/server/services/NoteCells/noteDataBridge');
+
 const router = express.Router({ mergeParams: true });
 
 const getUserId = (req) => req.user?.id ?? req.user?._id?.toString() ?? '';
@@ -68,6 +70,7 @@ router.post(
     if (!userId) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
+    await bridgeConversationFiles(conversationId, userId);
     const result = await noteCells.agentLifecycle.start(
       conversationId,
       userId,

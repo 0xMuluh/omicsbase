@@ -1,10 +1,9 @@
-import { logger } from '@librechat/data-schemas';
 import { createNoteAgentLifecycle } from './agent';
 import { createCellStore } from './cells';
 import { createEventStore } from './events';
 import { createExecutionWorker } from './worker';
 import { createExecutionStore } from './executions';
-import { NoteError, errorMessage } from './errors';
+import { NoteError } from './errors';
 import { serializeArtifact } from './serialization';
 import { TERMINAL } from './constants';
 import type { NoteDependencies } from './serviceTypes';
@@ -69,11 +68,7 @@ export function createNoteService(deps: NoteDependencies): NoteService {
     code: string;
     timeoutSeconds?: number;
   }) {
-    try {
-      await bridgeConversationFiles(conversationId, userId);
-    } catch (bridgeErr) {
-      logger.warn('[NoteCells] Data bridge pre-agent-execution warning:', errorMessage(bridgeErr));
-    }
+    await bridgeConversationFiles(conversationId, userId);
 
     const cellPayload = await findOrCreateCell({
       conversationId,

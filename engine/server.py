@@ -20,6 +20,9 @@ BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
 INTERNAL_SECRET = os.environ.get("OMICSBASE_AUTH_SECRET", "")
 LIBRECHAT_INTERNAL_URL = os.environ.get("LIBRECHAT_INTERNAL_URL", "http://api:3080").rstrip("/")
 
+# New project files remain writable by the shared project group.
+# prepare_runtime_dirs.sh assigns that group and setgid to existing directories.
+os.umask(0o002)
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 # Initialize MCP Server for NoteThreads

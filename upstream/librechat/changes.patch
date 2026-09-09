@@ -2864,7 +2864,7 @@ index 56d09ff5f4494c87df72ff3ceda17a33393cc8ea..11812d00b25b3d8ec6732156c6f9b7f6
 +  });
 +});
 diff --git a/packages/api/src/files/context.ts b/packages/api/src/files/context.ts
-index b16b498b354575a566a21daa21249f75cf436e28..a548d4fa78d13e3afaeee5ae163c3888f11fb97e 100644
+index b16b498b354575a566a21daa21249f75cf436e28..5e726a4ef07b68ede3bf1de77a1caa7d501be000 100644
 --- a/packages/api/src/files/context.ts
 +++ b/packages/api/src/files/context.ts
 @@ -1,3 +1,4 @@
@@ -3054,7 +3054,7 @@ index b16b498b354575a566a21daa21249f75cf436e28..a548d4fa78d13e3afaeee5ae163c3888
    }
  
 +  if (dataContext) {
-+    const noteGuidance = `\n[Attached Data Files in R Workspace]\nThe following dataset(s) have been uploaded and placed into your R NoteKernel workspace (\`data/\`):\n${dataContext}\n**Analysis Instructions for Agent:**\n- The datasets are ready on disk in your working directory. Do NOT ask the user to re-upload them.\n- Load them directly in R using appropriate functions (e.g. \`read.csv("data/<filename>")\` or \`readRDS("data/<filename>")\`).\n- Inspect dimensions and data summaries, then proceed with the requested omics analysis.\n`;
++    const noteGuidance = `\n[Attached Data Files in R Workspace]\nThe following dataset(s) are attached for preparation in your R NoteKernel workspace (\`data/\`):\n${dataContext}\n**Analysis Instructions for Agent:**\n- The execution service prepares working copies before running R. If preparation fails, report the error; do not assume the upload is missing or ask for re-upload.\n- Load them directly in R using appropriate functions (e.g. \`read.csv("data/<filename>")\` or \`readRDS("data/<filename>")\`).\n- Inspect dimensions and data summaries, then proceed with the requested omics analysis.\n`;
 +    if (resultText) {
 +      return resultText + '\n```\n' + noteGuidance;
 +    }
