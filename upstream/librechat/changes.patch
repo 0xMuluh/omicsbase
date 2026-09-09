@@ -96,7 +96,7 @@ index fd782a1ba5d5ede2900982d6c31b385db22f3994..a4cadecaa6af83ebad35303ace490bd0
  router.patch('/:projectId', handlers.updateProject);
  router.delete('/:projectId', handlers.deleteProject);
 diff --git a/api/server/services/Files/process.js b/api/server/services/Files/process.js
-index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c82350d30 100644
+index 325645a28bcbf19b78e3b1d1a221d147966a3a27..38379ddfdc66d6cc2c7d8fee78b77c9aeef8f15c 100644
 --- a/api/server/services/Files/process.js
 +++ b/api/server/services/Files/process.js
 @@ -484,6 +484,7 @@ const processImageFile = async ({ req, res, metadata, returnFile = false, sseStr
@@ -124,7 +124,24 @@ index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c
    if (returnFile) {
      return result;
    }
-@@ -845,6 +856,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+@@ -695,6 +706,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+     throw new Error('No agent ID provided for agent file upload');
+   }
+ 
++  const isRdsAttachment = messageAttachment && /\.rds$/i.test(file.originalname);
+   const isImage = file.mimetype.startsWith('image');
+   let fileInfoMetadata;
+   const entity_id = messageAttachment === true ? undefined : agent_id;
+@@ -749,7 +761,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+       throw new Error('File search is not enabled for Agents');
+     }
+     // Note: File search processing continues to dual storage logic below
+-  } else if (tool_resource === EToolResources.context) {
++  } else if (tool_resource === EToolResources.context && !isRdsAttachment) {
+     const { file_id, temp_file_id = null } = metadata;
+     const getExtractionLogDetails = (error) =>
+       getFileExtractionLogDetails({
+@@ -845,6 +857,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
          });
        }
        const result = await db.createFile(fileInfo, true);
@@ -140,7 +157,7 @@ index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c
        sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
      };
  
-@@ -1076,6 +1096,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+@@ -1076,6 +1097,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
        filepath,
        ...storageMetadata,
        filename: filename ?? sanitizeFilename(file.originalname),
@@ -148,7 +165,7 @@ index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c
        context: messageAttachment ? FileContext.message_attachment : FileContext.agents,
        model: messageAttachment ? undefined : req.body.model,
        metadata: fileInfoMetadata,
-@@ -1090,6 +1111,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
+@@ -1090,6 +1112,15 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
    };
  
    const result = await db.createFile(fileInfo, true);
@@ -164,6 +181,31 @@ index 325645a28bcbf19b78e3b1d1a221d147966a3a27..7d4e4c091fe735ff29cb8a56cfb8fb8c
  
    sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
  };
+diff --git a/api/server/services/Files/process.spec.js b/api/server/services/Files/process.spec.js
+index 14eaae594102d42353f81eec68578b3f179532e8..1338413568457e50d6ab4c5c0099ed459b68f300 100644
+--- a/api/server/services/Files/process.spec.js
++++ b/api/server/services/Files/process.spec.js
+@@ -340,6 +340,20 @@ describe('processAgentFileUpload', () => {
+     inspectContent.mockReturnValue(null);
+   });
+ 
++  it('stores an RDS message attachment without text extraction', async () => {
++    const req = makeReq({ mimetype: 'application/x-r-rds' });
++    req.file.originalname = 'tse.Rds';
++    const upload = setupStoredFileUpload({ filename: 'tse.Rds' });
++    await processAgentFileUpload({
++      req, res: mockRes, metadata: { ...makeMetadata(), message_file: true },
++    });
++    expect(upload).toHaveBeenCalled();
++    expect(extractInspectableFileText).not.toHaveBeenCalled();
++    expect(db.createFile).toHaveBeenCalledWith(
++      expect.objectContaining({ filename: 'tse.Rds', type: 'application/x-r-rds' }), true,
++    );
++  });
++
+   describe('content filtering for extracted context', () => {
+     const filters = { files: { pii: {} } };
+     const extractedTextFinding = {
 diff --git a/client/index.html b/client/index.html
 index 7ea758aaccfe91046a3c19f1637323af689d00d7..48287ad77eebe4a1fe41408fc42ce3ab92b560ec 100644
 --- a/client/index.html
@@ -3129,6 +3171,51 @@ index a25b41b8b0d61164c4c4c279eda69ebc5a823c52..05d8018fb38afdbc6e8a5dca84d4810e
        },
        height: {
          'theme-control': 'var(--theme-control-height, 2.25rem)',
+diff --git a/packages/data-provider/src/file-config.spec.ts b/packages/data-provider/src/file-config.spec.ts
+index 3bd44a6a1a728a151fe4390810da7d6d93fc0a65..0988d8b9db52f23d4fdf65ee87bdf0468b4300b2 100644
+--- a/packages/data-provider/src/file-config.spec.ts
++++ b/packages/data-provider/src/file-config.spec.ts
+@@ -1736,3 +1736,15 @@ describe('fileConfigSchema clientImageResize', () => {
+     expect(result.success).toBe(false);
+   });
+ });
++
++describe('RDS workspace attachments', () => {
++  it.each(['tse.rds', 'tse.Rds', 'tse.RDS'])(
++    'recognizes %s with missing or compression MIME types', (name) => {
++      for (const type of ['', 'application/octet-stream', 'application/gzip']) {
++        const inferred = inferMimeType(name, type);
++        expect(inferred).toBe('application/x-r-rds');
++        expect(baseFileConfig.checkType(inferred)).toBe(true);
++      }
++    },
++  );
++});
+diff --git a/packages/data-provider/src/file-config.ts b/packages/data-provider/src/file-config.ts
+index 133174dbe74b0bce92fc058e99e8dff6925eb370..b49193e36e6bd1d39554b84438bc250dff3575b9 100644
+--- a/packages/data-provider/src/file-config.ts
++++ b/packages/data-provider/src/file-config.ts
+@@ -220,7 +220,7 @@ export const textMimeTypes =
+   /^(text\/(x-c|x-csharp|tab-separated-values|x-c\+\+|x-h|x-java|html|markdown|x-php|x-python|x-script\.python|x-ruby|x-tex|plain|css|vtt|javascript|csv|xml|calendar))$/;
+ 
+ export const applicationMimeTypes =
+-  /^(application\/(epub\+zip|csv|json|msword|pdf|x-tar|x-sh|x-zip-compressed|typescript|sql|yaml|x-parquet|vnd\.apache\.parquet|vnd\.coffeescript|vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|presentationml\.(presentation|template)|spreadsheetml\.sheet)|vnd\.oasis\.opendocument\.(text|spreadsheet|presentation|graphics)|xml|zip))$/;
++  /^(application\/(x-r-rds|epub\+zip|csv|json|msword|pdf|x-tar|x-sh|x-zip-compressed|typescript|sql|yaml|x-parquet|vnd\.apache\.parquet|vnd\.coffeescript|vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|presentationml\.(presentation|template)|spreadsheetml\.sheet)|vnd\.oasis\.opendocument\.(text|spreadsheet|presentation|graphics)|xml|zip))$/;
+ 
+ export const imageMimeTypes = /^image\/(jpeg|gif|png|webp|heic|heif)$/;
+ 
+@@ -430,6 +430,11 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
+  * @returns The normalized or inferred MIME type; empty string if unresolvable
+  */
+ export function inferMimeType(fileName: string, currentType: string): string {
++  // RDS is workspace data even when the browser reports its compression type.
++  if (fileName.toLowerCase().endsWith('.rds')) {
++    return 'application/x-r-rds';
++  }
++
+   if (currentType) {
+     return mimeTypeAliases[currentType] ?? currentType;
+   }
 diff --git a/packages/data-provider/src/schemas.ts b/packages/data-provider/src/schemas.ts
 index 79162848580d6336819d40c29360f19c740f10b0..edc7e5197aa584d22dc99fe2d31e7cfc8082b560 100644
 --- a/packages/data-provider/src/schemas.ts
