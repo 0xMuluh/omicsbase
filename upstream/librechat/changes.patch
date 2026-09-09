@@ -1,3 +1,31 @@
+diff --git a/api/app/clients/BaseClient.js b/api/app/clients/BaseClient.js
+index 65b85d5971b6a8e3169fe5a4f2c73816b0318dca..33383b230d02c141d5a32453d245b662312b1cbe 100644
+--- a/api/app/clients/BaseClient.js
++++ b/api/app/clients/BaseClient.js
+@@ -8,6 +8,7 @@ const {
+   buildMessageFiles,
+   sanitizeFileForTransmit,
+   extractFileContext,
++  isWorkspaceDataFileAttachment,
+   getReferencedQuotes,
+   encodeAndFormatAudios,
+   encodeAndFormatVideos,
+@@ -1746,6 +1747,15 @@ class BaseClient {
+         continue;
+       }
+ 
++      /** Scientific data files are bridged to the NoteCell workspace. Keep
++       * the original file reference for that workspace, but do not serialize
++       * it as provider document input (which many models reject, sometimes
++       * reporting the file as an unsupported PDF). */
++      if (isWorkspaceDataFileAttachment(file)) {
++        allFiles.push(file);
++        continue;
++      }
++
+       if (file.type.startsWith('image/')) {
+         categorizedAttachments.images.push(file);
+       } else if (file.type === 'application/pdf') {
 diff --git a/api/server/controllers/auth/LogoutController.js b/api/server/controllers/auth/LogoutController.js
 index cdf540456985b9055873cec518e2fc7b4c326714..902c6e93cc474d870086a2117e8952d1f319ac02 100644
 --- a/api/server/controllers/auth/LogoutController.js
@@ -2805,8 +2833,38 @@ index 8bfdf28f9cbdfc611f6d5e2120bafa131a25e366..498bd7753caaa008951a984ce9c0c475
      "build:watch": "tsdown --watch",
      "build:watch:prod": "tsdown --watch",
      "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
+diff --git a/packages/api/src/files/context.spec.ts b/packages/api/src/files/context.spec.ts
+index 56d09ff5f4494c87df72ff3ceda17a33393cc8ea..11812d00b25b3d8ec6732156c6f9b7f63c30adf8 100644
+--- a/packages/api/src/files/context.spec.ts
++++ b/packages/api/src/files/context.spec.ts
+@@ -1,5 +1,5 @@
+ import type { TFile } from 'librechat-data-provider';
+-import { getAttachmentTitleText } from './context';
++import { getAttachmentTitleText, isWorkspaceDataFileAttachment } from './context';
+ 
+ const file = (filename?: string): TFile => ({ filename }) as TFile;
+ 
+@@ -28,3 +28,18 @@ describe('getAttachmentTitleText', () => {
+     expect(getAttachmentTitleText([file(), file()])).toBe('');
+   });
+ });
++
++describe('isWorkspaceDataFileAttachment', () => {
++  it.each(['wilcox_phylum.csv', 'counts.tsv', 'object.RDS', 'matrix.h5ad', 'sample.mzML'])(
++    'recognizes %s as workspace data',
++    (filename) => {
++      expect(isWorkspaceDataFileAttachment(file(filename))).toBe(true);
++    },
++  );
++
++  it('leaves provider document formats eligible', () => {
++    expect(isWorkspaceDataFileAttachment(file('report.pdf'))).toBe(false);
++    expect(isWorkspaceDataFileAttachment(file('table.xlsx'))).toBe(false);
++    expect(isWorkspaceDataFileAttachment(file('notes.txt'))).toBe(false);
++  });
++});
 diff --git a/packages/api/src/files/context.ts b/packages/api/src/files/context.ts
-index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee47c9c75f 100644
+index b16b498b354575a566a21daa21249f75cf436e28..a548d4fa78d13e3afaeee5ae163c3888f11fb97e 100644
 --- a/packages/api/src/files/context.ts
 +++ b/packages/api/src/files/context.ts
 @@ -1,3 +1,4 @@
@@ -2814,7 +2872,7 @@ index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee
  import { logger } from '@librechat/data-schemas';
  import { FileSources, mergeFileConfig } from 'librechat-data-provider';
  import type { IMongoFile } from '@librechat/data-schemas';
-@@ -30,9 +31,124 @@ export function getAttachmentTitleText(files?: TFile[] | null): string {
+@@ -30,9 +31,150 @@ export function getAttachmentTitleText(files?: TFile[] | null): string {
    return filenames.length > 0 ? `Attached file(s): ${filenames.join(', ')}` : '';
  }
  
@@ -2864,6 +2922,32 @@ index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee
 +  '.bz2',
 +  '.xz',
 +]);
++
++/**
++ * Office spreadsheets have established provider document support, so they
++ * remain eligible for normal document uploads. Other configured scientific
++ * data extensions are treated as workspace data.
++ */
++const PROVIDER_DOCUMENT_DATA_EXTENSIONS = new Set(['.xlsx', '.xls']);
++
++/**
++ * Returns true for formats whose useful representation is the original file
++ * in the R workspace. This deliberately uses only the filename extension so
++ * a large PDF/image or an ordinary text document is never reclassified as
++ * workspace data by size or storage source alone.
++ */
++export function isWorkspaceDataFileAttachment(
++  file: Pick<IMongoFile, 'filename'> | null | undefined,
++): boolean {
++  if (!file?.filename) {
++    return false;
++  }
++  const extension = path.extname(file.filename).toLowerCase();
++  return (
++    getConfiguredDataExtensions().has(extension) &&
++    !PROVIDER_DOCUMENT_DATA_EXTENSIONS.has(extension)
++  );
++}
 +
 +function getConfiguredDataExtensions(): Set<string> {
 +  const envExts = process.env.NOTE_DATA_EXTENSIONS;
@@ -2939,7 +3023,7 @@ index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee
   * @param params - The parameters object
   * @param params.attachments - Array of file attachments
   * @param params.req - Express request object for config access
-@@ -61,8 +177,14 @@ export async function extractFileContext({
+@@ -61,8 +203,14 @@ export async function extractFileContext({
    }
  
    let resultText = '';
@@ -2954,7 +3038,7 @@ index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee
      const source = file.source ?? FileSources.local;
      if (source === FileSources.text && file.text) {
        const { text: limitedText, wasTruncated } = await processTextWithTokenLimit({
-@@ -77,14 +199,22 @@ export async function extractFileContext({
+@@ -77,14 +225,22 @@ export async function extractFileContext({
          );
        }
  
@@ -2979,6 +3063,54 @@ index b16b498b354575a566a21daa21249f75cf436e28..408bcb2ac9d79500dd23777a0408fcee
 +
    return undefined;
  }
+diff --git a/packages/api/src/files/encode/processAttachments.spec.ts b/packages/api/src/files/encode/processAttachments.spec.ts
+index f9af6fd1e792bc0f71bd51dc509fea68c46e8dc5..5f7759d5432b8182648dc86c869f476dbebc3128 100644
+--- a/packages/api/src/files/encode/processAttachments.spec.ts
++++ b/packages/api/src/files/encode/processAttachments.spec.ts
+@@ -6,6 +6,7 @@ import {
+   isBedrockDocumentType,
+ } from 'librechat-data-provider';
+ import type { FileConfig, EndpointFileConfig } from 'librechat-data-provider';
++import { isWorkspaceDataFileAttachment } from '../context';
+ 
+ /**
+  * Mirrors the categorization logic from BaseClient.processAttachments.
+@@ -13,6 +14,7 @@ import type { FileConfig, EndpointFileConfig } from 'librechat-data-provider';
+  */
+ function categorizeFile(
+   file: {
++    filename?: string;
+     type?: string | null;
+     source?: string;
+     embedded?: boolean;
+@@ -33,6 +35,9 @@ function categorizeFile(
+   ) {
+     return 'skipped';
+   }
++  if (isWorkspaceDataFileAttachment(file)) {
++    return 'skipped';
++  }
+ 
+   if (file.type?.startsWith('image/')) {
+     return 'images';
+@@ -78,6 +83,17 @@ describe('processAttachments — supportedMimeTypes routing logic', () => {
+     expect(result).toBe('documents');
+   });
+ 
++  it('should keep a CSV attachment available to the workspace instead of provider documents', () => {
++    const { merged, epConfig } = resolveConfig(['text/csv']);
++    const result = categorizeFile(
++      { filename: 'wilcox_phylum.csv', type: 'text/csv' },
++      false,
++      merged,
++      epConfig,
++    );
++    expect(result).toBe('skipped');
++  });
++
+   it('should route text/plain to documents when supportedMimeTypes uses wildcard', () => {
+     const { merged, epConfig } = resolveConfig(['.*']);
+     const result = categorizeFile({ type: 'text/plain' }, false, merged, epConfig);
 diff --git a/packages/api/src/index.ts b/packages/api/src/index.ts
 index f78709aca835c1e7a78e9bd8171b9fea9568a0ce..c352ada653d5b9ec36c370797e1105f48850410f 100644
 --- a/packages/api/src/index.ts
