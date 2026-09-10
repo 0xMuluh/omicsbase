@@ -2,7 +2,7 @@
   "librechat": {
     "url": "https://github.com/danny-avila/LibreChat.git",
     "commit": "f9f1b2fb951a99e1fd01ee7291304a0370ea6132",
-    "patch_sha256": "9cef2b7bc7ab2ff3edf0a1aac02b11b61a16c291bebe8c8e1fec0ae4006427c0",
+    "patch_sha256": "41524b0d98e0e2a3f331bca6c22b6362959fcdcdccd04ff6d0dcad59211adc0d",
     "addition_sha256": {
       "api/server/routes/notes.js": "75484057a71432ab1cbd69e28571d39082852936f07b154e1410d46be3950530",
       "api/server/services/NoteCells/engineClient.js": "3f1eb48390023b6bb67ace363f82f578e732546471f03ce82497d43b80edc7d1",

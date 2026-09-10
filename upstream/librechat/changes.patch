@@ -728,6 +728,86 @@ index 650cef6fc1746cecd68b0bb6030a1a18229bad04..8f15e1a181ce39ebd7dc0167a66f03d7
  
        uploadWithRecovery(formData, extendedFile.file_id, uploadLifecycle);
        return;
+diff --git a/client/src/hooks/MCP/__tests__/useMCPSelect.test.tsx b/client/src/hooks/MCP/__tests__/useMCPSelect.test.tsx
+index 93ca85f519dd7e34fb91e319b85455a3b1779519..ff613c95ce463177d44d21775956ca2449a86118 100644
+--- a/client/src/hooks/MCP/__tests__/useMCPSelect.test.tsx
++++ b/client/src/hooks/MCP/__tests__/useMCPSelect.test.tsx
+@@ -60,6 +60,44 @@ describe('useMCPSelect', () => {
+     mockStartupConfig = undefined;
+   });
+ 
++  describe('OmicsBase first-use default', () => {
++    it('selects notethreads for both the picker and outgoing agent after catalog loading', () => {
++      const { Wrapper } = createWrapper();
++      const { result, rerender } = renderHook(
++        ({ servers }) => ({
++          picker: useMCPSelect({ servers, ownsChatSelection: true }),
++          agent: useRecoilValue(ephemeralAgentByConvoId(Constants.NEW_CONVO)),
++        }),
++        { wrapper: Wrapper, initialProps: { servers: createMCPServers([]) } },
++      );
++      expect(result.current.picker.mcpValues).toEqual([]);
++      rerender({ servers: createMCPServers(['notethreads', 'optional']) });
++      expect(result.current.picker.mcpValues).toEqual(['notethreads']);
++      expect(result.current.agent?.mcp).toEqual(['notethreads']);
++      act(() => result.current.picker.setMCPValues([]));
++      rerender({ servers: createMCPServers(['notethreads', 'optional']) });
++      expect(result.current.picker.mcpValues).toEqual([]);
++      expect(result.current.agent?.mcp).toEqual([]);
++    });
++
++    it.each([{ saved: [] }, { saved: ['optional'] }])('respects stored selection $saved on remount', ({ saved }) => {
++      localStorage.setItem(`${LocalStorageKeys.LAST_MCP_}${Constants.NEW_CONVO}`, JSON.stringify(saved));
++      const { Wrapper, servers } = createWrapper(['notethreads', 'optional']);
++      const { result } = renderHook(() => useMCPSelect({ servers, ownsChatSelection: true }), { wrapper: Wrapper });
++      expect(result.current.mcpValues).toEqual(saved);
++    });
++
++    it.each([
++      { conversationId: 'existing-chat' },
++      { specName: 'a-preset' },
++      { ownsChatSelection: false },
++    ])('does not seed outside an ordinary new-chat picker: %j', (overrides) => {
++      const { Wrapper, servers } = createWrapper(['notethreads']);
++      const { result } = renderHook(() => useMCPSelect({ servers, ownsChatSelection: true, ...overrides }), { wrapper: Wrapper });
++      expect(result.current.mcpValues).toEqual([]);
++    });
++  });
++
+   describe('Basic Functionality', () => {
+     it('should initialize with default values', () => {
+       const { Wrapper, servers } = createWrapper();
+diff --git a/client/src/hooks/MCP/useMCPSelect.ts b/client/src/hooks/MCP/useMCPSelect.ts
+index f4e08efaee391db876e4944d2620b1d71f9dee40..d011ad820303fbeed12ace987e2ede8eace2e840 100644
+--- a/client/src/hooks/MCP/useMCPSelect.ts
++++ b/client/src/hooks/MCP/useMCPSelect.ts
+@@ -200,6 +200,26 @@ export function useMCPSelect({
+     [setMCPValuesRaw, setEphemeralAgent, storageContextKey],
+   );
+ 
++  // OmicsBase: seed ordinary new chats through the existing selection setter.
++  // A saved empty array is an intentional opt-out, not a missing preference.
++  useEffect(() => {
++    if (
++      !ownsChatSelection ||
++      !isNewConvo ||
++      specName ||
++      !configuredServers.has('notethreads') ||
++      mcpValues.length > 0 ||
++      (ephemeralAgent?.mcp?.length ?? 0) > 0 ||
++      localStorage.getItem(`${LocalStorageKeys.LAST_MCP_}${mcpAtomKey}`) !== null
++    ) {
++      return;
++    }
++    setMCPValues(['notethreads']);
++  }, [
++    ownsChatSelection, isNewConvo, specName, configuredServers,
++    mcpValues, ephemeralAgent?.mcp, mcpAtomKey, setMCPValues,
++  ]);
++
+   return {
+     isPinned,
+     mcpValues,
 diff --git a/client/src/hooks/SSE/useResumableSSE.ts b/client/src/hooks/SSE/useResumableSSE.ts
 index 503c4fa8e51637b0ffc4fc0cc3df8c3135463256..c53543940a76e2d4b963569ea84dd33a5cfba586 100644
 --- a/client/src/hooks/SSE/useResumableSSE.ts
