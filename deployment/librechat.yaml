@@ -6,6 +6,45 @@ interface:
   appTitle: "OmicsBase"
   customFooter: ""
 
+fileConfig:
+  endpoints:
+    default:
+      supportedMimeTypes:
+        - "image/.*"
+        - "text/.*"
+        - "application/pdf"
+        - "application/json"
+        - "application/xml"
+        - "application/zip"
+        - "application/x-zip-compressed"
+        - "application/x-tar"
+        - "application/gzip"
+        - "application/x-gzip"
+        - "application/x-r-rds"
+        - "application/x-parquet"
+        - "application/vnd.apache.parquet"
+        - "application/x-hdf"
+        - "application/x-hdf5"
+        - "application/octet-stream"
+    custom:
+      supportedMimeTypes:
+        - "image/.*"
+        - "text/.*"
+        - "application/pdf"
+        - "application/json"
+        - "application/xml"
+        - "application/zip"
+        - "application/x-zip-compressed"
+        - "application/x-tar"
+        - "application/gzip"
+        - "application/x-gzip"
+        - "application/x-r-rds"
+        - "application/x-parquet"
+        - "application/vnd.apache.parquet"
+        - "application/x-hdf"
+        - "application/x-hdf5"
+        - "application/octet-stream"
+
 mcpSettings:
   allowedDomains:
     - 'engine'
