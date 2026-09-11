@@ -36,6 +36,9 @@ mcp = MCPServer(
     description=(
         "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
         "Automatically captures stdout, renders ggplot2 plots, and formats tables. "
+        "CRITICAL: Do NOT attempt to install packages via install.packages(), BiocManager::install(), devtools, remotes, or pak. "
+        "All required analysis libraries (754 pre-compiled Bioconductor and CRAN packages) are already built into the environment. "
+        "If a package is missing, state that it is unavailable rather than attempting to install it. "
         "If correcting, refining, or re-running a previous cell that failed or needs updating, pass its cell ID in 'cell_id' to update that cell in place rather than creating a duplicate."
     )
 )
