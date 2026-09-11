@@ -126,12 +126,13 @@ bioc_packages <- c(
   "tidySpatialExperiment",
   "tidySummarizedExperiment",
 
-  # Single-Cell Transcriptomics (OSCA)
+  # Single-Cell Transcriptomics (OSCA & Scrapbook)
   "batchelor",
   "bluster",
   "DropletUtils",
   "scater",
   "scran",
+  "scrapper",
   "scuttle",
   "sechm",
   "SingleR",

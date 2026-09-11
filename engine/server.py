@@ -114,12 +114,21 @@ def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
 
 @mcp.tool(
     name="search_bioc_books",
-    description="Search the pinned Bioconductor QMD knowledge index (OSCA single-cell, OSTA spatial, OMA microbiome, Mass Spec, Metabonaut) for authoritative R code recipes, workflows, and statistical methodology. Use whenever asked how to perform omics tasks or when resolving package errors."
+    description=(
+        "Search the pinned Bioconductor QMD knowledge index across 12 curated books: "
+        "1. osca (Single-Cell Analysis), 2. osca-basic (Single-Cell Basics), 3. osca-advanced (Single-Cell Advanced), "
+        "4. scrapbook (Single-Cell with scrapper), 5. osta (Spatial Transcriptomics), 6. tidy-spatial (Tidy Spatial Analysis), "
+        "7. oma (Microbiome Analysis), 8. rnaseq-gene (RNA-seq Gene-Level & DE), 9. tidyomics (Tidyomics Tutorials), "
+        "10. mofa2 (Multi-Omics Factor Analysis), 11. r-for-mass-spectrometry (Mass Spectrometry), 12. metabonaut (Metabolomics). "
+        "Provides authoritative R code recipes, workflows, and statistical methodology. Use whenever asked how to perform omics tasks or when resolving package errors."
+    )
 )
 def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
     """
     Search curated Bioconductor books for canonical R code snippets and workflow guidance.
-    Optional books: 'osca', 'osta', 'oma', 'r-for-mass-spectrometry', 'metabonaut'.
+    Optional books: 'osca', 'osca-basic', 'osca-advanced', 'scrapbook', 'osta', 'tidy-spatial',
+    'oma', 'rnaseq-gene', 'tidyomics', 'mofa2', 'r-for-mass-spectrometry', 'metabonaut'.
+    Leave empty to search across all 12 books.
     """
     book_filter = book.strip().lower() if book and book.strip() else None
     res = search_bioc_knowledge(query=query, book=book_filter, limit=limit)

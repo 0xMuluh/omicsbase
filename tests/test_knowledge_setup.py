@@ -27,13 +27,13 @@ class KnowledgeSetupTests(unittest.TestCase):
             stats = install(manifest, root / 'cache', output)
             self.assertEqual(set(stats), {book['slug'] for book in BOOKS})
             result = search_bioc_knowledge('analysis', limit=8, db_path=output)
-            self.assertEqual(result['count'], 5)
+            self.assertEqual(result['count'], min(len(BOOKS), 8))
             self.assertTrue(all(m['source_commit'] == commit for m in result['matches']))
             self.assertIn('Fixture authors', result['markdown'])
             self.assertIn('Fixture terms', result['markdown'])
             self.assertEqual(install(manifest, root / 'cache', output), stats)
             with sqlite3.connect(output) as conn:
-                self.assertEqual(conn.execute('select count(*) from knowledge_sources').fetchone()[0], 5)
+                self.assertEqual(conn.execute('select count(*) from knowledge_sources').fetchone()[0], len(BOOKS))
             # A damaged cached source must fail without replacing the good index.
             before = output.read_bytes()
             (root / 'cache/sources/osca' / commit / 'chapter.qmd').write_text('tampered')

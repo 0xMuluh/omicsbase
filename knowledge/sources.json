@@ -85,6 +85,111 @@
           "url": "https://github.com/rformassspectrometry/Metabonaut/blob/35a1a9b99fb9434348ae7c1e05ea801d754a16db/DESCRIPTION"
         }
       ]
+    },
+    {
+      "slug": "osca-basic",
+      "title": "Orchestrating Single-Cell Analysis: Basics",
+      "repository": "https://github.com/OSCA-source/OSCA.basic",
+      "commit": "e82ba056962c949f361798fb11dba6a884cd32d4",
+      "book_url": "https://bioconductor.org/books/release/OSCA.basic/",
+      "attribution": "Robert Amezquita, Aaron Lun, Stephanie Hicks, Raphael Gottardo",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY 4.0",
+          "url": "https://github.com/OSCA-source/OSCA.basic/blob/e82ba056962c949f361798fb11dba6a884cd32d4/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "osca-advanced",
+      "title": "Orchestrating Single-Cell Analysis: Advanced",
+      "repository": "https://github.com/OSCA-source/OSCA.advanced",
+      "commit": "2f1050180630665e196962cde3c2742ddd066a51",
+      "book_url": "https://bioconductor.org/books/release/OSCA.advanced/",
+      "attribution": "Robert Amezquita, Aaron Lun, Stephanie Hicks, Raphael Gottardo",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY 4.0",
+          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/2f1050180630665e196962cde3c2742ddd066a51/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "rnaseq-gene",
+      "title": "RNA-Seq Workflow: Gene-Level Exploratory Analysis & Differential Expression",
+      "repository": "https://github.com/thelovelab/rnaseqGene",
+      "commit": "0d7e27dde3ca9875cf94770ed9de35e346dd3676",
+      "book_url": "https://www.bioconductor.org/packages/rnaseqGene",
+      "attribution": "Michael I. Love, Simon Anders, Vladislav Kim, Wolfgang Huber",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "GPL (>= 2)",
+          "url": "https://github.com/thelovelab/rnaseqGene/blob/0d7e27dde3ca9875cf94770ed9de35e346dd3676/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "tidyomics",
+      "title": "Tidyomics Analysis Tutorials & Workflows",
+      "repository": "https://github.com/tidyomics/tidyomicsWorkshop",
+      "commit": "db39e8ecb871dc924bfc36bdf6c77b1e61b98b0e",
+      "book_url": "https://tidyomics.github.io/tidyomicsBlog/",
+      "attribution": "The tidyomics team and contributors",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "CC BY 4.0",
+          "url": "https://github.com/tidyomics/tidyomicsWorkshop/blob/db39e8ecb871dc924bfc36bdf6c77b1e61b98b0e/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "mofa2",
+      "title": "Multi-Omics Factor Analysis (MOFA2) Workflows",
+      "repository": "https://github.com/biofam/MOFA2",
+      "commit": "4a102f2b491ab600738ddf693a70f0baf032ca68",
+      "book_url": "https://biofam.github.io/MOFA2/",
+      "attribution": "Ricard Argelaguet, Damien Arnol, Britta Velten, Wolfgang Huber",
+      "license_statements": [
+        {
+          "path": "DESCRIPTION",
+          "statement": "GPL-3",
+          "url": "https://github.com/biofam/MOFA2/blob/4a102f2b491ab600738ddf693a70f0baf032ca68/DESCRIPTION"
+        }
+      ]
+    },
+    {
+      "slug": "scrapbook",
+      "title": "Single-cell RNA-seq analyses with scrapper",
+      "repository": "https://github.com/libscran/scrapbook",
+      "commit": "8d330d15f9cc8a340af13a9a95ee2feb21bcc25a",
+      "book_url": "https://bioconductor.org/books/release/scrapbook/",
+      "attribution": "Aaron Lun",
+      "license_statements": [
+        {
+          "path": "LICENSE",
+          "statement": "MIT",
+          "url": "https://github.com/libscran/scrapbook/blob/8d330d15f9cc8a340af13a9a95ee2feb21bcc25a/LICENSE"
+        }
+      ]
+    },
+    {
+      "slug": "tidy-spatial",
+      "title": "Workshop Materials for Tidy Spatial Analysis",
+      "repository": "https://github.com/tidyomics/tidySpatialWorkshop",
+      "commit": "50af22bc92d8fdc5e3a0fc624a35cea2a0f502ca",
+      "book_url": "https://tidyomics.github.io/tidySpatialWorkshop/",
+      "attribution": "Stefano Mangiola, Malvika Kharbanda",
+      "license_statements": [
+        {
+          "path": "LICENSE",
+          "statement": "MIT",
+          "url": "https://github.com/tidyomics/tidySpatialWorkshop/blob/50af22bc92d8fdc5e3a0fc624a35cea2a0f502ca/LICENSE"
+        }
+      ]
     }
   ]
 }
