@@ -99,6 +99,7 @@ bioc_packages <- c(
   "ALDEx2",
   "ANCOMBC",
   "ape",
+  "curatedMetagenomicData",
   "dada2",
   "DirichletMultinomial",
   "limma",
@@ -108,6 +109,7 @@ bioc_packages <- c(
   "miaTime",
   "miaViz",
   "microbiome",
+  "microbiomeDataSets",
   "phyloseq",
 
   # RNA-Seq & Transcriptomics
