@@ -90,7 +90,10 @@ async def handle_single_conversation(conversation_id: str, request: Request):
         raise HTTPException(status_code=403, detail="Access denied: Conversation belongs to another user")
 
     api_key = get_session_api_key()
-    headers = {"X-Session-API-Key": api_key}
+    headers = {
+        "X-Session-API-Key": api_key,
+        "Content-Type": request.headers.get("content-type", "application/json"),
+    }
     body = await request.body()
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
@@ -116,7 +119,10 @@ async def handle_conversation_subpath(conversation_id: str, subpath: str, reques
         raise HTTPException(status_code=403, detail="Access denied: Conversation belongs to another user")
 
     api_key = get_session_api_key()
-    headers = {"X-Session-API-Key": api_key}
+    headers = {
+        "X-Session-API-Key": api_key,
+        "Content-Type": request.headers.get("content-type", "application/json"),
+    }
     body = await request.body()
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:

@@ -78,32 +78,38 @@ async def ensure_llm_settings():
             except Exception:
                 existing_by_prov = {}
 
+            def _is_valid(val: Optional[str]) -> bool:
+                if not val:
+                    return False
+                v = str(val).strip()
+                return bool(v and not v.startswith("your_") and not v.endswith("_here"))
+
             conns_to_ensure = []
-            if os.environ.get("GOOGLE_KEY") or os.environ.get("GEMINI_API_KEY"):
+            if _is_valid(os.environ.get("GOOGLE_KEY")) or _is_valid(os.environ.get("GEMINI_API_KEY")):
                 conns_to_ensure.append({
                     "display_name": "Google Gemini",
                     "provider": "gemini",
                     "api_key": os.environ.get("GOOGLE_KEY") or os.environ.get("GEMINI_API_KEY")
                 })
-            if os.environ.get("ANTHROPIC_API_KEY"):
+            if _is_valid(os.environ.get("ANTHROPIC_API_KEY")):
                 conns_to_ensure.append({
                     "display_name": "Anthropic Claude",
                     "provider": "anthropic",
                     "api_key": os.environ["ANTHROPIC_API_KEY"]
                 })
-            if os.environ.get("OPENAI_API_KEY"):
+            if _is_valid(os.environ.get("OPENAI_API_KEY")):
                 conns_to_ensure.append({
                     "display_name": "OpenAI",
                     "provider": "openai",
                     "api_key": os.environ["OPENAI_API_KEY"]
                 })
-            if os.environ.get("GROQ_API_KEY"):
+            if _is_valid(os.environ.get("GROQ_API_KEY")):
                 conns_to_ensure.append({
                     "display_name": "Groq",
                     "provider": "groq",
                     "api_key": os.environ["GROQ_API_KEY"]
                 })
-            if os.environ.get("BAI_API_KEY") or os.environ.get("LLM_API_KEY"):
+            if _is_valid(os.environ.get("BAI_API_KEY")) or _is_valid(os.environ.get("LLM_API_KEY")):
                 conns_to_ensure.append({
                     "display_name": "BAI / GLM",
                     "provider": "custom",
@@ -127,7 +133,7 @@ async def ensure_llm_settings():
 
             # Google Gemini
             gkey = os.environ.get("GOOGLE_KEY") or os.environ.get("GEMINI_API_KEY")
-            if gkey:
+            if _is_valid(gkey):
                 profiles_to_ensure.extend([
                     ("google-gemini-3.8-flash", {"model": "gemini/gemini-3.8-flash", "api_key": gkey}),
                     ("google-gemini-3.7-flash", {"model": "gemini/gemini-3.7-flash", "api_key": gkey}),
@@ -139,7 +145,7 @@ async def ensure_llm_settings():
 
             # OpenAI
             okey = os.environ.get("OPENAI_API_KEY")
-            if okey:
+            if _is_valid(okey):
                 profiles_to_ensure.extend([
                     ("openai-gpt-6-astra", {"model": "openai/gpt-6-astra", "api_key": okey}),
                     ("openai-o3-mini", {"model": "openai/o3-mini", "api_key": okey}),
@@ -151,7 +157,7 @@ async def ensure_llm_settings():
 
             # Anthropic
             akey = os.environ.get("ANTHROPIC_API_KEY")
-            if akey:
+            if _is_valid(akey):
                 profiles_to_ensure.extend([
                     ("anthropic-claude-fable-5.1", {"model": "anthropic/claude-fable-5-1", "api_key": akey}),
                     ("anthropic-claude-opus-5", {"model": "anthropic/claude-opus-5", "api_key": akey}),
@@ -163,7 +169,7 @@ async def ensure_llm_settings():
 
             # Groq
             gqkey = os.environ.get("GROQ_API_KEY")
-            if gqkey:
+            if _is_valid(gqkey):
                 profiles_to_ensure.extend([
                     ("groq-gpt-oss-120b", {"model": "groq/openai/gpt-oss-120b", "api_key": gqkey}),
                     ("groq-compound", {"model": "groq/groq/compound", "api_key": gqkey}),
@@ -176,7 +182,7 @@ async def ensure_llm_settings():
             # BAI / GLM
             bkey = os.environ.get("BAI_API_KEY") or os.environ.get("LLM_API_KEY")
             burl = os.environ.get("BAI_BASE_URL") or os.environ.get("LLM_BASE_URL", "https://api.b.ai/v1")
-            if bkey:
+            if _is_valid(bkey):
                 profiles_to_ensure.extend([
                     ("bai-glm-5.3-flash", {"model": "openai/glm-5.3-flash", "base_url": burl, "api_key": bkey}),
                     ("bai-glm-5.3", {"model": "openai/glm-5.3", "base_url": burl, "api_key": bkey}),
@@ -207,6 +213,13 @@ async def ensure_llm_settings():
                 }
             }
             await client.patch(f"{AGENT_SERVER_URL}/api/settings", headers=headers, json=patch_payload)
+
+            # 4. Activate default profile (bai-glm-5.3-flash)
+            default_profile = "bai-glm-5.3-flash"
+            try:
+                await client.post(f"{AGENT_SERVER_URL}/api/profiles/{default_profile}/activate", headers=headers)
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Could not initialize agent server LLM settings: {e}")
 

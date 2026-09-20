@@ -70,6 +70,7 @@ services:
     volumes:
       - ../projects:/projects:rw
       - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/home/openhands/.openhands
+      - ../docker/openhands/gateway:/opt/agent-canvas/gateway:ro
 
 
 
