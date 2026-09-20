@@ -1,6 +1,6 @@
 services:
   api:
-    image: ${OMICSBASE_LIBRECHAT_IMAGE:-omicsbase-librechat:12d78909d}
+    image: ${OMICSBASE_LIBRECHAT_IMAGE:-omicsbase-librechat:d86005881}
     pull_policy: never
     ports: !override
       - "127.0.0.1:3080:3080"
