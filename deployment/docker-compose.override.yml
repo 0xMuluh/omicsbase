@@ -24,6 +24,11 @@ services:
       - type: bind
         source: ./librechat.yaml
         target: /app/librechat.yaml
+      - ./client/public/assets/favicon-32x32.png:/app/client/dist/assets/favicon-32x32.png:ro
+      - ./client/public/assets/favicon-16x16.png:/app/client/dist/assets/favicon-16x16.png:ro
+      - ./client/public/assets/apple-touch-icon-180x180.png:/app/client/dist/assets/apple-touch-icon-180x180.png:ro
+      - ./client/public/assets/logo.svg:/app/client/dist/assets/logo.svg:ro
+      - ./client/public/favicon.ico:/app/client/dist/favicon.ico:ro
     depends_on:
       - engine
 
