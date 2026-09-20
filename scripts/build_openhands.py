@@ -43,6 +43,10 @@ def main():
     is_monorepo = (source / 'frontend').exists()
     frontend = source / 'frontend' if is_monorepo else source
 
+    if not (frontend / 'node_modules').exists():
+        print('Installing OpenHands dependencies (npm ci)...')
+        run(['npm', 'ci', '--no-audit', '--no-fund'], frontend)
+
     run(['npx', 'vitest', 'run', '--environment', 'node', '__tests__/integrations/omicsbase.test.ts'], frontend)
 
     if args.verify_only:
