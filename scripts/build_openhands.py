@@ -39,23 +39,28 @@ def main():
             run(['git', 'checkout', '--detach', 'FETCH_HEAD'], source)
             run(['git', 'apply', '--check', str(patch)], source)
             run(['git', 'apply', str(patch)], source)
-        else:
+        is_monorepo = (source / 'frontend').exists()
+        frontend = source / 'frontend' if is_monorepo else source
+        if args.prepared_source:
+            diff_cmd = ['git', 'diff', 'HEAD', '--binary', '--full-index']
+            if is_monorepo:
+                diff_cmd += ['--', 'frontend']
             head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
-            delta = subprocess.check_output(['git', 'diff', 'HEAD', '--binary', '--full-index', '--', 'frontend'], cwd=source)
+            delta = subprocess.check_output(diff_cmd, cwd=source)
             if head != config['commit'] or delta != patch.read_bytes():
                 raise SystemExit('Prepared source does not match the pinned customization.')
-        frontend = source / 'frontend'
         if not args.prepared_source:
             run(['npm', 'ci', '--no-audit', '--no-fund'], frontend)
+        run(['npm', 'run', 'make-i18n'], frontend)
         run(['npm', 'run', 'typecheck'], frontend)
-        run(['npm', 'test', '--', '__tests__/integrations/omicsbase.test.ts'], frontend)
+        run(['npx', 'vitest', 'run', '--environment', 'node', '__tests__/integrations/omicsbase.test.ts'], frontend)
         run(['npm', 'run', 'build'], frontend)
         context = temp / 'image'
         shutil.copytree(frontend / 'build', context / 'frontend')
         (context / 'frontend/omicsbase-build.json').write_text(json.dumps(config) + '\n')
-        integration = ROOT / 'upstream/librechat/additions/patches/omicsbase_shared'
-        # The checked-in snapshot is the source of truth for distributable builds.
-        shutil.copytree(integration, context / 'integration', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        gateway_src = ROOT / 'docker/openhands/gateway'
+        shutil.copytree(gateway_src, context / 'gateway', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        shutil.copyfile(ROOT / 'docker/openhands/entrypoint.sh', context / 'entrypoint.sh')
         shutil.copyfile(ROOT / 'docker/openhands/Dockerfile', context / 'Dockerfile')
         run(['docker', '--context', args.context, 'build', '-t', args.tag, str(context)])
     print(f'Built {args.tag}; running containers were not changed.')

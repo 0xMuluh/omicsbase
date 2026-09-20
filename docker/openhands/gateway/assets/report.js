@@ -6,6 +6,8 @@
   let currentStatus = null;
   let activeView = 'dashboard';
   let activeSectionTab = 'chapters';
+  let userExplicitlySelectedView = false;
+  let hasAutoTransitionedToSite = false;
 
   // DOM Elements
   const dashboardView = document.getElementById('dashboard-view');
@@ -49,15 +51,82 @@
   const modalCloseBtn = document.getElementById('modal-close-btn');
 
   // ─── Theme Sync ───────────────────────────────────────────────
+  function applyThemeMode(isDark, colors = null) {
+    const root = document.documentElement;
+    root.classList.toggle('dark', isDark);
+    root.classList.toggle('light', !isDark);
+    root.style.colorScheme = isDark ? 'dark' : 'light';
+
+    const sunIcon = document.getElementById('theme-icon-sun');
+    const moonIcon = document.getElementById('theme-icon-moon');
+    if (sunIcon && moonIcon) {
+      sunIcon.style.display = isDark ? 'none' : 'block';
+      moonIcon.style.display = isDark ? 'block' : 'none';
+    }
+
+    if (colors && typeof colors === 'object') {
+      if (colors['accent-primary']) root.style.setProperty('--accent', colors['accent-primary']);
+      if (colors['surface-primary']) root.style.setProperty('--bg-surface', colors['surface-primary']);
+      if (colors['presentation']) root.style.setProperty('--bg-base', colors['presentation']);
+      if (colors['border-light']) root.style.setProperty('--border', colors['border-light']);
+      if (colors['text-primary']) root.style.setProperty('--text-primary', colors['text-primary']);
+      if (colors['text-secondary']) root.style.setProperty('--text-secondary', colors['text-secondary']);
+    }
+  }
+
   function syncThemeFromParent() {
     try {
+      const localTheme = localStorage.getItem('omicsbase_report_theme');
+      const urlTheme = new URLSearchParams(window.location.search).get('theme');
+      const cookieMatch = document.cookie.match(/omicsbase_theme=([^;]+)/);
+      const cookieTheme = cookieMatch ? cookieMatch[1] : null;
+      const explicitTheme = localTheme || urlTheme || cookieTheme;
+      if (explicitTheme) {
+        const isDark = explicitTheme.toLowerCase() !== 'light';
+        if (!isDark) {
+          const root = document.documentElement;
+          root.style.removeProperty('--accent');
+          root.style.removeProperty('--bg-base');
+          root.style.removeProperty('--bg-surface');
+          root.style.removeProperty('--border');
+          root.style.removeProperty('--text-primary');
+          root.style.removeProperty('--text-secondary');
+        }
+        applyThemeMode(isDark);
+        return;
+      }
+
       if (window.parent && window.parent !== window) {
         const pDoc = window.parent.document;
         const pRoot = pDoc.documentElement;
-        const isLight = pRoot.dataset.omicsbaseTheme === 'light' || (pRoot.classList.contains('light') && !pRoot.classList.contains('dark'));
-        const isDark = !isLight;
-        const pStyles = window.parent.getComputedStyle(pRoot);
+        const pBody = pDoc.body;
+        const themedEl = pDoc.querySelector('[data-theme]');
+        const dataTheme = themedEl?.getAttribute('data-theme') || pRoot.getAttribute('data-theme') || pBody?.getAttribute('data-theme');
 
+        let isDark = true;
+        if (dataTheme) {
+          isDark = dataTheme.toLowerCase().includes('dark');
+        } else if (pRoot.dataset.omicsbaseTheme) {
+          isDark = pRoot.dataset.omicsbaseTheme !== 'light';
+        } else if (pRoot.classList.contains('light') || pBody?.classList.contains('light')) {
+          isDark = false;
+        } else if (pRoot.classList.contains('dark') || pBody?.classList.contains('dark')) {
+          isDark = true;
+        }
+
+        if (!isDark) {
+          const root = document.documentElement;
+          root.style.removeProperty('--accent');
+          root.style.removeProperty('--bg-base');
+          root.style.removeProperty('--bg-surface');
+          root.style.removeProperty('--border');
+          root.style.removeProperty('--text-primary');
+          root.style.removeProperty('--text-secondary');
+          applyThemeMode(false);
+          return;
+        }
+
+        const pStyles = window.parent.getComputedStyle(pRoot);
         const accent = pStyles.getPropertyValue('--oh-color-primary').trim() || (isDark ? '#63ccc0' : '#1c5757');
         const bgBase = pStyles.getPropertyValue('--oh-background').trim() || (isDark ? '#0d0f11' : '#f8fafc');
         const bgSurface = pStyles.getPropertyValue('--oh-surface').trim() || (isDark ? '#14171a' : '#ffffff');
@@ -75,9 +144,7 @@
         root.style.setProperty('--border', border);
         root.style.setProperty('--text-primary', textPrimary);
         root.style.setProperty('--text-secondary', textSecondary);
-        root.classList.toggle('dark', isDark);
-        root.classList.toggle('light', isLight);
-        root.style.colorScheme = isDark ? 'dark' : 'light';
+        applyThemeMode(isDark);
       }
     } catch (e) {}
   }
@@ -88,13 +155,21 @@
       const pObserver = new MutationObserver(() => syncThemeFromParent());
       pObserver.observe(window.parent.document.documentElement, {
         attributes: true,
-        attributeFilter: ['class', 'data-omicsbase-theme', 'style']
+        attributeFilter: ['class', 'data-omicsbase-theme', 'data-theme', 'style']
       });
+      if (window.parent.document.body) {
+        pObserver.observe(window.parent.document.body, {
+          attributes: true,
+          attributeFilter: ['class', 'data-theme', 'style']
+        });
+      }
     }
   } catch (e) {}
 
   window.addEventListener('message', (event) => {
-    if (event.data?.type === 'OMICSBASE_THEME') {
+    if (event.data?.type === 'OMICSBASE_THEME' || event.data?.type === 'omicsbase:theme') {
+      const isDark = event.data.mode === 'dark' || (!event.data.mode && document.documentElement.classList.contains('dark'));
+      applyThemeMode(isDark, event.data.colors);
       syncThemeFromParent();
     } else if (
       event.data?.type === 'OMICSBASE_AGENT_RUNNING' ||
@@ -229,14 +304,18 @@
       pipelineStatusBadge.style.color = 'var(--danger)';
       pipelineStatusBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
       pipelineStatusBadge.title = 'Issues detected in pipeline';
-      pipelineStatusBadge.innerHTML = '<span class="badge-dot" style="background:var(--danger);"></span><span>Pipeline Alert</span>';
+      pipelineStatusBadge.innerHTML = '<span class="badge-dot" style="background:var(--danger);"></span><span>Alert</span>';
       stopPolling();
     } else if (data.has_site && !isPipelineActive && (totalChapters === 0 || compiledCount === totalChapters)) {
       pipelineStatusBadge.className = 'badge badge-ready';
       pipelineStatusBadge.style.color = '';
       pipelineStatusBadge.style.borderColor = '';
-      pipelineStatusBadge.title = 'Full report book compiled and ready • Up to date';
-      pipelineStatusBadge.innerHTML = '<span class="badge-dot"></span><span>Book Ready</span>';
+      pipelineStatusBadge.title = 'Report ready';
+      pipelineStatusBadge.innerHTML = '<span class="badge-dot"></span><span>Ready</span>';
+      if (!hasAutoTransitionedToSite && !userExplicitlySelectedView) {
+        hasAutoTransitionedToSite = true;
+        setModeView('site');
+      }
       consecutiveSettledPolls++;
       if (consecutiveSettledPolls >= 1) {
         stopPolling();
@@ -245,32 +324,32 @@
       pipelineStatusBadge.className = 'badge badge-generating';
       pipelineStatusBadge.style.color = '';
       pipelineStatusBadge.style.borderColor = '';
-      pipelineStatusBadge.title = isAgentRunning ? 'Agent is actively generating analysis...' : 'Pipeline execution actively running';
-      pipelineStatusBadge.innerHTML = '<span class="badge-dot badge-pulse"></span><span>Pipeline Active</span>';
+      pipelineStatusBadge.title = isAgentRunning ? 'Agent is actively generating analysis...' : 'Pipeline actively running';
+      pipelineStatusBadge.innerHTML = '<span class="badge-dot badge-pulse"></span><span>Active</span>';
       if (!isPolling) startPolling(3000);
       consecutiveSettledPolls = 0;
     } else if (totalChapters > 0 && compiledCount < totalChapters) {
       pipelineStatusBadge.className = 'badge badge-generating';
       pipelineStatusBadge.style.color = '';
       pipelineStatusBadge.style.borderColor = '';
-      pipelineStatusBadge.title = `Compiling chapters (${compiledCount}/${totalChapters})`;
-      pipelineStatusBadge.innerHTML = `<span class="badge-dot badge-pulse"></span><span>Rendering (${compiledCount}/${totalChapters})</span>`;
+      pipelineStatusBadge.title = `Rendering chapters (${compiledCount}/${totalChapters})`;
+      pipelineStatusBadge.innerHTML = `<span class="badge-dot badge-pulse"></span><span>Active</span>`;
       if (!isPolling) startPolling(3000);
       consecutiveSettledPolls = 0;
     } else if (totalScripts > 0 && anyQueued) {
       pipelineStatusBadge.className = 'badge badge-generating';
       pipelineStatusBadge.style.color = '';
       pipelineStatusBadge.style.borderColor = '';
-      pipelineStatusBadge.title = 'Sequential analysis scripts active';
-      pipelineStatusBadge.innerHTML = '<span class="badge-dot badge-pulse"></span><span>Pipeline Active</span>';
+      pipelineStatusBadge.title = 'Pipeline scripts queued';
+      pipelineStatusBadge.innerHTML = '<span class="badge-dot badge-pulse"></span><span>Active</span>';
       if (!isPolling) startPolling(3000);
       consecutiveSettledPolls = 0;
     } else {
       pipelineStatusBadge.className = 'badge badge-idle';
       pipelineStatusBadge.style.color = '';
       pipelineStatusBadge.style.borderColor = '';
-      pipelineStatusBadge.title = 'Pipeline idle • Up to date';
-      pipelineStatusBadge.innerHTML = '<span class="badge-dot"></span><span>Up to date</span>';
+      pipelineStatusBadge.title = 'Idle';
+      pipelineStatusBadge.innerHTML = '<span class="badge-dot"></span><span>Idle</span>';
       consecutiveSettledPolls++;
       if (consecutiveSettledPolls >= 1) {
         stopPolling();
@@ -560,26 +639,57 @@
   });
 
   // View Switching
+  function setModeView(view) {
+    activeView = view;
+    if (view === 'site') {
+      tabSite.classList.add('active');
+      tabSite.setAttribute('aria-selected', 'true');
+      tabDashboard.classList.remove('active');
+      tabDashboard.setAttribute('aria-selected', 'false');
+      dashboardView.style.display = 'none';
+      siteView.style.display = 'block';
+      if (!siteIframe.src || siteIframe.src === 'about:blank' || !siteIframe.src.includes(`${API_BASE}/site/index.html`)) {
+        siteIframe.src = `${API_BASE}/site/index.html`;
+      }
+    } else {
+      tabDashboard.classList.add('active');
+      tabDashboard.setAttribute('aria-selected', 'true');
+      tabSite.classList.remove('active');
+      tabSite.setAttribute('aria-selected', 'false');
+      dashboardView.style.display = 'flex';
+      siteView.style.display = 'none';
+    }
+  }
+
   tabDashboard.addEventListener('click', () => {
-    activeView = 'dashboard';
-    tabDashboard.classList.add('active');
-    tabDashboard.setAttribute('aria-selected', 'true');
-    tabSite.classList.remove('active');
-    tabSite.setAttribute('aria-selected', 'false');
-    dashboardView.style.display = 'flex';
-    siteView.style.display = 'none';
+    userExplicitlySelectedView = true;
+    setModeView('dashboard');
   });
 
   tabSite.addEventListener('click', () => {
-    activeView = 'site';
-    tabSite.classList.add('active');
-    tabSite.setAttribute('aria-selected', 'true');
-    tabDashboard.classList.remove('active');
-    tabDashboard.setAttribute('aria-selected', 'false');
-    dashboardView.style.display = 'none';
-    siteView.style.display = 'block';
-    siteIframe.src = `${API_BASE}/site/index.html`;
+    userExplicitlySelectedView = true;
+    setModeView('site');
   });
+
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', () => {
+      const isCurrentlyDark = document.documentElement.classList.contains('dark');
+      const nextDark = !isCurrentlyDark;
+      localStorage.setItem('omicsbase_report_theme', nextDark ? 'dark' : 'light');
+      document.cookie = `omicsbase_theme=${nextDark ? 'dark' : 'light'}; path=/; max-age=604800; SameSite=Lax`;
+      if (!nextDark) {
+        const root = document.documentElement;
+        root.style.removeProperty('--accent');
+        root.style.removeProperty('--bg-base');
+        root.style.removeProperty('--bg-surface');
+        root.style.removeProperty('--border');
+        root.style.removeProperty('--text-primary');
+        root.style.removeProperty('--text-secondary');
+      }
+      applyThemeMode(nextDark);
+    });
+  }
 
   openNewTabBtn.addEventListener('click', () => {
     if (currentStatus?.has_site) {

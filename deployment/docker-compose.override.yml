@@ -1,6 +1,6 @@
 services:
   api:
-    image: ${OMICSBASE_LIBRECHAT_IMAGE:-omicsbase-librechat:f9f1b2fb9}
+    image: ${OMICSBASE_LIBRECHAT_IMAGE:-omicsbase-librechat:12d78909d}
     pull_policy: never
     ports: !override
       - "127.0.0.1:3080:3080"
@@ -8,7 +8,7 @@ services:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
-      - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:3000
+      - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:8000
       - NOTEKERNEL_URL=http://engine:8001
       - PROJECTS_DIR=/app/projects
     volumes:
@@ -49,45 +49,27 @@ services:
     container_name: openhands-engine
     restart: always
     ports:
-      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:3001:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - PERMITTED_CORS_ORIGINS=${DOMAIN_CLIENT:-http://localhost:3080},${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
-      - OPENHANDS_CONFIG_CLS=omicsbase_shared.config.OmicsBaseConfig
-      - OPENHANDS_CONVERSATION_VALIDATOR_CLS=omicsbase_shared.validator.OmicsBaseConversationValidator
-      - RUNTIME=omicsbase_shared.runtime.UserRuntime
-      - PYTHONPATH=/app
+      - AGENT_CANVAS_BASE_PATH=/
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
-      - SANDBOX_USER_ID=0
-      - WORKSPACE_BASE=/opt/workspace_base
-      - SANDBOX_BASE_CONTAINER_IMAGE=${OMICSBASE_ENGINE_IMAGE:-omicsbase-engine:dev}
-      - SANDBOX_RUNTIME_CONTAINER_IMAGE=${OMICSBASE_RUNTIME_IMAGE:-omicsbase-runtime:dev}
-      - LOG_ALL_EVENTS=true
-      - RUN_AS_OPENHANDS=false
-      - LLM_MODEL=openai/glm-5.3-flash
+      - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
+      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
+      - LLM_MODEL=${LLM_MODEL:-openai/glm-5.3-flash}
       - LLM_BASE_URL=${BAI_BASE_URL:-https://api.b.ai/v1}
       - LLM_API_KEY=${BAI_API_KEY}
-      - ENABLE_VSCODE=false
-      - FILE_STORE_PATH=/.openhands
-      - OMICSBASE_WORKSPACE_SESSION_TTL=${OMICSBASE_WORKSPACE_SESSION_TTL:-43200}
-      - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_KEY=${GOOGLE_KEY}
+      - GEMINI_API_KEY=${GOOGLE_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENROUTER_KEY=${OPENROUTER_KEY}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/.openhands
-      - ../projects:/opt/workspace_base
-      - ./patches/omicsbase_shared:/app/omicsbase_shared:ro
-      - ./patches/files.py:/app/openhands/server/routes/files.py
-      - ./patches/system_prompt.j2:/app/openhands/agenthub/codeact_agent/prompts/system_prompt.j2
-      - ./patches/fn_call_converter.py:/app/openhands/llm/fn_call_converter.py
-      - ./patches/vscode-settings.json:/app/openhands/runtime/plugins/vscode/settings.json:ro
-    command:
-      - /bin/bash
-      - -c
-      - |
-        rm -rf /root/.openhands && ln -s /.openhands /root/.openhands
-        python3 -c "import os, json; f='/.openhands/settings.json'; s=json.load(open(f)) if os.path.exists(f) else {'language':'en','agent':'CodeActAgent'}; s['llm_model']=os.environ.get('LLM_MODEL',s.get('llm_model')); s['llm_base_url']=os.environ.get('LLM_BASE_URL',s.get('llm_base_url')); s['llm_api_key']=os.environ.get('LLM_API_KEY',s.get('llm_api_key')); json.dump(s, open(f,'w'), indent=2)"
-        exec uvicorn omicsbase_shared.app:app --host 0.0.0.0 --port 3000
+      - ../projects:/projects:rw
+      - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/home/openhands/.openhands
 
 
 

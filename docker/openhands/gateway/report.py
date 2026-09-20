@@ -1,33 +1,52 @@
+"""Quarto report inspection, live status polling, and compiled site file delivery."""
 import time
 from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, FileResponse
+import httpx
 import yaml
 
+from gateway.core import _get_project_dir, _resolve_safe_path, get_session_api_key, AGENT_SERVER_URL
+
+router = APIRouter(tags=["report"])
+
+
 def _inspect_project_report(pdir: Path) -> dict:
-    project_title = "Omics Analysis Pipeline"
+    project_title = "Analysis Pipeline"
     ordered_chapters = []
+
     quarto_yml = pdir / "_quarto.yml"
     if quarto_yml.is_file():
         try:
-            with open(quarto_yml, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-            project_title = (
-                cfg.get("website", {}).get("title")
-                or cfg.get("book", {}).get("title")
-                or cfg.get("title")
-                or project_title
-            )
+            cfg = yaml.safe_load(quarto_yml.read_text(encoding="utf-8")) or {}
+            btitle = cfg.get("book", {}).get("title") or cfg.get("website", {}).get("title") or cfg.get("project", {}).get("title")
+            if btitle:
+                project_title = btitle
+
             def extract_items(node):
                 if isinstance(node, list):
-                    for sub in node:
-                        extract_items(sub)
+                    for item in node:
+                        extract_items(item)
                 elif isinstance(node, dict):
-                    href = node.get("href") or node.get("file")
-                    text = node.get("text") or node.get("title")
-                    if href and (href.endswith(".qmd") or href.endswith(".md")):
-                        ordered_chapters.append({"file": href, "title": text})
-                    for k in ("menu", "contents", "chapters", "left", "right"):
-                        if k in node:
-                            extract_items(node[k])
+                    if "file" in node:
+                        ordered_chapters.append({
+                            "file": node["file"],
+                            "title": node.get("title") or node.get("text")
+                        })
+                    elif "href" in node:
+                        ordered_chapters.append({
+                            "file": node["href"],
+                            "title": node.get("text") or node.get("title")
+                        })
+                    elif "contents" in node:
+                        extract_items(node["contents"])
+                    elif "chapters" in node:
+                        extract_items(node["chapters"])
+                    else:
+                        for k in ("sidebar", "navbar", "tools", "items"):
+                            if k in node:
+                                extract_items(node[k])
                 elif isinstance(node, str) and (node.endswith(".qmd") or node.endswith(".md")):
                     ordered_chapters.append({"file": node, "title": None})
 
@@ -38,8 +57,7 @@ def _inspect_project_report(pdir: Path) -> dict:
         except Exception:
             pass
 
-    # If title not found from _quarto.yml, try markdown files (e.g. Statistical Analysis Plan or README)
-    if project_title == "Omics Analysis Pipeline":
+    if project_title == "Analysis Pipeline":
         for md_path in pdir.glob("*.md"):
             try:
                 lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -50,19 +68,14 @@ def _inspect_project_report(pdir: Path) -> dict:
                         if candidate and len(candidate) > 3:
                             project_title = candidate
                             break
-                if project_title != "Omics Analysis Pipeline":
+                if project_title != "Analysis Pipeline":
                     break
             except Exception:
                 pass
-        if project_title == "Omics Analysis Pipeline":
-            for md_path in pdir.glob("*Analysis Plan*.md"):
-                project_title = md_path.stem
-                break
 
     site_dir = pdir / "_site"
     has_site = (site_dir / "index.html").is_file()
 
-    # Discover all .qmd files recursively (including pages/ and subdirectories)
     all_qmd = {}
     for p in sorted(pdir.rglob("*.qmd")):
         if "_site" in p.parts or ".git" in p.parts:
@@ -116,7 +129,6 @@ def _inspect_project_report(pdir: Path) -> dict:
                 "type": "chapter"
             })
 
-    # Any remaining .qmd files in project not in navbar/sidebar
     for rel_str, qpath in all_qmd.items():
         if qpath in seen:
             continue
@@ -151,7 +163,6 @@ def _inspect_project_report(pdir: Path) -> dict:
             "type": "chapter"
         })
 
-    # Discover R pipeline scripts alongside Quarto chapters
     scripts = []
     r_dir = pdir / "R"
     if r_dir.is_dir():
@@ -239,3 +250,65 @@ def _inspect_project_report(pdir: Path) -> dict:
         "tables": tables
     }
 
+
+@router.api_route("/api/omicsbase/report/{conversation_id}", methods=["GET", "HEAD"])
+@router.api_route("/api/omicsbase/report/{conversation_id}/", methods=["GET", "HEAD"])
+async def get_report_page(request: Request, conversation_id: str):
+    html_path = Path(__file__).parent / "report.html"
+    if html_path.is_file():
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        content = html_path.read_text(encoding="utf-8")
+        theme = (request.query_params.get("theme") or request.cookies.get("omicsbase_theme") or "dark").lower()
+        if theme == "light":
+            content = content.replace('class="dark"', 'class="light"')
+        return HTMLResponse(content=content, status_code=200, headers=headers)
+    return HTMLResponse(content="<h1>Report template not found</h1>", status_code=500)
+
+
+@router.api_route("/api/omicsbase/report/{conversation_id}/status", methods=["GET", "HEAD"])
+async def get_report_status(conversation_id: str):
+    pdir = _get_project_dir(conversation_id)
+    report = _inspect_project_report(pdir)
+    is_running = False
+    agent_state_val = None
+    try:
+        api_key = get_session_api_key()
+        headers = {"X-Session-API-Key": api_key}
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{AGENT_SERVER_URL}/api/conversations/{conversation_id}", headers=headers)
+            if resp.status_code == 200:
+                convo_info = resp.json()
+                exec_status = convo_info.get("execution_status")
+                agent_state_val = exec_status
+                is_running = (exec_status == "running")
+    except Exception:
+        pass
+    report["is_agent_running"] = bool(is_running)
+    report["agent_state"] = agent_state_val
+    return report
+
+
+@router.api_route("/api/omicsbase/report/{conversation_id}/site/{path:path}", methods=["GET", "HEAD"])
+@router.api_route("/api/omicsbase/report/{conversation_id}/file/{path:path}", methods=["GET", "HEAD"])
+async def get_report_site_file(conversation_id: str, path: str):
+    pdir = _get_project_dir(conversation_id)
+    site_dir = pdir / "_site"
+    try:
+        target = _resolve_safe_path(site_dir, path)
+        if target.is_file():
+            return FileResponse(str(target))
+    except Exception:
+        pass
+
+    try:
+        target = _resolve_safe_path(pdir, path)
+        if target.is_file():
+            return FileResponse(str(target))
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="File not found")

@@ -152,6 +152,25 @@ def list_thread_files(thread_id: str = "default") -> list[str]:
             files.append(rel)
     return sorted(files)
 
+def _resolve_project_dir(project_id: str) -> str:
+    """Resolve project directory under /app/projects/{project_id} or /app/projects/users/*/{project_id}."""
+    direct = os.path.join(PROJECTS_DIR, project_id)
+    if os.path.isdir(direct):
+        return direct
+    users_root = os.path.join(PROJECTS_DIR, "users")
+    if os.path.isdir(users_root):
+        for user_dir in os.listdir(users_root):
+            candidate = os.path.join(users_root, user_dir, project_id)
+            if os.path.isdir(candidate):
+                try:
+                    if not os.path.exists(direct) and not os.path.islink(direct):
+                        rel_target = os.path.join("users", user_dir, project_id)
+                        os.symlink(rel_target, direct)
+                except Exception:
+                    pass
+                return candidate
+    return direct
+
 @mcp.tool(
     name="render_quarto_report",
     description="Compile the Quarto website project into HTML for the given project_id. Returns compilation status, stdout, stderr, and the live preview URL."
@@ -161,7 +180,7 @@ def render_quarto_report(project_id: str = "default") -> str:
     Compile the Quarto project at /app/projects/{project_id} into an HTML website.
     """
     import subprocess
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
     if not os.path.exists(os.path.join(project_dir, "_quarto.yml")) and len(qmd_files) == 0:
@@ -307,7 +326,7 @@ app.add_route("/api/knowledge/search", handle_knowledge_search, methods=["GET"])
 async def handle_quarto_render(request: Request):
     import asyncio
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
@@ -341,7 +360,7 @@ app.add_route("/api/projects/{project_id}/render", handle_quarto_render, methods
 # Endpoint for checking project status (report existence, files)
 async def handle_project_status(request: Request):
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     has_site = os.path.exists(os.path.join(project_dir, "_site", "index.html"))
     report_url = f"{BASE_URL}/projects/{project_id}/_site/index.html" if has_site else None
     
