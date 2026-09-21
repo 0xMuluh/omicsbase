@@ -28,14 +28,23 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 # Initialize MCP Server for NoteThreads
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
-    instructions="OmicsBase NoteThreads Execution Engine. Provides persistent, in-memory R execution, automatic plot generation, data frame formatting, and grounded Bioconductor knowledge retrieval for downstream bioinformatics."
+    instructions=(
+        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n"
+        "Grounding Rule: For omics analysis and visualization, prioritize the canonical packages, workflows, and plotting functions "
+        "found in the reference knowledge (consult via search_bioc_books). Do not fall back to generic R or basic ggplot2 "
+        "unless the reference knowledge does not cover the methodology or the user expressly requests generic implementations."
+    ),
 )
 
 @mcp.tool(
     name="execute_r_cell",
     description=(
         "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
-        "Automatically captures stdout, renders ggplot2 plots, and formats tables. "
+        "Automatically captures stdout, renders plots, and formats tables. "
+        "Prioritize domain-standard packages and idioms established in the reference knowledge over generic ad-hoc implementations. "
+        "CRITICAL: Do NOT attempt to install packages via install.packages(), BiocManager::install(), devtools, remotes, or pak. "
+        "All required analysis libraries (754 pre-compiled Bioconductor and CRAN packages) are already built into the environment. "
+        "If a package is missing, state that it is unavailable rather than attempting to install it. "
         "If correcting, refining, or re-running a previous cell that failed or needs updating, pass its cell ID in 'cell_id' to update that cell in place rather than creating a duplicate."
     )
 )
@@ -114,12 +123,22 @@ def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
 
 @mcp.tool(
     name="search_bioc_books",
-    description="Search the pinned Bioconductor QMD knowledge index (OSCA single-cell, OSTA spatial, OMA microbiome, Mass Spec, Metabonaut) for authoritative R code recipes, workflows, and statistical methodology. Use whenever asked how to perform omics tasks or when resolving package errors."
+    description=(
+        "Search the pinned Bioconductor QMD knowledge index across 12 curated books: "
+        "1. osca (Single-Cell Analysis), 2. osca-basic (Single-Cell Basics), 3. osca-advanced (Single-Cell Advanced), "
+        "4. scrapbook (Single-Cell with scrapper), 5. osta (Spatial Transcriptomics), 6. tidy-spatial (Tidy Spatial Analysis), "
+        "7. oma (Microbiome Analysis), 8. rnaseq-gene (RNA-seq Gene-Level & DE), 9. tidyomics (Tidyomics Tutorials), "
+        "10. mofa2 (Multi-Omics Factor Analysis), 11. r-for-mass-spectrometry (Mass Spectrometry), 12. metabonaut (Metabolomics). "
+        "Primary authority for canonical workflows, domain packages, and visualization idioms. "
+        "Consult this tool before generating analysis code to ensure standard Bioconductor methodology."
+    )
 )
 def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
     """
     Search curated Bioconductor books for canonical R code snippets and workflow guidance.
-    Optional books: 'osca', 'osta', 'oma', 'r-for-mass-spectrometry', 'metabonaut'.
+    Optional books: 'osca', 'osca-basic', 'osca-advanced', 'scrapbook', 'osta', 'tidy-spatial',
+    'oma', 'rnaseq-gene', 'tidyomics', 'mofa2', 'r-for-mass-spectrometry', 'metabonaut'.
+    Leave empty to search across all 12 books.
     """
     book_filter = book.strip().lower() if book and book.strip() else None
     res = search_bioc_knowledge(query=query, book=book_filter, limit=limit)
@@ -140,6 +159,25 @@ def list_thread_files(thread_id: str = "default") -> list[str]:
             files.append(rel)
     return sorted(files)
 
+def _resolve_project_dir(project_id: str) -> str:
+    """Resolve project directory under /app/projects/{project_id} or /app/projects/users/*/{project_id}."""
+    direct = os.path.join(PROJECTS_DIR, project_id)
+    if os.path.isdir(direct):
+        return direct
+    users_root = os.path.join(PROJECTS_DIR, "users")
+    if os.path.isdir(users_root):
+        for user_dir in os.listdir(users_root):
+            candidate = os.path.join(users_root, user_dir, project_id)
+            if os.path.isdir(candidate):
+                try:
+                    if not os.path.exists(direct) and not os.path.islink(direct):
+                        rel_target = os.path.join("users", user_dir, project_id)
+                        os.symlink(rel_target, direct)
+                except Exception:
+                    pass
+                return candidate
+    return direct
+
 @mcp.tool(
     name="render_quarto_report",
     description="Compile the Quarto website project into HTML for the given project_id. Returns compilation status, stdout, stderr, and the live preview URL."
@@ -149,7 +187,7 @@ def render_quarto_report(project_id: str = "default") -> str:
     Compile the Quarto project at /app/projects/{project_id} into an HTML website.
     """
     import subprocess
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
     if not os.path.exists(os.path.join(project_dir, "_quarto.yml")) and len(qmd_files) == 0:
@@ -213,10 +251,6 @@ This publication-grade report is generated and maintained by OmicsBase.
 ```{{r}}
 #| echo: true
 #| warning: false
-suppressPackageStartupMessages({{
-  library(ggplot2)
-}})
-
 cat("R and Bioconductor runtime initialized.\\n")
 ```
 """)
@@ -295,7 +329,7 @@ app.add_route("/api/knowledge/search", handle_knowledge_search, methods=["GET"])
 async def handle_quarto_render(request: Request):
     import asyncio
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
@@ -329,7 +363,7 @@ app.add_route("/api/projects/{project_id}/render", handle_quarto_render, methods
 # Endpoint for checking project status (report existence, files)
 async def handle_project_status(request: Request):
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     has_site = os.path.exists(os.path.join(project_dir, "_site", "index.html"))
     report_url = f"{BASE_URL}/projects/{project_id}/_site/index.html" if has_site else None
     

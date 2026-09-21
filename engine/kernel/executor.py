@@ -14,7 +14,32 @@ from engine.kernel.note_kernel import (
     EVENTS_FILE_NAME,
 )
 
+import re
+
 logger = logging.getLogger(__name__)
+
+BLOCKED_INSTALL_PATTERNS = re.compile(
+    r"(?:(?:utils::)?install\.packages\s*\(|"
+    r"BiocManager::install\s*\(|"
+    r"remotes::install_\w+\s*\(|"
+    r"devtools::install_\w+\s*\(|"
+    r"pak::(?:pkg_install|pak)\s*\(|"
+    r"pacman::p_(?:load|install)\s*\()",
+    re.IGNORECASE,
+)
+
+
+def check_blocked_package_install(code: str) -> Optional[str]:
+    """Return matching blocked install pattern if found in active code (ignoring comments)."""
+    for line in code.splitlines():
+        clean_line = line.strip()
+        if clean_line.startswith("#"):
+            continue
+        code_part = clean_line.split("#", 1)[0]
+        match = BLOCKED_INSTALL_PATTERNS.search(code_part)
+        if match:
+            return match.group(0).strip(" (")
+    return None
 
 
 def execute_note_cell(
@@ -36,6 +61,27 @@ def execute_note_cell(
     run_dir_rel = os.path.join("runs", f"cell_{cell_id}")
     run_dir_full = os.path.join(thread_dir, run_dir_rel)
     os.makedirs(run_dir_full, exist_ok=True)
+
+    blocked_call = check_blocked_package_install(code)
+    if blocked_call:
+        msg = (
+            f"Dynamic package installation via '{blocked_call}' is disabled in OmicsBase. "
+            "All required analysis packages (754 pre-compiled Bioconductor and CRAN packages) are already built into the container environment. "
+            "If a package is truly missing, report it to the user or administrator instead of attempting runtime installation."
+        )
+        return {
+            "success": False,
+            "error": msg,
+            "stdout": f"[Package Installation Blocked]: {msg}",
+            "markdown": (
+                f"❌ **Package Installation Blocked**\n\n"
+                f"Runtime package installation (`{blocked_call}`) is disabled in OmicsBase.\n\n"
+                f"{msg}"
+            ),
+            "cell_id": cell_id,
+            "engine_run_dir": run_dir_rel,
+            "run_dir": run_dir_rel,
+        }
 
     try:
         handle = ensure_kernel(thread_dir)

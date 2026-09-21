@@ -20,10 +20,14 @@ sudo mkdir -p "${dirs[@]}"
 sudo chown -R "${UID_VALUE}:${GID_VALUE}" "${dirs[@]}"
 sudo chmod -R u+rwX "${dirs[@]}"
 
-# Engine and LibreChat share analysis working copies. Preserve file owners.
-# setgid makes new directories inherit the shared group, including root-created ones.
+# Engine, LibreChat, and OpenHands share analysis working copies.
+# OpenHands v1.x runs as non-root user (uid 10001). Grant full collaborative read/write permissions.
 sudo mkdir -p "$ROOT/projects"
-sudo find "$ROOT/projects" -type d -exec chgrp "$GID_VALUE" {} + -exec chmod g+rws {} +
-sudo find "$ROOT/projects" -type f -exec chgrp "$GID_VALUE" {} + -exec chmod g+rw {} +
+sudo chmod -R a+rwX "$ROOT/projects"
+
+OPENHANDS_DIR="${OPENHANDS_STATE_DIR:-$HOME/.openhands}"
+if [ -d "$OPENHANDS_DIR" ]; then
+  sudo chmod -R a+rwX "$OPENHANDS_DIR"
+fi
 
 echo "Runtime directories prepared."

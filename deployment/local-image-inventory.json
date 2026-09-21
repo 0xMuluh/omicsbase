@@ -1,21 +1,17 @@
 {
   "LibreChat": {
-    "configured_image": "registry.librechat.ai/danny-avila/librechat-dev:latest",
-    "image_id": "sha256:f529e59cb5f2374b9eecfa3f421a42b14a97aba7fc4bd6b194f26d51dc769a95",
-    "repo_digests": [
-      "registry.librechat.ai/danny-avila/librechat-dev@sha256:e7b1cbd605639496a533b92cf4f04bece0f43755e4e68e1dbc631dae126d3484"
-    ]
+    "configured_image": "omicsbase-librechat:12d78909d",
+    "image_id": "sha256:56b7eac3a508b891e7d6b03b4af77e32abbdeeb61c9ba40d67a38613c33ee115",
+    "repo_digests": []
   },
   "omicsbase-engine": {
-    "configured_image": "omicsbase3-engine:dev",
-    "image_id": "sha256:7ff6c3022772d882df9b0f3afee94306fcd75646915e2960066bf4c98e108adf",
+    "configured_image": "omicsbase-engine:dev",
+    "image_id": "sha256:15bbbadfa2cb53da63768487b322a364177d56e18bc18cebdfb78e11a123f851",
     "repo_digests": []
   },
   "openhands-engine": {
-    "configured_image": "ghcr.io/all-hands-ai/openhands@sha256:00968de77a7b36546413e1f3b5c6b4e2c387d19ade54de7926e10f5b3d265fa6",
-    "image_id": "sha256:a77e6e65cb6d4945f04cb1bfa940a895a4447b70884304383becfd4d426db4ab",
-    "repo_digests": [
-      "ghcr.io/all-hands-ai/openhands@sha256:00968de77a7b36546413e1f3b5c6b4e2c387d19ade54de7926e10f5b3d265fa6"
-    ]
+    "configured_image": "omicsbase-openhands:dev",
+    "image_id": "sha256:7835eb5578d5cad067705081a36db7b961aa6396ec320b7d8846ea9d57ac3ef1",
+    "repo_digests": []
   }
 }

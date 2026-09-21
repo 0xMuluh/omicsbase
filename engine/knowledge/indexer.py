@@ -12,13 +12,20 @@ from engine.knowledge.qmd_parser import iter_qmd_files, parse_qmd
 
 BOOKS = [
     {"slug": "osca", "title": "Orchestrating Single-Cell Analysis with Bioconductor"},
+    {"slug": "osca-basic", "title": "Orchestrating Single-Cell Analysis: Basics"},
+    {"slug": "osca-advanced", "title": "Orchestrating Single-Cell Analysis: Advanced"},
     {"slug": "osta", "title": "Orchestrating Spatial Transcriptomics Analysis with Bioconductor"},
     {"slug": "oma", "title": "Orchestrating Microbiome Analysis with Bioconductor"},
+    {"slug": "rnaseq-gene", "title": "RNA-Seq Workflow: Gene-Level Exploratory Analysis & Differential Expression"},
+    {"slug": "tidyomics", "title": "Tidyomics Analysis Tutorials & Workflows"},
+    {"slug": "tidy-spatial", "title": "Workshop Materials for Tidy Spatial Analysis"},
+    {"slug": "mofa2", "title": "Multi-Omics Factor Analysis (MOFA2) Workflows"},
+    {"slug": "scrapbook", "title": "Single-cell RNA-seq analyses with scrapper"},
     {"slug": "r-for-mass-spectrometry", "title": "R for Mass Spectrometry"},
     {"slug": "metabonaut", "title": "Metabonaut (Metabolomics)"},
 ]
 
-def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = False) -> Dict[str, int]:
+def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = False, books: list[dict] = None) -> Dict[str, int]:
     repos_path = Path(repos_dir).resolve()
     db_file = Path(db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -46,8 +53,9 @@ def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = Fa
 
     stats = {}
     total_chunks = 0
+    book_list = books if books is not None else BOOKS
 
-    for book in BOOKS:
+    for book in book_list:
         slug = book["slug"]
         title = book["title"]
         book_repo = repos_path / slug / "stable"

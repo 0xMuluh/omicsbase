@@ -33,6 +33,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gfortran \
     liblapack-dev \
     libglpk-dev \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    libudunits2-dev \
+    libnetcdf-dev \
+    libhdf5-dev \
+    libfftw3-dev \
+    libtiff-dev \
   && rm -rf /var/lib/apt/lists/*
 
 ARG CODEX_VERSION=0.151.0

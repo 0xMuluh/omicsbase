@@ -1,6 +1,4 @@
-# Development checkouts are preserved through upstream patches and additions.
-/librechat/
-/openhands/
+# Projects and environment
 /projects/
 .env
 .env.*

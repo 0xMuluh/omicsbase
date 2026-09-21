@@ -74,7 +74,7 @@ def install(manifest, cache, output):
         os.close(handle)
         temporary = Path(temporary)
         try:
-            stats = build_index(layout, temporary, strict=True)
+            stats = build_index(layout, temporary, strict=True, books=manifest['books'])
             expected = {book['slug'] for book in manifest['books']}
             if set(stats) != expected or any(count <= 0 for count in stats.values()):
                 raise RuntimeError(f'Incomplete knowledge coverage: {stats}')

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/OpenHands/OpenHands.git",
-  "commit": "d39f7ae0e66174c50bdc714304fed4078b5e3b72",
-  "patch_sha256": "bcc97e77a670e6228638071f39c5cd078a03c0fc4670ac8e15280cb063bf5aab",
+  "commit": "a07364828c8f202e7745c6bce3dcef3915ae7ac1",
+  "patch_sha256": "721218ddd506a3a7d641d82b8fbc6b3b715926fb0147b6bea9fe135c2f615439",
   "contract": 1
 }

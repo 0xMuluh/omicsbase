@@ -49,6 +49,17 @@ for (.note_p in .note_attached) tryCatch(
   error = function(e) NULL)
 .note_t_load <- (proc.time() - .note_t0)[['elapsed']]
 
+tryCatch({{
+  .disarm_fn <- function(name) {{
+    function(...) {{
+      stop(paste0("Dynamic package installation via '", name, "' is disabled in OmicsBase. All analysis libraries are pre-compiled into the container."))
+    }}
+  }}
+  if (exists('install.packages', envir = asNamespace('utils'))) {{
+    utils::assignInNamespace('install.packages', .disarm_fn('install.packages'), ns = 'utils')
+  }}
+}}, error = function(e) NULL)
+
 .note_state <- new.env(parent = emptyenv())
 
 .note_log <- function(x) {{ cat(x, file = .note_state$con, sep = ''); invisible(NULL) }}
