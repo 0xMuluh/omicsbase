@@ -28,14 +28,20 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 # Initialize MCP Server for NoteThreads
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
-    instructions="OmicsBase NoteThreads Execution Engine. Provides persistent, in-memory R execution, automatic plot generation, data frame formatting, and grounded Bioconductor knowledge retrieval for downstream bioinformatics."
+    instructions=(
+        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n"
+        "Grounding Rule: For omics analysis and visualization, prioritize the canonical packages, workflows, and plotting functions "
+        "found in the reference knowledge (consult via search_bioc_books). Do not fall back to generic R or basic ggplot2 "
+        "unless the reference knowledge does not cover the methodology or the user expressly requests generic implementations."
+    ),
 )
 
 @mcp.tool(
     name="execute_r_cell",
     description=(
         "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
-        "Automatically captures stdout, renders ggplot2 plots, and formats tables. "
+        "Automatically captures stdout, renders plots, and formats tables. "
+        "Prioritize domain-standard packages and idioms established in the reference knowledge over generic ad-hoc implementations. "
         "CRITICAL: Do NOT attempt to install packages via install.packages(), BiocManager::install(), devtools, remotes, or pak. "
         "All required analysis libraries (754 pre-compiled Bioconductor and CRAN packages) are already built into the environment. "
         "If a package is missing, state that it is unavailable rather than attempting to install it. "
@@ -123,7 +129,8 @@ def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
         "4. scrapbook (Single-Cell with scrapper), 5. osta (Spatial Transcriptomics), 6. tidy-spatial (Tidy Spatial Analysis), "
         "7. oma (Microbiome Analysis), 8. rnaseq-gene (RNA-seq Gene-Level & DE), 9. tidyomics (Tidyomics Tutorials), "
         "10. mofa2 (Multi-Omics Factor Analysis), 11. r-for-mass-spectrometry (Mass Spectrometry), 12. metabonaut (Metabolomics). "
-        "Provides authoritative R code recipes, workflows, and statistical methodology. Use whenever asked how to perform omics tasks or when resolving package errors."
+        "Primary authority for canonical workflows, domain packages, and visualization idioms. "
+        "Consult this tool before generating analysis code to ensure standard Bioconductor methodology."
     )
 )
 def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
@@ -244,10 +251,6 @@ This publication-grade report is generated and maintained by OmicsBase.
 ```{{r}}
 #| echo: true
 #| warning: false
-suppressPackageStartupMessages({{
-  library(ggplot2)
-}})
-
 cat("R and Bioconductor runtime initialized.\\n")
 ```
 """)
