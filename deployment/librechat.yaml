@@ -58,6 +58,7 @@ mcpServers:
   notethreads:
     type: sse
     url: http://engine:8001/sse
+    serverInstructions: true
 
 endpoints:
   custom:
