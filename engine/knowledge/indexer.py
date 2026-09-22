@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -24,6 +25,140 @@ BOOKS = [
     {"slug": "r-for-mass-spectrometry", "title": "R for Mass Spectrometry"},
     {"slug": "metabonaut", "title": "Metabonaut (Metabolomics)"},
 ]
+
+def index_package_docs(
+    json_path: str | Path,
+    db_path: str | Path,
+) -> Dict[str, int]:
+    """Ingest extracted R package documentation and vignettes into bioc_knowledge."""
+    json_file = Path(json_path).resolve()
+    db_file = Path(db_path).resolve()
+
+    if not json_file.exists():
+        raise FileNotFoundError(f"Package docs JSON not found: {json_file}")
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database not found at {db_file}")
+
+    with open(json_file, "r", encoding="utf-8") as f:
+        packages_data = json.load(f)
+
+    conn = sqlite3.connect(str(db_file))
+    cur = conn.cursor()
+
+    stats = {}
+    total_added = 0
+
+    for pkg_data in packages_data:
+        pkg_name = pkg_data["package"]
+        version = pkg_data.get("version", "")
+        pkg_title = pkg_data.get("title", pkg_name)
+        url = pkg_data.get("url", "")
+        license_str = pkg_data.get("license", "")
+        slug = f"pkg:{pkg_name.lower()}"
+        full_title = f"Package: {pkg_name} ({version})"
+
+        # Delete existing entries for this package slug to allow idempotent re-indexing
+        cur.execute("DELETE FROM bioc_knowledge WHERE book_slug = ?", (slug,))
+
+        # Update knowledge_sources table if present
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_sources'").fetchone():
+            meta = {
+                "repository": url,
+                "commit": version,
+                "attribution": f"The authors and maintainers of R package {pkg_name}",
+                "license_statements": [{"path": "DESCRIPTION", "statement": license_str, "url": url}],
+            }
+            cur.execute(
+                "INSERT OR REPLACE INTO knowledge_sources (book_slug, metadata_json) VALUES (?, ?)",
+                (slug, json.dumps(meta)),
+            )
+
+        chunk_count = 0
+
+        # 1. Index function topics
+        for topic in pkg_data.get("topics", []):
+            name = topic.get("name", "")
+            title = topic.get("title", "")
+            aliases = topic.get("aliases", [])
+            prose = topic.get("prose", "").strip()
+            code = topic.get("code", "").strip()
+            rd_file = topic.get("rd_file", f"{name}.Rd")
+
+            aliases_str = ", ".join(aliases) if aliases else name
+            header = f"{name}: {title}\nAliases: {aliases_str}\nPackage: {pkg_name} ({version})"
+
+            content_parts = [header, prose]
+            if code:
+                content_parts.append(f"```r\n{code}\n```")
+            content = "\n\n".join(p for p in content_parts if p).strip()
+
+            heading_path = f"{pkg_name} > {name}"
+            chunk_type = "function_reference" if not code else "function_doc"
+
+            cur.execute(
+                """
+                INSERT INTO bioc_knowledge (
+                    book_slug, book_title, chapter_title, heading_path,
+                    chunk_type, prose, code, content, source_file
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    slug,
+                    full_title,
+                    f"{name}: {title}",
+                    heading_path,
+                    chunk_type,
+                    prose,
+                    code,
+                    content,
+                    f"man/{rd_file}",
+                ),
+            )
+            chunk_count += 1
+
+        # 2. Index vignettes
+        for v in pkg_data.get("vignettes", []):
+            v_path = Path(v["path"])
+            if v_path.exists():
+                try:
+                    text = v_path.read_text(encoding="utf-8", errors="ignore")
+                    doc = parse_qmd(text, relative_path=f"doc/{v['filename']}")
+                    for block in doc.blocks:
+                        content = block.content.strip()
+                        if not content:
+                            continue
+                        heading_str = " > ".join(block.heading_path) if block.heading_path else doc.title
+                        cur.execute(
+                            """
+                            INSERT INTO bioc_knowledge (
+                                book_slug, book_title, chapter_title, heading_path,
+                                chunk_type, prose, code, content, source_file
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                slug,
+                                full_title,
+                                f"Vignette: {doc.title}",
+                                f"{pkg_name} > {heading_str}",
+                                f"vignette_{block.chunk_type}",
+                                block.prose.strip(),
+                                block.code.strip(),
+                                content,
+                                doc.relative_path,
+                            ),
+                        )
+                        chunk_count += 1
+                except Exception as exc:
+                    print(f"  Warning: failed to parse vignette {v_path}: {exc}")
+
+        stats[pkg_name] = chunk_count
+        total_added += chunk_count
+        print(f"Indexed {chunk_count} documentation chunks for {pkg_name} (v{version}).")
+
+    conn.commit()
+    conn.close()
+    print(f"Successfully indexed {total_added} package documentation chunks into {db_file}.")
+    return stats
 
 def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = False, books: list[dict] = None) -> Dict[str, int]:
     repos_path = Path(repos_dir).resolve()

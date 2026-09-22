@@ -54,16 +54,17 @@ def search_bioc_knowledge(
 
     try:
         if book and book.strip():
+            slug_filter = book.strip().lower()
             cur.execute(
                 """
                 SELECT book_slug, book_title, chapter_title, heading_path,
                        chunk_type, prose, code, content, source_file, bm25(bioc_knowledge) as rank
                 FROM bioc_knowledge
-                WHERE bioc_knowledge MATCH ? AND book_slug = ?
+                WHERE bioc_knowledge MATCH ? AND (book_slug = ? OR book_slug = ?)
                 ORDER BY rank
                 LIMIT ?;
                 """,
-                (sanitized, book.strip().lower(), limit),
+                (sanitized, slug_filter, f"pkg:{slug_filter}", limit),
             )
         else:
             cur.execute(
