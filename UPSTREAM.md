@@ -8,8 +8,8 @@ The legacy snapshot/patch system (`upstream/manifest.json`, `changes.patch`, and
 
 | Submodule | Maintained Fork (Tracked in `.gitmodules`) | Branch | Pinned Commit SHA | Upstream Baseline | Upstream Repository |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `librechat/` | `https://github.com/0xMuluh/LibreChat.git` | `omicsbase` | `d86005881` | `12d78909d` | https://github.com/danny-avila/LibreChat |
-| `openhands/` | `https://github.com/0xMuluh/OpenHands.git` | `omicsbase` | `039938f09` | `a07364828` | https://github.com/all-hands-ai/OpenHands |
+| `librechat/` | `https://github.com/0xMuluh/LibreChat.git` | `omicsbase` | `08ea8b3dd` | `86c5884c0` | https://github.com/danny-avila/LibreChat |
+| `openhands/` | `https://github.com/0xMuluh/OpenHands.git` | `omicsbase` | `bd04b195e` | `cf1cc69ff` (`v1.21.0`) | https://github.com/all-hands-ai/OpenHands |
 
 ## Architectural Design
 
