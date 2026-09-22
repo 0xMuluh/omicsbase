@@ -29,10 +29,15 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
     instructions=(
-        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n"
-        "Grounding Rule: For omics analysis and visualization, prioritize the canonical packages, workflows, and plotting functions "
-        "found in the reference knowledge (consult via search_bioc_books). Do not fall back to generic R or basic ggplot2 "
-        "unless the reference knowledge does not cover the methodology or the user expressly requests generic implementations."
+        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n\n"
+        "Grounding Rule 1: The Container Invariant (Ecosystem Integrity)\n"
+        "- In Bioconductor, biological data is encapsulated in S4 containers (TreeSummarizedExperiment, SingleCellExperiment, SummarizedExperiment, SpatialExperiment).\n"
+        "- NEVER dismantle or unpack S4 containers into plain data.frames (via as.data.frame(), tidy(), or manual slot extraction) to build plots with raw ggplot2 boilerplate.\n"
+        "- ALWAYS use the ecosystem's native visualization methods designed for that container class (e.g., scater::plotReducedDim, scater::plotColData, miaViz::plotAbundance, miaViz::plotRowTree).\n"
+        "- If you do not know the canonical container plotting method for the active data class, you MUST call search_bioc_books before generating code.\n\n"
+        "Grounding Rule 2: In-Place Cell Revisions (No Duplicate Cells)\n"
+        "- When a code cell execution fails or produces an error, you MUST fix the code and pass its cell_id to execute_r_cell to update the existing cell in place.\n"
+        "- NEVER omit cell_id when fixing an error. Dumping a new code cell instead of updating the failed cell pollutes the study notebook and is strictly prohibited."
     ),
 )
 
@@ -41,11 +46,12 @@ mcp = MCPServer(
     description=(
         "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
         "Automatically captures stdout, renders plots, and formats tables. "
-        "Prioritize domain-standard packages and idioms established in the reference knowledge over generic ad-hoc implementations. "
+        "CONTAINER INVARIANT: Respect Bioconductor S4 container structures (TreeSummarizedExperiment, SingleCellExperiment, etc.). "
+        "Do NOT unpack container data into dataframes for manual ggplot2 plotting; use domain-standard container visualizers (e.g. plotReducedDim, plotAbundance, plotColData). "
+        "IN-PLACE REVISION: If correcting, refining, or re-running a previous cell that failed or needs updating, you MUST pass its cell ID in 'cell_id' to update that cell in place rather than creating a duplicate. "
         "CRITICAL: Do NOT attempt to install packages via install.packages(), BiocManager::install(), devtools, remotes, or pak. "
         "All required analysis libraries (754 pre-compiled Bioconductor and CRAN packages) are already built into the environment. "
-        "If a package is missing, state that it is unavailable rather than attempting to install it. "
-        "If correcting, refining, or re-running a previous cell that failed or needs updating, pass its cell ID in 'cell_id' to update that cell in place rather than creating a duplicate."
+        "If a package is missing, state that it is unavailable rather than attempting to install it."
     )
 )
 async def execute_r_cell(code: str, thread_id: str = "default", cell_id: str = None) -> str:
@@ -89,6 +95,15 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
             warning = f"\n\nResult could not be saved: {exc}. R has already run; do not rerun automatically."
         meta = (f"<!-- noteCell cellId={saved['cellId']} executionId={saved['executionId']} "
                 f"status={status} -->\n")
+        if status in ("failed", "timed_out"):
+            meta += (
+                f"\n[NoteCell Execution {status.upper()} | cell_id: \"{saved['cellId']}\"]\n"
+                f"ACTION REQUIRED: To fix or retry this cell, you MUST call execute_r_cell with "
+                f"cell_id=\"{saved['cellId']}\" and your corrected code. "
+                f"Do NOT call execute_r_cell without cell_id, as that will dump a duplicate cell into the notebook.\n\n"
+            )
+        else:
+            meta += f"\n[NoteCell cell_id: \"{saved['cellId']}\" | Status: {status}]\n"
     else:
         meta = ""
     return meta + result.get("markdown", "") + warning
