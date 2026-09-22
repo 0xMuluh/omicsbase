@@ -29,9 +29,16 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
     instructions=(
-        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n"
-        "Ecosystem Grounding: Respect Bioconductor S4 containers and prioritize native package visualizers over unpacking assays into generic dataframes.\n"
-        "Cell Updates: Pass cell_id to execute_r_cell when modifying or re-running code to update that cell in place rather than appending a new one."
+        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n\n"
+        "1. Knowledge Grounding (Bioconductor Standard):\n"
+        "- Parametric training memory for bioinformatics packages is often obsolete or deprecated. Do not guess function signatures, arguments, or dataset loaders from memory.\n"
+        "- Consult `search_bioc_books` to look up canonical workflows and package documentation (e.g. 'oma' for microbiome, 'osca' for single-cell, 'osta' for spatial, 'rnaseq-gene' for bulk RNA-seq) before emitting domain analysis code.\n\n"
+        "2. Interactive Notebook Discipline:\n"
+        "- Variables and loaded objects persist in memory across cells. Proceed step-by-step: inspect real data objects (e.g. class(), dim(), colnames(colData()), assayNames()) before writing downstream transformations rather than assuming return structures in large blind blocks.\n\n"
+        "3. Container Integrity & Visualizers:\n"
+        "- Biological data is encapsulated in S4 containers (TreeSummarizedExperiment, SingleCellExperiment, SummarizedExperiment, SpatialExperiment). Do not dismantle containers into generic dataframes; use the ecosystem's native methods and visualizers.\n\n"
+        "4. In-Place Cell Revisions:\n"
+        "- When refining, correcting, or re-running code, pass 'cell_id' to execute_r_cell to update the existing cell in place rather than creating duplicate cells."
     ),
 )
 
