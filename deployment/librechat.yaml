@@ -102,3 +102,19 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "BAI (b.ai)"
+    - name: "Groq"
+      apiKey: "${GROQ_API_KEY}"
+      baseURL: "${GROQ_BASE_URL}"
+      models:
+        default: ["llama-3.3-70b-versatile"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "Groq"
+    - name: "OpenRouter"
+      apiKey: "${OPENROUTER_KEY}"
+      baseURL: "${OPENROUTER_BASE_URL}"
+      models:
+        default: ["meta-llama/llama-3.3-70b-instruct"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenRouter"
