@@ -54,15 +54,15 @@
     {
       "slug": "r-for-mass-spectrometry",
       "title": "R for Mass Spectrometry",
-      "repository": "https://github.com/rformassspectrometry/rformassspectrometry.github.io",
-      "commit": "a7bcd7e2ec078d6d30004ec67928fb7450f574ee",
-      "book_url": "https://www.RforMassSpectrometry.org",
-      "attribution": "The authors and contributors identified in the pinned source repository",
+      "repository": "https://github.com/RforMassSpectrometry/book",
+      "commit": "1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62",
+      "book_url": "https://rformassspectrometry.github.io/book/",
+      "attribution": "Laurent Gatto, Sebastian Gibb, Johannes Rainer",
       "license_statements": [
         {
-          "path": "README.md",
-          "statement": "CC BY-SA (version unspecified)",
-          "url": "https://github.com/rformassspectrometry/rformassspectrometry.github.io/blob/a7bcd7e2ec078d6d30004ec67928fb7450f574ee/README.md"
+          "path": "index.Rmd",
+          "statement": "CC BY-SA 4.0",
+          "url": "https://github.com/RforMassSpectrometry/book/blob/1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62/index.Rmd"
         }
       ]
     },

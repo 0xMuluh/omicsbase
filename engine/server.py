@@ -1,6 +1,8 @@
 import os
 import asyncio
 import fcntl
+import re
+import subprocess
 import urllib.request
 from urllib.parse import quote
 import json
@@ -29,29 +31,42 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
     instructions=(
-        "OmicsBase NoteThreads Execution Engine. Provides persistent in-memory R execution and grounded Bioconductor knowledge retrieval.\n\n"
-        "1. Knowledge Grounding (Bioconductor Standard):\n"
-        "- Parametric training memory for bioinformatics packages is often obsolete or deprecated. Do not guess function signatures, arguments, or dataset loaders from memory.\n"
-        "- Consult `search_bioc_books` to look up canonical workflows and package documentation (e.g. 'oma' for microbiome, 'osca' for single-cell, 'osta' for spatial, 'rnaseq-gene' for bulk RNA-seq) before emitting domain analysis code.\n\n"
-        "2. Interactive Notebook Discipline:\n"
-        "- Variables and loaded objects persist in memory across cells. Proceed step-by-step: inspect real data objects (e.g. class(), dim(), colnames(colData()), assayNames()) before writing downstream transformations rather than assuming return structures in large blind blocks.\n\n"
-        "3. Container Integrity & Visualizers:\n"
-        "- Biological data is encapsulated in S4 containers (TreeSummarizedExperiment, SingleCellExperiment, SummarizedExperiment, SpatialExperiment). Do not dismantle containers into generic dataframes; use the ecosystem's native methods and visualizers.\n\n"
-        "4. In-Place Cell Revisions:\n"
-        "- When refining, correcting, or re-running code, pass 'cell_id' to execute_r_cell to update the existing cell in place rather than creating duplicate cells."
+        "OmicsBase NoteThreads: a persistent R/Bioconductor session per note, with the\n"
+        "curated Bioconductor books and installed-package documentation.\n\n"
+        "Before you write code:\n"
+        "- For a workflow or method, call search_bioc_books.\n"
+        "- For a package function you have not already run successfully in this note,\n"
+        "  call r_help to get the installed version's usage and arguments.\n"
+        "- To find example data, call list_datasets. Use real datasets only.\n\n"
+        "When you run code (execute_r_cell):\n"
+        "- One step per cell, a few lines.\n"
+        "- Only use objects created by earlier successful cells in this note. If unsure,\n"
+        "  check with ls() first.\n"
+        "- Inspect before you transform: class(), dim(), names(colData()), assayNames(),\n"
+        "  reducedDimNames(), rowData columns.\n"
+        "- Keep data in its Bioconductor container (TreeSummarizedExperiment,\n"
+        "  SingleCellExperiment, SpatialExperiment, MultiAssayExperiment) and use the\n"
+        "  ecosystem's functions and plotting packages.\n"
+        "- To fix or redo a cell, pass its cell_id instead of creating a new cell.\n\n"
+        "Rules:\n"
+        "- Never simulate, mock or invent data or results. If the data or a package is\n"
+        "  not available, say so and suggest an installed alternative.\n"
+        "- Do not install packages.\n"
+        "- After an error: read it, look up the function with r_help, fix and re-run\n"
+        "  once. If it fails again, stop and explain.\n"
+        "- Do the step the user asked for, show the result, then stop and suggest the\n"
+        "  next step rather than doing it."
     ),
 )
 
 @mcp.tool(
     name="execute_r_cell",
     description=(
-        "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
-        "Automatically captures stdout, renders plots, and formats tables. "
-        "Prioritize domain-standard Bioconductor packages and container visualizers over unpacking data into generic dataframes. "
-        "Pass 'cell_id' when modifying or re-running a cell to update it in place rather than creating a new cell. "
-        "CRITICAL: Do NOT attempt to install packages via install.packages(), BiocManager::install(), devtools, remotes, or pak. "
-        "All required analysis libraries (754 pre-compiled Bioconductor and CRAN packages) are already built into the environment. "
-        "If a package is missing, state that it is unavailable rather than attempting to install it."
+        "Execute an R code cell in the note's persistent R session. Variables, objects, and loaded libraries stay in memory. "
+        "Captures output, plots, and tables. Keep steps small (a few lines per cell). "
+        "Only reference objects already created in earlier successful cells (or verify with ls()). "
+        "Pass 'cell_id' when editing or re-running a cell to update it in place instead of appending a new cell. "
+        "Do not install packages; suggest an installed alternative if a package is unavailable."
     )
 )
 async def execute_r_cell(code: str, thread_id: str = "default", cell_id: str = None) -> str:
@@ -149,6 +164,123 @@ def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
     book_filter = book.strip().lower() if book and book.strip() else None
     res = search_bioc_knowledge(query=query, book=book_filter, limit=limit)
     return res.get("markdown", "")
+
+
+def _run_r_helper_script(r_code: str, timeout: int = 15) -> str:
+    """Run a fast, isolated R snippet via Rscript and return stdout."""
+    try:
+        res = subprocess.run(
+            ["Rscript", "--vanilla", "-e", r_code],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        out = res.stdout.strip()
+        if not out and res.stderr:
+            err = res.stderr.strip()
+            if res.returncode != 0:
+                return f"Error querying R: {err}"
+        return out or "No output returned."
+    except subprocess.TimeoutExpired:
+        return "R helper query timed out."
+    except Exception as e:
+        return f"Error executing R helper: {str(e)}"
+
+
+@mcp.tool(
+    name="r_help",
+    description=(
+        "Look up canonical documentation (Usage, Arguments, Value, and Examples) for an installed R function or topic. "
+        "Call this before writing code for any unfamiliar package function to verify exact argument names and signatures. "
+        "Runs in a fast, isolated process without adding a visible cell to the note canvas."
+    )
+)
+def r_help(topic: str, package: str = "") -> str:
+    """
+    Look up documentation for an R function/topic from installed packages.
+    Args:
+        topic: Function or topic name (e.g. 'agglomerateByRank', 'DESeq', 'runPCA').
+        package: Optional package name to narrow search (e.g. 'mia', 'DESeq2', 'scater').
+    """
+    topic = topic.strip()
+    package = package.strip()
+    if not re.match(r"^[A-Za-z0-9._]+$", topic):
+        return f"Invalid topic name: '{topic}'. Must contain only letters, numbers, dots, and underscores."
+    if package and not re.match(r"^[A-Za-z0-9._]+$", package):
+        return f"Invalid package name: '{package}'. Must contain only letters, numbers, dots, and underscores."
+
+    r_script = f"""
+    topic <- "{topic}"
+    pkg <- "{package}"
+    
+    if (nzchar(pkg) && length(find.package(pkg, quiet = TRUE)) == 0) {{
+        cat(sprintf("Package '%s' is not installed in the R environment.", pkg))
+        quit(save = "no", status = 0)
+    }}
+    
+    h <- if (nzchar(pkg)) help(topic, package = (pkg)) else help(topic)
+    if (length(h) == 0) {{
+        if (nzchar(pkg)) {{
+            cat(sprintf("Help topic '%s' was not found in package '%s'.", topic, pkg))
+        }} else {{
+            cat(sprintf("Help topic '%s' was not found in any currently installed package.", topic))
+        }}
+        quit(save = "no", status = 0)
+    }}
+    
+    rd <- utils:::.getHelpFile(h)
+    tmp <- tempfile()
+    on.exit(unlink(tmp))
+    tools::Rd2txt(rd, out = tmp, stages = c("build", "render"), options = list(underline_titles = FALSE))
+    txt <- readChar(tmp, file.info(tmp)$size)
+    if (nchar(txt) > 4000) {{
+        txt <- paste0(substr(txt, 1, 3950), "\\n... [documentation truncated to 4000 characters]")
+    }}
+    cat(txt)
+    """
+    return _run_r_helper_script(r_script)
+
+
+@mcp.tool(
+    name="list_datasets",
+    description=(
+        "List all real bundled example datasets available inside an installed R package. "
+        "Use this to find real data (e.g. GlobalPatterns, airway, ZeiselBrainData) instead of inventing or mocking data. "
+        "Runs in a fast, isolated process without adding a visible cell to the note canvas."
+    )
+)
+def list_datasets(package: str) -> str:
+    """
+    List datasets available in an installed package.
+    Args:
+        package: Name of the package (e.g. 'mia', 'scRNAseq', 'airway', 'pasilla').
+    """
+    package = package.strip()
+    if not re.match(r"^[A-Za-z0-9._]+$", package):
+        return f"Invalid package name: '{package}'. Must contain only letters, numbers, dots, and underscores."
+
+    r_script = f"""
+    pkg <- "{package}"
+    if (length(find.package(pkg, quiet = TRUE)) == 0) {{
+        cat(sprintf("Package '%s' is not installed in the R environment.", pkg))
+        quit(save = "no", status = 0)
+    }}
+    
+    d <- data(package = pkg)$results
+    if (is.null(d) || nrow(d) == 0) {{
+        cat(sprintf("Package '%s' has no bundled example datasets.", pkg))
+        quit(save = "no", status = 0)
+    }}
+    
+    lines <- sprintf("- %s: %s", d[, "Item"], d[, "Title"])
+    out <- paste(lines, collapse = "\\n")
+    if (nchar(out) > 4000) {{
+        out <- paste0(substr(out, 1, 3950), "\\n... [dataset list truncated]")
+    }}
+    cat(out)
+    """
+    return _run_r_helper_script(r_script)
+
 
 @mcp.tool(
     name="list_thread_files",

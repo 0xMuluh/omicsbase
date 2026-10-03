@@ -4,7 +4,16 @@ cache: true
 
 interface:
   appTitle: "OmicsBase"
-  customFooter: ""
+  modelSelect: true
+  customFooter: "OmicsBase | University of Turku | [Support](mailto:gtmulu@utu.fi)"
+
+  privacyPolicy:
+    externalUrl: "https://www.utu.fi/en/privacy"
+    openNewTab: true
+
+  termsOfService:
+    externalUrl: "https://www.utu.fi/en/university/it-services"
+    openNewTab: true
 
 fileConfig:
   endpoints:
@@ -58,9 +67,13 @@ mcpServers:
   notethreads:
     type: sse
     url: http://engine:8001/sse
+    timeout: 240000
     serverInstructions: true
 
 endpoints:
+  agents:
+    recursionLimit: 16
+    maxRecursionLimit: 24
   custom:
     - name: "Qwen"
       apiKey: "${DASHSCOPE_API_KEY}"
@@ -82,7 +95,7 @@ endpoints:
       apiKey: "${ZENMUX_API_KEY}"
       baseURL: "${ZENMUX_BASE_URL}"
       models:
-        default: ["glm-5.3-flash"]
+        default: ["glm-5.3-flash", "glm-5.2"]
         fetch: true
       titleConvo: true
       modelDisplayLabel: "ZenMux"
@@ -118,3 +131,120 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "OpenRouter"
+    - name: "OpenCode"
+      apiKey: "${OPENCODE_API_KEY}"
+      baseURL: "${OPENCODE_BASE_URL}"
+      models:
+        default: ["space-bunny-free"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenCode"
+    - name: "APMIX"
+      apiKey: "${APMIX_API_KEY}"
+      baseURL: "${APMIX_BASE_URL}"
+      models:
+        default: ["deepseek-v4-flash-free", "space-bunny-free"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "APMIX"
+    - name: "APMIX-Anthropic"
+      provider: "anthropic"
+      apiKey: "${APMIX_API_KEY}"
+      baseURL: "${APMIX_ANTHROPIC_BASE_URL}"
+      headers:
+        anthropic-version: "2023-06-01"
+      models:
+        default:
+          - "deepseek-v4-flash-free"
+          - "space-bunny-free"
+        fetch: false
+      titleConvo: true
+      modelDisplayLabel: "APMIX (Anthropic)"
+
+modelSpecs:
+  enforce: false
+  prioritize: true
+  list:
+    # --- Recording Models (Highest Reliability) ---
+    - name: "gemini-3.8-flash"
+      label: "Gemini 3.8 Flash"
+      description: "Next-gen Google multimodal reasoning model"
+      default: true
+      preset:
+        endpoint: "google"
+        model: "gemini-3.8-flash"
+      mcpServers:
+        - "notethreads"
+
+    - name: "glm-5.2"
+      label: "GLM-5.2 (ZenMux)"
+      description: "High-capability reasoning and coding model via ZenMux"
+      preset:
+        endpoint: "ZenMux"
+        model: "glm-5.2"
+      mcpServers:
+        - "notethreads"
+
+    - name: "gemini-3.7-flash"
+      label: "Gemini 3.7 Flash"
+      description: "High-speed hybrid reasoning model"
+      preset:
+        endpoint: "google"
+        model: "gemini-3.7-flash"
+      mcpServers:
+        - "notethreads"
+
+    # --- Fast / Free Models ---
+    - name: "apmix-deepseek-flash"
+      label: "DeepSeek V4 Flash (APMIX Free)"
+      description: "High-speed reasoning model with 1M context via APMIX"
+      preset:
+        endpoint: "APMIX"
+        model: "deepseek-v4-flash-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "space-bunny"
+      label: "Space Bunny (Free)"
+      description: "Fast multimodal reasoning with 1M context via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "stealth/space-bunny-alpha"
+      mcpServers:
+        - "notethreads"
+
+    - name: "opencode-space-bunny"
+      label: "Space Bunny (OpenCode)"
+      description: "Fast reasoning model via OpenCode Zen API"
+      preset:
+        endpoint: "OpenCode"
+        model: "space-bunny-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "apmix-space-bunny"
+      label: "Space Bunny (APMIX Free)"
+      description: "Multimodal reasoning with 1M context via APMIX"
+      preset:
+        endpoint: "APMIX"
+        model: "space-bunny-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "nex-mini-free"
+      label: "Nex AGI Mini (Free)"
+      description: "Fast compact reasoning model via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "nex-agi/nex-n2.5-mini:free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "cohere-code-free"
+      label: "Cohere Code (Free)"
+      description: "Code generation and scripting model via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "cohere/north-mini-code:free"
+      mcpServers:
+        - "notethreads"

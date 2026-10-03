@@ -30,10 +30,10 @@ The older internal catalog had inaccurate license labels. This manifest records 
 
 ## R for Mass Spectrometry
 
-- Book: https://www.RforMassSpectrometry.org
-- Source and author/contributor information: https://github.com/rformassspectrometry/rformassspectrometry.github.io/tree/a7bcd7e2ec078d6d30004ec67928fb7450f574ee
-- Pinned revision: `a7bcd7e2ec078d6d30004ec67928fb7450f574ee`
-- CC BY-SA (version unspecified): [source notice in README.md](https://github.com/rformassspectrometry/rformassspectrometry.github.io/blob/a7bcd7e2ec078d6d30004ec67928fb7450f574ee/README.md)
+- Book: https://rformassspectrometry.github.io/book/
+- Source and author/contributor information: https://github.com/RforMassSpectrometry/book/tree/1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62
+- Pinned revision: `1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62`
+- CC BY-SA 4.0: [source notice in index.Rmd](https://github.com/RforMassSpectrometry/book/blob/1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62/index.Rmd)
 
 ## Metabonaut (Metabolomics)
 
@@ -92,4 +92,4 @@ The older internal catalog had inaccurate license labels. This manifest records 
 - Pinned revision: `50af22bc92d8fdc5e3a0fc624a35cea2a0f502ca`
 - MIT: [source notice in LICENSE](https://github.com/tidyomics/tidySpatialWorkshop/blob/50af22bc92d8fdc5e3a0fc624a35cea2a0f502ca/LICENSE)
 
-OMA and Metabonaut book notices include noncommercial terms. R for Mass Spectrometry states CC BY-SA without a version in its README. Preserve the original notices and assess the applicable source terms before redistributing an index or using the material commercially. No prebuilt mixed-license database is published by this change.
+OMA and Metabonaut book notices include noncommercial terms. R for Mass Spectrometry is licensed under CC BY-SA 4.0. Preserve the original notices and assess the applicable source terms before redistributing an index or using the material commercially. No prebuilt mixed-license database is published by this change.

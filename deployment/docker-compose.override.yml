@@ -49,9 +49,12 @@ services:
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - LIBRECHAT_INTERNAL_URL=http://api:3080
+      - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
+      - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
     volumes:
       - ../engine:/app/engine
       - ../projects:/app/projects
+      - engine-cache:/app/cache
     command: ["python3", "-m", "engine.server"]
 
   openhands:
@@ -89,3 +92,7 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       ADMIN_SSO_ENABLED: "${ADMIN_SSO_ENABLED:-true}"
+
+volumes:
+  engine-cache:
+

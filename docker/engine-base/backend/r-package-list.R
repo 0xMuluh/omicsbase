@@ -113,10 +113,12 @@ bioc_packages <- c(
   "phyloseq",
 
   # RNA-Seq & Transcriptomics
+  "airway",
   "apeglm",
   "DESeq2",
   "edgeR",
   "IHW",
+  "pasilla",
   "sva",
   "tximeta",
   "tximport",
@@ -131,10 +133,13 @@ bioc_packages <- c(
   # Single-Cell Transcriptomics (OSCA & Scrapbook)
   "batchelor",
   "bluster",
+  "celldex",
   "DropletUtils",
   "scater",
+  "scDblFinder",
   "scran",
   "scrapper",
+  "scRNAseq",
   "scuttle",
   "sechm",
   "SingleR",
@@ -159,14 +164,21 @@ bioc_packages <- c(
   "STexampleData",
   "VisiumIO",
 
+  # Multi-Omics Factor Analysis
+  "MOFA2",
+  "MOFAdata",
+
   # Mass Spectrometry & Metabolomics (Metabonaut & RforMassSpectrometry)
   "CompoundDb",
+  "faahKO",
   "MetaboAnnotation",
   "MetaboCoreUtils",
   "MsBackendMassbank",
   "MsBackendMetaboLights",
   "MsBackendMgf",
   "MsCoreUtils",
+  "msdata",
+  "MsDataHub",
   "MsExperiment",
   "QFeatures",
   "Spectra",

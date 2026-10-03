@@ -15,11 +15,29 @@ sys.path.insert(0, str(ROOT))
 from engine.knowledge.indexer import index_package_docs
 
 DEFAULT_PACKAGES = [
+    # Lab packages (miaverse / Turku Data Science Group)
     "mia",
     "miaViz",
+    "miaTime",
+    "LimROTS",
+    "microbiome",
+    "microbiomeDataSets",
     "TreeSummarizedExperiment",
-    "SingleCellExperiment",
+    # Core Containers
     "SummarizedExperiment",
+    "MultiAssayExperiment",
+    # Microbiome & Differential Abundance
+    "ANCOMBC",
+    "ALDEx2",
+    "maaslin3",
+    "phyloseq",
+    "curatedMetagenomicData",
+    "dada2",
+    "DirichletMultinomial",
+    "limma",
+    "vegan",
+    # Core Bioconductor
+    "SingleCellExperiment",
     "scater",
     "scran",
     "DESeq2",
