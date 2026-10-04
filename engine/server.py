@@ -3,6 +3,7 @@ import asyncio
 import fcntl
 import re
 import subprocess
+import threading
 import urllib.request
 from urllib.parse import quote
 import json
@@ -46,7 +47,15 @@ mcp = MCPServer(
         "  reducedDimNames(), rowData columns.\n"
         "- Keep data in its Bioconductor container (TreeSummarizedExperiment,\n"
         "  SingleCellExperiment, SpatialExperiment, MultiAssayExperiment) and use the\n"
-        "  ecosystem's functions and plotting packages.\n"
+        "  ecosystem's functions.\n"
+        "- Plot with the ecosystem's plotting functions:\n"
+        "  TreeSummarizedExperiment: miaViz (plotAbundance, plotBoxplot, plotPrevalence,\n"
+        "  plotRowTree, plotSeries, plotDMNFit, plotRDA, plotLoadings);\n"
+        "  reduced dimensions and ordinations: scater::plotReducedDim;\n"
+        "  SingleCellExperiment: scater (plotUMAP, plotExpression, plotColData, plotHeatmap);\n"
+        "  SpatialExperiment: ggspavis (plotSpots, plotVisium, plotSpotQC).\n"
+        "  Use ggplot2 only to adjust a plot these return, or when none of them fits,\n"
+        "  and say so when you do.\n"
         "- To fix or redo a cell, pass its cell_id instead of creating a new cell.\n\n"
         "Rules:\n"
         "- Never simulate, mock or invent data or results. If the data or a package is\n"
@@ -65,6 +74,7 @@ mcp = MCPServer(
         "Execute an R code cell in the note's persistent R session. Variables, objects, and loaded libraries stay in memory. "
         "Captures output, plots, and tables. Keep steps small (a few lines per cell). "
         "Only reference objects already created in earlier successful cells (or verify with ls()). "
+        "Plot with the ecosystem's functions (miaViz, scater, ggspavis) before reaching for ggplot2. "
         "Pass 'cell_id' when editing or re-running a cell to update it in place instead of appending a new cell. "
         "Do not install packages; suggest an installed alternative if a package is unavailable."
     )
@@ -166,6 +176,37 @@ def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
     return res.get("markdown", "")
 
 
+R_LIBRARY_DIRS = ("/usr/local/lib/R/site-library", "/usr/local/lib/R/library")
+_help_index_cache = None
+_help_index_lock = threading.Lock()
+
+
+def _help_index() -> dict:
+    """Map help aliases to the installed packages that document them (read once from help/AnIndex)."""
+    global _help_index_cache
+    with _help_index_lock:
+        if _help_index_cache is None:
+            index = {}
+            for lib in R_LIBRARY_DIRS:
+                if not os.path.isdir(lib):
+                    continue
+                for pkg in os.listdir(lib):
+                    try:
+                        with open(os.path.join(lib, pkg, "help", "AnIndex"), encoding="utf-8", errors="replace") as f:
+                            for line in f:
+                                alias = line.split("\t", 1)[0]
+                                if alias:
+                                    index.setdefault(alias, set()).add(pkg)
+                    except OSError:
+                        continue
+            _help_index_cache = index
+        return _help_index_cache
+
+
+# Build the alias index in the background at startup; reading ~750 indexes from a cold disk takes seconds.
+threading.Thread(target=_help_index, daemon=True).start()
+
+
 def _run_r_helper_script(r_code: str, timeout: int = 15) -> str:
     """Run a fast, isolated R snippet via Rscript and return stdout."""
     try:
@@ -209,25 +250,31 @@ def r_help(topic: str, package: str = "") -> str:
     if package and not re.match(r"^[A-Za-z0-9._]+$", package):
         return f"Invalid package name: '{package}'. Must contain only letters, numbers, dots, and underscores."
 
+    if not package:
+        owners = sorted(_help_index().get(topic, ()))
+        if not owners:
+            return f"Help topic '{topic}' was not found in any installed package."
+        if len(owners) > 1:
+            return (f"Help topic '{topic}' is documented in several installed packages: "
+                    f"{', '.join(owners)}. Call r_help again with the package you mean.")
+        package = owners[0]
+
     r_script = f"""
     topic <- "{topic}"
     pkg <- "{package}"
-    
-    if (nzchar(pkg) && length(find.package(pkg, quiet = TRUE)) == 0) {{
+
+    if (length(find.package(pkg, quiet = TRUE)) == 0) {{
         cat(sprintf("Package '%s' is not installed in the R environment.", pkg))
         quit(save = "no", status = 0)
     }}
-    
-    h <- if (nzchar(pkg)) help(topic, package = (pkg)) else help(topic)
+
+    h <- help(topic, package = (pkg))
     if (length(h) == 0) {{
-        if (nzchar(pkg)) {{
-            cat(sprintf("Help topic '%s' was not found in package '%s'.", topic, pkg))
-        }} else {{
-            cat(sprintf("Help topic '%s' was not found in any currently installed package.", topic))
-        }}
+        cat(sprintf("Help topic '%s' was not found in package '%s'.", topic, pkg))
         quit(save = "no", status = 0)
     }}
-    
+    cat(sprintf("Package: %s\\n\\n", pkg))
+
     rd <- utils:::.getHelpFile(h)
     tmp <- tempfile()
     on.exit(unlink(tmp))
@@ -267,12 +314,31 @@ def list_datasets(package: str) -> str:
     }}
     
     d <- data(package = pkg)$results
-    if (is.null(d) || nrow(d) == 0) {{
+    lines <- if (is.null(d) || nrow(d) == 0) character() else sprintf("- %s: %s", d[, "Item"], d[, "Title"])
+
+    # Experiment-data packages (STexampleData, scRNAseq, imcdatasets, ...) expose datasets as loader functions.
+    views <- packageDescription(pkg)$biocViews
+    if (!is.null(views) && grepl("ExperimentData|ExperimentHub", views)) {{
+        tag <- function(rd, t) unlist(lapply(rd[vapply(rd, function(x) identical(attr(x, "Rd_tag"), t), logical(1))], as.character))
+        title <- character()
+        for (rd in tools::Rd_db(pkg)) {{
+            t <- trimws(gsub("\\\\s+", " ", paste(tag(rd, "\\\\title"), collapse = "")))
+            for (a in tag(rd, "\\\\alias")) title[a] <- t
+        }}
+        # Read exports from NAMESPACE rather than loading the package (hub packages load slowly).
+        ns <- parseNamespaceFile(pkg, dirname(find.package(pkg)))
+        ex <- ns$exports
+        if (length(ns$exportPatterns)) ex <- c(ex, grep(paste(ns$exportPatterns, collapse = "|"), names(title), value = TRUE))
+        # Hub packages that create accessors at load time (createHubAccessors) declare no exports; use their documented aliases.
+        if (!length(ex)) ex <- setdiff(grep("-package$|-class$|-method|^[.]", names(title), value = TRUE, invert = TRUE), pkg)
+        ex <- sort(unique(ex[ex %in% names(title)]))
+        if (length(ex)) lines <- c(lines, sprintf("- %s(): %s", ex, title[ex]))
+    }}
+
+    if (length(lines) == 0) {{
         cat(sprintf("Package '%s' has no bundled example datasets.", pkg))
         quit(save = "no", status = 0)
     }}
-    
-    lines <- sprintf("- %s: %s", d[, "Item"], d[, "Title"])
     out <- paste(lines, collapse = "\\n")
     if (nchar(out) > 4000) {{
         out <- paste0(substr(out, 1, 3950), "\\n... [dataset list truncated]")

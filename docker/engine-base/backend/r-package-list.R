@@ -110,6 +110,11 @@ bioc_packages <- c(
   "miaViz",
   "microbiome",
   "microbiomeDataSets",
+  "HMP16SData",
+  "HMP2Data",
+  "HoloFoodR",
+  "MGnifyR",
+  "MicrobiomeBenchmarkData",
   "phyloseq",
 
   # RNA-Seq & Transcriptomics

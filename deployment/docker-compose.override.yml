@@ -51,6 +51,7 @@ services:
       - LIBRECHAT_INTERNAL_URL=http://api:3080
       - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
       - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
+      - RETICULATE_PYTHON=/usr/bin/python3
     volumes:
       - ../engine:/app/engine
       - ../projects:/app/projects
