@@ -111,7 +111,6 @@ bioc_packages <- c(
   "microbiome",
   "microbiomeDataSets",
   "HMP16SData",
-  "HMP2Data",
   "HoloFoodR",
   "MGnifyR",
   "MicrobiomeBenchmarkData",
