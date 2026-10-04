@@ -81,6 +81,8 @@ cran_packages <- c(
   "TMB",
   "UpSetR",
   "vegan",
+  "metafor",
+  "mikropml",
   "vioplot",
   "yaml"
 )
@@ -105,7 +107,9 @@ bioc_packages <- c(
   "limma",
   "LimROTS",
   "maaslin3",
+  "MMUPHin",
   "mia",
+  "SIAMCAT",
   "miaTime",
   "miaViz",
   "microbiome",
@@ -147,6 +151,8 @@ bioc_packages <- c(
   "scuttle",
   "sechm",
   "SingleR",
+  "slingshot",
+  "TSCAN",
 
   # Spatial Transcriptomics (OSTA)
   "AUCell",
@@ -158,6 +164,7 @@ bioc_packages <- c(
   "imcdatasets",
   "imcRtools",
   "nnSVG",
+  "Voyager",
   "SFEData",
   "SpatialExperiment",
   "SpatialExperimentIO",
