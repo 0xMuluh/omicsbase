@@ -75,7 +75,7 @@ mcpServers:
   notethreads:
     type: sse
     url: http://engine:8001/sse
-    timeout: 240000
+    timeout: 660000
     serverInstructions: true
 
 endpoints:

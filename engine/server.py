@@ -22,6 +22,7 @@ PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
 INTERNAL_SECRET = os.environ.get("OMICSBASE_AUTH_SECRET", "")
 LIBRECHAT_INTERNAL_URL = os.environ.get("LIBRECHAT_INTERNAL_URL", "http://api:3080").rstrip("/")
+CELL_TIMEOUT_SECONDS = 600
 
 # New project files remain writable by the shared project group.
 # prepare_runtime_dirs.sh assigns that group and setgid to existing directories.
@@ -99,7 +100,7 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
     saved = None
     if INTERNAL_SECRET and LIBRECHAT_INTERNAL_URL:
         try:
-            payload = {"code": code, "timeout_seconds": 180}
+            payload = {"code": code, "timeout_seconds": CELL_TIMEOUT_SECONDS}
             if cell_id:
                 payload["cell_id"] = str(cell_id).strip()
             saved = _persist_cell(thread_id, "start", payload)
@@ -107,7 +108,7 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
             return f"Could not save the code cell; R was not executed: {exc}"
 
     try:
-        result = _run_cell(code, thread_id, 180, saved["executionId"] if saved else None)
+        result = _run_cell(code, thread_id, CELL_TIMEOUT_SECONDS, saved["executionId"] if saved else None)
     except Exception as exc:
         result = {"success": False, "error": str(exc), "markdown": f"Execution failed: {exc}"}
     status = ("cancelled" if result.get("cancelled") else "timed_out" if result.get("timed_out")
@@ -488,7 +489,7 @@ async def handle_execute(request: Request):
 
     code = data.get("code", "")
     thread_id = data.get("thread_id", "default")
-    timeout_seconds = int(data.get("timeout_seconds") or 180)
+    timeout_seconds = int(data.get("timeout_seconds") or CELL_TIMEOUT_SECONDS)
     if not code.strip():
         return JSONResponse({"success": False, "error": "Code cannot be empty"}, status_code=400)
 
