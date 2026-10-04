@@ -165,14 +165,14 @@
       "slug": "scrapbook",
       "title": "Single-cell RNA-seq analyses with scrapper",
       "repository": "https://github.com/libscran/scrapbook",
-      "commit": "8d330d15f9cc8a340af13a9a95ee2feb21bcc25a",
+      "commit": "362f100cd92d307d00ddef38c905aa9394fa92aa",
       "book_url": "https://bioconductor.org/books/release/scrapbook/",
       "attribution": "Aaron Lun",
       "license_statements": [
         {
           "path": "LICENSE",
           "statement": "MIT",
-          "url": "https://github.com/libscran/scrapbook/blob/8d330d15f9cc8a340af13a9a95ee2feb21bcc25a/LICENSE"
+          "url": "https://github.com/libscran/scrapbook/blob/362f100cd92d307d00ddef38c905aa9394fa92aa/LICENSE"
         }
       ]
     },

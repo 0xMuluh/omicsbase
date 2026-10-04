@@ -81,9 +81,9 @@ The older internal catalog had inaccurate license labels. This manifest records 
 ## Single-cell RNA-seq Analyses with Scrapper (Scrapbook)
 
 - Book: https://bioconductor.org/books/release/scrapbook/
-- Source and author/contributor information: https://github.com/libscran/scrapbook/tree/8d330d15f9cc8a340af13a9a95ee2feb21bcc25a
-- Pinned revision: `8d330d15f9cc8a340af13a9a95ee2feb21bcc25a`
-- MIT: [source notice in LICENSE](https://github.com/libscran/scrapbook/blob/8d330d15f9cc8a340af13a9a95ee2feb21bcc25a/LICENSE)
+- Source and author/contributor information: https://github.com/libscran/scrapbook/tree/362f100cd92d307d00ddef38c905aa9394fa92aa
+- Pinned revision: `362f100cd92d307d00ddef38c905aa9394fa92aa`
+- MIT: [source notice in LICENSE](https://github.com/libscran/scrapbook/blob/362f100cd92d307d00ddef38c905aa9394fa92aa/LICENSE)
 
 ## Workshop Materials for Tidy Spatial Analysis
 
