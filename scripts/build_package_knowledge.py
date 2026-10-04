@@ -15,32 +15,94 @@ sys.path.insert(0, str(ROOT))
 from engine.knowledge.indexer import index_package_docs
 
 DEFAULT_PACKAGES = [
-    # Lab packages (miaverse / Turku Data Science Group)
+    # Containers
+    "SummarizedExperiment",
+    "TreeSummarizedExperiment",
+    "SingleCellExperiment",
+    "SpatialExperiment",
+    "MultiAssayExperiment",
+    # Microbiome (miaverse and OMA)
     "mia",
     "miaViz",
     "miaTime",
     "LimROTS",
     "microbiome",
-    "microbiomeDataSets",
-    "TreeSummarizedExperiment",
-    # Core Containers
-    "SummarizedExperiment",
-    "MultiAssayExperiment",
-    # Microbiome & Differential Abundance
+    "phyloseq",
+    "biomformat",
+    "ggtree",
+    "vegan",
     "ANCOMBC",
     "ALDEx2",
     "maaslin3",
-    "phyloseq",
-    "curatedMetagenomicData",
-    "dada2",
+    "MMUPHin",
+    "SIAMCAT",
+    "SpiecEasi",
     "DirichletMultinomial",
-    "limma",
-    "vegan",
-    # Core Bioconductor
-    "SingleCellExperiment",
-    "scater",
+    "dada2",
+    # Microbiome data access
+    "curatedMetagenomicData",
+    "microbiomeDataSets",
+    "HMP16SData",
+    "MicrobiomeBenchmarkData",
+    "MGnifyR",
+    "HoloFoodR",
+    # Single-cell (OSCA, Scrapbook)
+    "scrapper",
+    "scuttle",
     "scran",
+    "scater",
+    "bluster",
+    "batchelor",
+    "SingleR",
+    "celldex",
+    "scDblFinder",
+    "TSCAN",
+    "slingshot",
+    "TrajectoryUtils",
+    "tidySingleCellExperiment",
+    "scRNAseq",
+    # Spatial (OSTA)
+    "STexampleData",
+    "ggspavis",
+    "SpotSweeper",
+    "nnSVG",
+    "BayesSpace",
+    "Banksy",
+    "SpatialFeatureExperiment",
+    "Voyager",
+    "SFEData",
+    "hoodscanR",
+    "spicyR",
+    "imcRtools",
+    "cytomapper",
+    "imcdatasets",
+    "tidySpatialExperiment",
+    # Multi-omics
+    "MOFA2",
+    "MOFAdata",
+    # Bulk RNA-seq (rnaseqGene)
     "DESeq2",
+    "edgeR",
+    "limma",
+    "apeglm",
+    "IHW",
+    "sva",
+    "tximeta",
+    "airway",
+    "pasilla",
+    # Mass spectrometry, metabolomics, proteomics
+    "xcms",
+    "MsExperiment",
+    "Spectra",
+    "MsCoreUtils",
+    "MetaboCoreUtils",
+    "MetaboAnnotation",
+    "CompoundDb",
+    "MsDataHub",
+    "faahKO",
+    "QFeatures",
+    "PSMatch",
+    "MSnbase",
 ]
 
 
@@ -83,7 +145,7 @@ def main():
         "packages",
         nargs="*",
         default=DEFAULT_PACKAGES,
-        help="Optional package names to extract (defaults to core 8)",
+        help="Optional package names to extract (defaults to the analysis packages used by the examples)",
     )
 
     args = parser.parse_args()
