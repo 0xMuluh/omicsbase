@@ -82,7 +82,6 @@ cran_packages <- c(
   "UpSetR",
   "vegan",
   "metafor",
-  "mikropml",
   "vioplot",
   "yaml"
 )
