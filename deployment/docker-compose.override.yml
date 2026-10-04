@@ -21,6 +21,7 @@ services:
       - ./api/server/services/Files/process.js:/app/api/server/services/Files/process.js:ro
       - ./api/server/services/NoteCells:/app/api/server/services/NoteCells:ro
       - ../projects:/app/projects:rw
+      - ../certs:/app/certs:ro
       - type: bind
         source: ./librechat.yaml
         target: /app/librechat.yaml

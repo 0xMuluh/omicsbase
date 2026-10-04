@@ -5,6 +5,7 @@
 !.env.example
 *.pem
 *.key
+/certs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
