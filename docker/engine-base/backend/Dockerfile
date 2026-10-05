@@ -58,6 +58,10 @@ COPY backend/r-package-list.R backend/r-packages.R /tmp/
 RUN R_PACKAGE_STAGE=cran Rscript /tmp/r-packages.R
 RUN R_PACKAGE_STAGE=bioc Rscript /tmp/r-packages.R
 RUN R_PACKAGE_STAGE=github Rscript /tmp/r-packages.R && rm /tmp/r-package-list.R /tmp/r-packages.R
+# Later additions, in their own layer so the layers above stay cached.
+COPY backend/r-packages.R /tmp/extra/r-packages.R
+COPY backend/r-package-list-extra.R /tmp/extra/r-package-list.R
+RUN R_PACKAGE_STAGE=all Rscript /tmp/extra/r-packages.R && rm -rf /tmp/extra
 
 COPY backend/requirements.txt /app/requirements.txt
 RUN python3 -m pip install --break-system-packages -r /app/requirements.txt
