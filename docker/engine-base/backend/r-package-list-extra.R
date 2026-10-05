@@ -14,11 +14,13 @@ bioc_packages <- c(
   "HCAData",
   "DropletTestFiles",
   "zellkonverter",
+  "velociraptor",
   # Spatial data
   "TENxVisiumData",
   "MerfishData",
   "OSTA.data",
   "NanoStringNCTools",
+  "Banksy",
   "SPOTlight",
   "spacexr",
   "osfr",
@@ -34,6 +36,8 @@ bioc_packages <- c(
   "ALL",
   "golubEsets",
   "breastCancerVDX",
+  "fgsea",
+  "msigdbr",
   # Multi-omics and cancer data
   "curatedTCGAData",
   "RaggedExperiment",
