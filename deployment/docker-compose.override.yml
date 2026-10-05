@@ -15,6 +15,7 @@ services:
       - ./api/server/controllers/auth/LogoutController.js:/app/api/server/controllers/auth/LogoutController.js:ro
       - ./api/server/routes/projects.js:/app/api/server/routes/projects.js:ro
       - ./api/server/routes/notes.js:/app/api/server/routes/notes.js:ro
+      - ./api/server/middleware/uaParser.js:/app/api/server/middleware/uaParser.js:ro
       - ./api/server/routes/index.js:/app/api/server/routes/index.js:ro
       - ./api/server/index.js:/app/api/server/index.js:ro
       - ./api/server/experimental.js:/app/api/server/experimental.js:ro
