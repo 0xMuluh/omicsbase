@@ -19,8 +19,10 @@ bioc_packages <- c(
   "MerfishData",
   "OSTA.data",
   "NanoStringNCTools",
+  "SPOTlight",
+  "spacexr",
+  "osfr",
   # Bulk RNA-seq data
-  "parathyroidSE",
   "recount3",
   "tximportData",
   "macrophage",
@@ -34,6 +36,8 @@ bioc_packages <- c(
   "breastCancerVDX",
   # Multi-omics and cancer data
   "curatedTCGAData",
+  "RaggedExperiment",
+  "TCGAutils",
   "depmap",
   "CRCL18",
   "mixOmics",
@@ -41,8 +45,16 @@ bioc_packages <- c(
   "scpdata",
   "pRolocdata",
   "RforProteomics",
+  "pRoloc",
+  "scp",
+  "msqrob2",
+  "PSMatch",
+  "MSnbase",
   # Microbiome
-  "lefser"
+  "lefser",
+  # Gene annotation
+  "org.Hs.eg.db",
+  "org.Mm.eg.db"
 )
 
 github_packages <- c(
