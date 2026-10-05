@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -24,8 +25,21 @@ PID_FILE_NAME = "kernel.pid"
 START_LOCK_NAME = "start.lock"
 DONE_PREFIX = "done-"
 KERNEL_LOG_NAME = "kernel.log"
+EXECUTE_LOCK_NAME = "execute.lock"
 POLL_INTERVAL = 0.1
 SHUTDOWN_WAIT_SECONDS = 5.0
+
+# A session idle this long is saved and stopped; its next cell restores it.
+IDLE_SECONDS = int(os.environ.get("NOTE_IDLE_SECONDS", "1200"))
+# Live R sessions at most. A new one first stops the least recently used idle
+# session; if all are busy it waits up to QUEUE_SECONDS for one to free up.
+MAX_SESSIONS = int(os.environ.get("NOTE_MAX_SESSIONS", "8"))
+QUEUE_SECONDS = int(os.environ.get("NOTE_QUEUE_SECONDS", "120"))
+# Time a stopping session gets to save its workspace before it is killed.
+SAVE_WAIT_SECONDS = float(os.environ.get("NOTE_SAVE_WAIT_SECONDS", "120"))
+REAP_INTERVAL_SECONDS = 60
+# Console text one cell may write to disk.
+CONSOLE_MAX_BYTES = int(os.environ.get("NOTE_CONSOLE_MAX_BYTES", str(5_000_000)))
 
 WORKSPACE_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace.RData"
 WORKSPACE_OBJECTS_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace-objects.txt"
@@ -40,8 +54,17 @@ _KERNEL_SCRIPT_TEMPLATE = r"""
 ws <- {ws_rel_q}
 objects_file <- {objects_rel_q}
 defaults <- c({defaults})
-if (file.exists(ws)) tryCatch(load(ws, envir = .GlobalEnv),
-  error = function(e) cat('[note] workspace load failed:', conditionMessage(e), '\n'))
+# Told to the note in its first cell, so a restart is never silent.
+.note_restore_msg <- ''
+if (file.exists(ws)) .note_restore_msg <- tryCatch({{
+  .note_loaded <- load(ws, envir = .GlobalEnv)
+  sprintf('[note] This note\'s R session was restarted; %d saved objects were restored.\n',
+    sum(!startsWith(.note_loaded, '.') & !.note_loaded %in% c('ws', 'objects_file', 'defaults')))
+}}, error = function(e) {{
+  cat('[note] workspace load failed:', conditionMessage(e), '\n')
+  paste0('[note] This note\'s R session was restarted and its saved objects could not be restored: ',
+    conditionMessage(e), '\n')
+}})
 .note_attached <- tryCatch(get('.note_attached_packages', envir = .GlobalEnv),
   error = function(e) character())
 for (.note_p in .note_attached) tryCatch(
@@ -62,7 +85,26 @@ tryCatch({{
 
 .note_state <- new.env(parent = emptyenv())
 
-.note_log <- function(x) {{ cat(x, file = .note_state$con, sep = ''); invisible(NULL) }}
+.note_console_max <- {console_max_bytes}
+# Writes console text up to the per-cell limit and returns what was kept.
+.note_log <- function(x) {{
+  if (.note_state$truncated) return('')
+  x <- paste0(x, collapse = '')
+  room <- .note_console_max - .note_state$bytes
+  if (nchar(x, type = 'bytes') > room) {{
+    x <- paste0(substr(x, 1L, max(0L, room)), sprintf(
+      '\n[output truncated: this cell printed more than %d MB]\n', .note_console_max %/% 1e6))
+    .note_state$truncated <- TRUE
+  }}
+  .note_state$bytes <- .note_state$bytes + nchar(x, type = 'bytes')
+  cat(x, file = .note_state$con, sep = '')
+  x
+}}
+.note_text <- function(x) {{
+  kept <- .note_log(x)
+  if (nzchar(kept)) .note_emit('text', content = kept)
+  invisible(NULL)
+}}
 .note_emit <- function(type, ..., .path = NULL, .rows = NULL, .cols = NULL) {{
   .note_state$seq <- .note_state$seq + 1L
   rec <- c(list(seq = .note_state$seq, type = type), list(...))
@@ -91,6 +133,8 @@ tryCatch({{
   .note_state$seq <- 0L
   .note_state$plots <- 0L
   .note_state$tables <- 0L
+  .note_state$bytes <- 0
+  .note_state$truncated <- FALSE
   .note_state$capture_plots <- {capture_plots}
   .note_state$quiet <- {quiet}
   dir.create(.note_state$plots_dir, showWarnings = FALSE, recursive = TRUE)
@@ -99,6 +143,10 @@ tryCatch({{
   file.create(file.path(run_dir, {events_name_q}))
   .note_state$con <- file(file.path(run_dir, {console_name_q}), open = 'a')
   .note_state$ev_con <- file(file.path(run_dir, {events_name_q}), open = 'a')
+  if (nzchar(.note_restore_msg)) {{
+    .note_log(.note_restore_msg)
+    .note_restore_msg <<- ''
+  }}
   .note_t1 <- proc.time()
   .note_source <- tryCatch({{
     .note_parsed <- parse(text = source)
@@ -114,7 +162,7 @@ tryCatch({{
     }} else {{
       evaluate::evaluate(.note_source, envir = .GlobalEnv, stop_on_error = 0L,
         output_handler = evaluate::new_output_handler(
-          text = function(x) {{ .note_log(x); .note_emit('text', content = x); invisible(NULL) }},
+          text = function(x) .note_text(x),
           message = function(cond) {{
             if (.note_state$quiet && inherits(cond, 'packageStartupMessage')) return(invisible(NULL))
             .note_log(paste0(conditionMessage(cond), '\n'))
@@ -135,10 +183,7 @@ tryCatch({{
             if (is.data.frame(x) && ncol(x) > 0L) {{
               .note_display(x)
             }} else {{
-              rendered <- paste0(capture.output(print(x)), collapse = '\n')
-              .note_log(rendered)
-              .note_log('\n')
-              .note_emit('text', content = paste0(rendered, '\n'))
+              .note_text(paste0(paste0(capture.output(print(x)), collapse = '\n'), '\n'))
             }}
             invisible(NULL)
           }},
@@ -186,7 +231,9 @@ repeat {{
   if (isTRUE(.note_req$shutdown)) {{
     tryCatch({{
       assign('.note_attached_packages', setdiff(.packages(), defaults), envir = .GlobalEnv)
-      save.image(file = ws)
+      # Save beside the old workspace and swap, so an interrupted save keeps the last one.
+      save.image(file = paste0(ws, '.tmp'))
+      file.rename(paste0(ws, '.tmp'), ws)
       dir.create(dirname(objects_file), showWarnings = FALSE, recursive = TRUE)
       writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), objects_file)
     }}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
@@ -221,6 +268,7 @@ def build_kernel_script(
         done_dir_q=q(KERNEL_DIR_REL.as_posix()),
         done_prefix_q=q(DONE_PREFIX),
         poll_interval=POLL_INTERVAL,
+        console_max_bytes=CONSOLE_MAX_BYTES,
     )
 
 
@@ -236,18 +284,25 @@ class KernelDied(Exception):
     pass
 
 
-class KernelHandle:
-    __slots__ = ("project_dir", "pid", "started_at", "last_used")
+class KernelBusy(Exception):
+    pass
 
-    def __init__(self, project_dir: str, pid: int):
+
+class KernelHandle:
+    __slots__ = ("project_dir", "pid", "proc", "started_at", "last_used")
+
+    def __init__(self, project_dir: str, pid: int, proc: subprocess.Popen | None = None):
         now = time.time()
         self.project_dir = project_dir
         self.pid = pid
+        # Set when this process started the kernel; see _alive.
+        self.proc = proc
         self.started_at = now
         self.last_used = now
 
 
 _kernels: dict[str, KernelHandle] = {}
+_registry_lock = threading.Lock()
 
 
 def _kernel_root(project_dir: str) -> Path:
@@ -268,6 +323,14 @@ def _pid_alive(pid: int) -> bool:
         return "R" in cmdline or "Rscript" in cmdline
     except (OSError, IndexError):
         return True
+
+
+def _alive(handle: KernelHandle) -> bool:
+    """Whether the handle's kernel is running. A kernel this process started is asked
+    directly: between fork and exec its command line is not yet Rscript's."""
+    if handle.proc is not None:
+        return handle.proc.poll() is None
+    return _pid_alive(handle.pid)
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -311,12 +374,12 @@ def start_kernel(project_dir: str) -> KernelHandle:
         stderr=subprocess.STDOUT,
     )
     _write_atomic(root / PID_FILE_NAME, str(proc.pid))
-    handle = KernelHandle(project_dir, proc.pid)
+    handle = KernelHandle(project_dir, proc.pid, proc)
     logger.info("note kernel started pid=%s scope=%s", proc.pid, project_dir)
     return handle
 
 
-def ensure_kernel(project_dir: str, ttl_seconds: int = 1800) -> KernelHandle:
+def ensure_kernel(project_dir: str, ttl_seconds: int = IDLE_SECONDS) -> KernelHandle:
     """Return a live kernel for the scope, starting or reusing one."""
     root = _kernel_root(project_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -329,11 +392,11 @@ def ensure_kernel(project_dir: str, ttl_seconds: int = 1800) -> KernelHandle:
         try:
             handle = _kernels.get(project_dir)
             now = time.time()
-            if handle and _pid_alive(handle.pid):
+            if handle and _alive(handle):
                 if now - handle.last_used <= ttl_seconds:
                     handle.last_used = now
                     return handle
-                shutdown_kernel(handle)
+                shutdown_kernel(handle, SAVE_WAIT_SECONDS)
 
             pid_file = root / PID_FILE_NAME
             if pid_file.exists():
@@ -341,14 +404,16 @@ def ensure_kernel(project_dir: str, ttl_seconds: int = 1800) -> KernelHandle:
                     pid = int(pid_file.read_text().strip())
                     if _pid_alive(pid):
                         handle = KernelHandle(project_dir, pid)
-                        _kernels[project_dir] = handle
-                        handle.last_used = now
+                        with _registry_lock:
+                            _kernels[project_dir] = handle
                         return handle
                 except (ValueError, OSError):
                     pass
 
+            _make_room(project_dir)
             handle = start_kernel(project_dir)
-            _kernels[project_dir] = handle
+            with _registry_lock:
+                _kernels[project_dir] = handle
             return handle
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -378,9 +443,11 @@ def request_cell(
             raise KernelCancelled("Cell execution cancelled")
         done = _read_done(root, request_id)
         if done is not None:
+            handle.last_used = time.time()
             return done
-        if not _pid_alive(handle.pid):
-            _kernels.pop(handle.project_dir, None)
+        if not _alive(handle):
+            with _registry_lock:
+                _kernels.pop(handle.project_dir, None)
             raise KernelDied("The R kernel process died")
         time.sleep(POLL_INTERVAL)
 
@@ -388,10 +455,11 @@ def request_cell(
     raise KernelTimeout("Cell execution exceeded its timeout")
 
 
-def shutdown_kernel(handle: KernelHandle) -> None:
+def shutdown_kernel(handle: KernelHandle, wait_seconds: float = SHUTDOWN_WAIT_SECONDS) -> None:
     """Ask the kernel to save its workspace and exit; kill if it lingers."""
-    if not _pid_alive(handle.pid):
-        _kernels.pop(handle.project_dir, None)
+    if not _alive(handle):
+        with _registry_lock:
+            _kernels.pop(handle.project_dir, None)
         return
     root = _kernel_root(handle.project_dir)
     try:
@@ -399,23 +467,126 @@ def shutdown_kernel(handle: KernelHandle) -> None:
             root / REQUEST_FILE_NAME,
             json.dumps({"id": f"shutdown-{int(time.time() * 1000)}", "shutdown": True}),
         )
-        deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
-        while time.monotonic() < deadline and _pid_alive(handle.pid):
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline and _alive(handle):
             time.sleep(POLL_INTERVAL)
     finally:
         kill_kernel(handle)
 
 
 def kill_kernel(handle: KernelHandle) -> None:
-    _kernels.pop(handle.project_dir, None)
-    if not _pid_alive(handle.pid):
+    with _registry_lock:
+        _kernels.pop(handle.project_dir, None)
+    if not _alive(handle):
         return
     try:
         os.kill(handle.pid, 15)
         deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and _pid_alive(handle.pid):
+        while time.monotonic() < deadline and _alive(handle):
             time.sleep(0.05)
-        if _pid_alive(handle.pid):
+        if _alive(handle):
             os.kill(handle.pid, 9)
     except (ProcessLookupError, PermissionError):
         pass
+    if handle.proc is not None:
+        try:
+            handle.proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _try_lock_idle(handle: KernelHandle):
+    """The note's execute lock if no cell is running, else None. Held, no cell can start."""
+    lock = open(_kernel_root(handle.project_dir) / EXECUTE_LOCK_NAME, "a+")
+    import fcntl
+
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        return None
+    return lock
+
+
+def _stop_if_idle(handle: KernelHandle, idle_for: float = 0) -> bool:
+    """Save and stop a session that has no cell running and has been idle long enough."""
+    lock = _try_lock_idle(handle)
+    if lock is None:
+        return False
+    try:
+        if time.time() - handle.last_used < idle_for:
+            return False
+        logger.info(
+            "note kernel stopping pid=%s idle=%ds scope=%s",
+            handle.pid, time.time() - handle.last_used, handle.project_dir,
+        )
+        shutdown_kernel(handle, SAVE_WAIT_SECONDS)
+        return True
+    finally:
+        lock.close()
+
+
+def _live_kernels(exclude: str | None = None) -> list[KernelHandle]:
+    with _registry_lock:
+        handles = list(_kernels.values())
+    live = []
+    for handle in handles:
+        if not _alive(handle):
+            with _registry_lock:
+                if _kernels.get(handle.project_dir) is handle:
+                    _kernels.pop(handle.project_dir)
+        elif handle.project_dir != exclude:
+            live.append(handle)
+    return live
+
+
+def _make_room(project_dir: str) -> None:
+    """Keep live sessions under MAX_SESSIONS, stopping the least recently used idle one."""
+    deadline = time.monotonic() + QUEUE_SECONDS
+    waited = False
+    while True:
+        live = _live_kernels(exclude=project_dir)
+        if len(live) < MAX_SESSIONS:
+            if waited:
+                logger.info("note kernel slot freed for scope=%s", project_dir)
+            return
+        if any(_stop_if_idle(h) for h in sorted(live, key=lambda h: h.last_used)):
+            continue
+        if time.monotonic() >= deadline:
+            raise KernelBusy(
+                f"All {MAX_SESSIONS} R sessions are busy running other notes' cells. "
+                "Try again in a few minutes."
+            )
+        if not waited:
+            logger.warning("note kernel limit reached (%d busy); queueing scope=%s", len(live), project_dir)
+            waited = True
+        time.sleep(1.0)
+
+
+def reap_idle_kernels() -> int:
+    """Stop every session idle for longer than IDLE_SECONDS. Returns how many were stopped."""
+    now = time.time()
+    stopped = 0
+    for handle in _live_kernels():
+        if now - handle.last_used > IDLE_SECONDS and _stop_if_idle(handle, IDLE_SECONDS):
+            stopped += 1
+    return stopped
+
+
+def start_reaper() -> threading.Thread:
+    """Run reap_idle_kernels every REAP_INTERVAL_SECONDS in a daemon thread."""
+
+    def loop() -> None:
+        while True:
+            time.sleep(REAP_INTERVAL_SECONDS)
+            try:
+                reap_idle_kernels()
+            except Exception:
+                logger.exception("note kernel reaper failed")
+
+    thread = threading.Thread(target=loop, name="note-kernel-reaper", daemon=True)
+    thread.start()
+    logger.info(
+        "note kernel reaper started: idle=%ss max_sessions=%s", IDLE_SECONDS, MAX_SESSIONS
+    )
+    return thread

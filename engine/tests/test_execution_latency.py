@@ -60,7 +60,11 @@ class ExecutionLatencyTests(unittest.IsolatedAsyncioTestCase):
                 fail_finish = True
                 result = await server.execute_r_cell('counter <- counter + 1; print(counter)', 'agent')
                 self.assertIn('do not rerun automatically', result)
-                self.assertEqual(len(calls), 4)
+                # The failed save is retried once with a small result so the cell is closed.
+                self.assertEqual(len(calls), 5)
+                self.assertEqual(calls[3][0], calls[4][0])
+                self.assertFalse(calls[4][1]['success'])
+                self.assertNotIn('stdout', calls[4][1])
                 check = await asyncio.to_thread(server._run_cell, 'print(counter)', 'agent', 10)
                 self.assertIn('[1] 2', check['stdout'])
                 self.assertNotIn('[1] 3', check['stdout'])

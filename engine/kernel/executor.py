@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import time
 import uuid
 import pandas as pd
 from typing import Callable, Dict, Any, List, Optional
@@ -8,6 +9,7 @@ from typing import Callable, Dict, Any, List, Optional
 from engine.kernel.note_kernel import (
     ensure_kernel,
     request_cell,
+    KernelBusy,
     KernelCancelled,
     KernelTimeout,
     CONSOLE_FILE_NAME,
@@ -17,6 +19,39 @@ from engine.kernel.note_kernel import (
 import re
 
 logger = logging.getLogger(__name__)
+
+# Console text returned per cell, to the model and to the note: the start and the end.
+OUTPUT_MAX_CHARS = int(os.environ.get("NOTE_OUTPUT_MAX_CHARS", "20000"))
+OUTPUT_TAIL_CHARS = OUTPUT_MAX_CHARS // 5
+# The shortest run a cell still gets after waiting for a free R session.
+MIN_RUN_SECONDS = 30
+
+
+def _size_label(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} MB"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f} KB"
+    return f"{n} bytes"
+
+
+def read_console(path: str, max_chars: int = OUTPUT_MAX_CHARS) -> str:
+    """The cell's console text, or its start and end with a note of what was left out."""
+    if not os.path.exists(path):
+        return ""
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        if size <= max_chars:
+            return f.read().decode("utf-8", errors="replace")
+        tail_chars = min(OUTPUT_TAIL_CHARS, max_chars)
+        head = f.read(max_chars - tail_chars).decode("utf-8", errors="ignore")
+        f.seek(size - tail_chars)
+        tail = f.read().decode("utf-8", errors="ignore")
+    omitted = size - (max_chars - tail_chars) - tail_chars
+    return (
+        f"{head}\n\n[... {_size_label(omitted)} of output omitted. Print a summary, "
+        f"head() or dim() instead of the whole object.]\n\n{tail}"
+    )
 
 BLOCKED_INSTALL_PATTERNS = re.compile(
     r"(?:(?:utils::)?install\.packages\s*\(|"
@@ -84,15 +119,29 @@ def execute_note_cell(
         }
 
     try:
+        started = time.monotonic()
         handle = ensure_kernel(thread_dir)
+        # Time spent waiting for a free session comes out of the cell's own limit,
+        # so the caller's timeout still holds.
+        waited = time.monotonic() - started
         done_payload = request_cell(
             handle,
             request_id=cell_id,
             run_dir_rel=run_dir_rel,
             source=code,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=max(MIN_RUN_SECONDS, int(timeout_seconds - waited)),
             cancel_check=cancel_check,
         )
+    except KernelBusy as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "stdout": f"[Engine Busy]: {str(e)}",
+            "markdown": f"**Engine busy:** {str(e)} R was not run.",
+            "cell_id": cell_id,
+            "engine_run_dir": run_dir_rel,
+            "run_dir": run_dir_rel,
+        }
     except KernelCancelled as e:
         return {
             "success": False,
@@ -126,11 +175,7 @@ def execute_note_cell(
             "run_dir": run_dir_rel,
         }
 
-    console_path = os.path.join(run_dir_full, CONSOLE_FILE_NAME)
-    stdout = ""
-    if os.path.exists(console_path):
-        with open(console_path, "r", errors="ignore") as f:
-            stdout = f.read()
+    stdout = read_console(os.path.join(run_dir_full, CONSOLE_FILE_NAME))
 
     events_path = os.path.join(run_dir_full, EVENTS_FILE_NAME)
     events: List[Dict[str, Any]] = []
@@ -152,6 +197,12 @@ def execute_note_cell(
                 url = f"{base_url}/projects/{thread_id}/{run_dir_rel}/plots/{p}"
                 plot_urls.append(url)
 
+    # Table sizes as R reported them, so a preview never reads a whole table.
+    table_sizes = {
+        os.path.basename(str(event.get("path", ""))): (event.get("rows"), event.get("cols"))
+        for event in events
+        if event.get("type") == "table"
+    }
     tables_dir = os.path.join(run_dir_full, "tables")
     table_previews = []
     if os.path.exists(tables_dir):
@@ -159,20 +210,24 @@ def execute_note_cell(
             if t.endswith(".csv"):
                 t_path = os.path.join(tables_dir, t)
                 try:
-                    df = pd.read_csv(t_path)
+                    df = pd.read_csv(t_path, nrows=10)
+                    n_rows, n_cols = table_sizes.get(t, (None, None))
+                    if n_rows is None:
+                        with open(t_path, "rb") as f:
+                            n_rows = max(0, sum(1 for _ in f) - 1)
                     cols = [str(c) for c in df.columns]
                     header = "| " + " | ".join(cols) + " |"
                     sep = "| " + " | ".join(["---"] * len(cols)) + " |"
                     rows = [
                         "| " + " | ".join(str(val) for val in r) + " |"
-                        for _, r in df.head(10).iterrows()
+                        for _, r in df.iterrows()
                     ]
                     table_md = "\n".join([header, sep] + rows)
                     table_previews.append(
                         {
                             "file": t,
-                            "rows": len(df),
-                            "cols": len(df.columns),
+                            "rows": int(n_rows),
+                            "cols": int(n_cols if n_cols is not None else len(df.columns)),
                             "markdown": table_md,
                             "url": f"{base_url}/projects/{thread_id}/{run_dir_rel}/tables/{t}",
                         }
@@ -194,7 +249,11 @@ def execute_note_cell(
 
     full_markdown = "\n\n".join(md_parts) if md_parts else "(Cell executed with no output)"
 
-    errors = [str(event.get("content", "R execution failed")) for event in events if event.get("type") == "error"]
+    errors = [
+        str(event.get("content", "R execution failed"))[:2000]
+        for event in events
+        if event.get("type") == "error"
+    ][:20]
     return {
         "success": not errors,
         "error": "\n".join(errors) if errors else None,

@@ -16,6 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from engine.kernel.executor import execute_note_cell
+from engine.kernel.note_kernel import start_reaper
 from engine.knowledge.search import search_bioc_knowledge
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
@@ -115,10 +116,23 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
               else "failed" if result.get("success") is False else "completed")
     warning = ""
     if saved:
+        finish = f"finish/{saved['executionId']}"
         try:
-            _persist_cell(thread_id, f"finish/{saved['executionId']}", result)
+            _persist_cell(thread_id, finish, result)
         except Exception as exc:
             warning = f"\n\nResult could not be saved: {exc}. R has already run; do not rerun automatically."
+            # Close the cell with a small result so it is never left running.
+            try:
+                _persist_cell(thread_id, finish, {
+                    "success": False,
+                    "error": f"The result could not be saved: {exc}",
+                    "markdown": f"R ran, but its result could not be saved: {exc}",
+                    "cell_id": result.get("cell_id"),
+                    "engine_run_dir": result.get("engine_run_dir"),
+                })
+                status = "failed"
+            except Exception:
+                pass
         meta = (f"<!-- noteCell cellId={saved['cellId']} executionId={saved['executionId']} "
                 f"status={status} -->\n[cell_id: \"{saved['cellId']}\"]\n")
     else:
@@ -596,4 +610,5 @@ app.mount("/projects", StaticFiles(directory=PROJECTS_DIR, html=True), name="pro
 if __name__ == "__main__":
     import uvicorn
     print("Starting NoteThreads MCP & Execution Server on 0.0.0.0:8001...")
+    start_reaper()
     uvicorn.run(app, host="0.0.0.0", port=8001)
