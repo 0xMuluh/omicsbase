@@ -92,6 +92,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "Qwen (DashScope)"
+      iconURL: "qwen"
     - name: "z.ai"
       apiKey: "${ZAI_API_KEY}"
       baseURL: "${ZAI_BASE_URL}"
@@ -100,6 +101,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "z.ai (GLM)"
+      iconURL: "/assets/providers/zai.svg"
     - name: "ZenMux"
       apiKey: "${ZENMUX_API_KEY}"
       baseURL: "${ZENMUX_BASE_URL}"
@@ -108,6 +110,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "ZenMux"
+      iconURL: "/assets/providers/zenmux.svg"
     - name: "GMI Cloud"
       apiKey: "${GMI_API_KEY}"
       baseURL: "${GMI_BASE_URL}"
@@ -116,6 +119,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "GMI Cloud"
+      iconURL: "/assets/providers/gmi.png"
     - name: "BAI"
       apiKey: "${BAI_API_KEY}"
       baseURL: "${BAI_BASE_URL}"
@@ -124,6 +128,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "BAI (b.ai)"
+      iconURL: "/assets/providers/bai.png"
     - name: "Groq"
       apiKey: "${GROQ_API_KEY}"
       baseURL: "${GROQ_BASE_URL}"
@@ -132,6 +137,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "Groq"
+      iconURL: "groq"
     - name: "OpenRouter"
       apiKey: "${OPENROUTER_KEY}"
       baseURL: "${OPENROUTER_BASE_URL}"
@@ -140,6 +146,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "OpenRouter"
+      iconURL: "openrouter"
     - name: "OpenCode"
       apiKey: "${OPENCODE_API_KEY}"
       baseURL: "${OPENCODE_BASE_URL}"
@@ -148,6 +155,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "OpenCode"
+      iconURL: "/assets/providers/opencode.svg"
     - name: "APMIX"
       apiKey: "${APMIX_API_KEY}"
       baseURL: "${APMIX_BASE_URL}"
@@ -156,6 +164,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "APMIX"
+      iconURL: "/assets/providers/apmix.ico"
     - name: "APMIX-Anthropic"
       provider: "anthropic"
       apiKey: "${APMIX_API_KEY}"
@@ -169,6 +178,7 @@ endpoints:
         fetch: false
       titleConvo: true
       modelDisplayLabel: "APMIX (Anthropic)"
+      iconURL: "anthropic"
 
 modelSpecs:
   enforce: false
@@ -185,8 +195,19 @@ modelSpecs:
       mcpServers:
         - "notethreads"
 
+    - name: "claude-sonnet-4-6-free"
+      label: "Claude Sonnet 4.6 (Free)"
+      description: "Anthropic's Sonnet 4.6 on APMIX's free tier; limits may apply"
+      iconURL: "anthropic"
+      preset:
+        endpoint: "APMIX"
+        model: "claude-sonnet-4-6-free"
+      mcpServers:
+        - "notethreads"
+
     - name: "glm-5.2"
       label: "GLM-5.2 (ZenMux)"
+      iconURL: "/assets/providers/zai.svg"
       description: "High-capability reasoning and coding model via ZenMux"
       preset:
         endpoint: "ZenMux"
@@ -206,6 +227,7 @@ modelSpecs:
     # --- Fast / Free Models ---
     - name: "apmix-deepseek-flash"
       label: "DeepSeek V4 Flash (APMIX Free)"
+      iconURL: "deepseek"
       description: "High-speed reasoning model with 1M context via APMIX"
       preset:
         endpoint: "APMIX"
@@ -215,6 +237,7 @@ modelSpecs:
 
     - name: "space-bunny"
       label: "Space Bunny (Free)"
+      iconURL: "openrouter"
       description: "Fast multimodal reasoning with 1M context via OpenRouter"
       preset:
         endpoint: "OpenRouter"
@@ -224,6 +247,7 @@ modelSpecs:
 
     - name: "opencode-space-bunny"
       label: "Space Bunny (OpenCode)"
+      iconURL: "/assets/providers/opencode.svg"
       description: "Fast reasoning model via OpenCode Zen API"
       preset:
         endpoint: "OpenCode"
@@ -233,6 +257,7 @@ modelSpecs:
 
     - name: "apmix-space-bunny"
       label: "Space Bunny (APMIX Free)"
+      iconURL: "/assets/providers/apmix.ico"
       description: "Multimodal reasoning with 1M context via APMIX"
       preset:
         endpoint: "APMIX"
@@ -242,6 +267,7 @@ modelSpecs:
 
     - name: "nex-mini-free"
       label: "Nex AGI Mini (Free)"
+      iconURL: "openrouter"
       description: "Fast compact reasoning model via OpenRouter"
       preset:
         endpoint: "OpenRouter"
@@ -251,6 +277,7 @@ modelSpecs:
 
     - name: "cohere-code-free"
       label: "Cohere Code (Free)"
+      iconURL: "cohere"
       description: "Code generation and scripting model via OpenRouter"
       preset:
         endpoint: "OpenRouter"
