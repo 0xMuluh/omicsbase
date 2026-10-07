@@ -35,7 +35,9 @@ spec:
       terminationGracePeriodSeconds: 150
       containers:
         - name: engine
-          image: image-registry.apps.2.rahti.csc.fi/omicsbase-utu/omicsbase-engine:rahti
+          # One tag per build: nodes keep a tag they already have, so a reused tag
+          # would keep running the old code.
+          image: image-registry.apps.2.rahti.csc.fi/omicsbase-utu/omicsbase-engine:rahti-09b1c04
           command: ["python3", "-m", "engine.server"]
           ports:
             - containerPort: 8001
