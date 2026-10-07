@@ -1,0 +1,103 @@
+# OmicsBase engine on Rahti: one engine pod, sized for the default project quota
+# (4 cores, 16 GiB), a volume for note folders and caches, and a TLS route that
+# only the OmicsBase VM can reach. The engine secret is created separately:
+#   oc create secret generic omicsbase-engine --from-file=OMICSBASE_AUTH_SECRET=<file>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omicsbase-engine-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 80Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omicsbase-engine
+  labels:
+    app: omicsbase-engine
+spec:
+  replicas: 1
+  # R sessions live in the pod; never run two engines on one volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: omicsbase-engine
+  template:
+    metadata:
+      labels:
+        app: omicsbase-engine
+    spec:
+      containers:
+        - name: engine
+          image: image-registry.apps.2.rahti.csc.fi/omicsbase-utu/omicsbase-engine:rahti
+          command: ["python3", "-m", "engine.server"]
+          ports:
+            - containerPort: 8001
+          env:
+            - name: OMICSBASE_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: omicsbase-engine
+                  key: OMICSBASE_AUTH_SECRET
+            - name: BASE_URL
+              value: https://omicsbase-engine.2.rahtiapp.fi
+            - name: DOMAIN_CLIENT
+              value: https://omicsbase.utu.fi
+            - name: LIBRECHAT_INTERNAL_URL
+              value: https://omicsbase.utu.fi
+            # A 12 GiB limit holds about three live R sessions with data loaded.
+            - name: NOTE_MAX_SESSIONS
+              value: "3"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "3"
+              memory: 12Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: omicsbase-engine-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omicsbase-engine
+spec:
+  selector:
+    app: omicsbase-engine
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: omicsbase-engine
+  annotations:
+    # Only the OmicsBase VM may call the engine.
+    haproxy.router.openshift.io/ip_whitelist: 128.214.252.225
+    haproxy.router.openshift.io/timeout: 700s
+spec:
+  host: omicsbase-engine.2.rahtiapp.fi
+  to:
+    kind: Service
+    name: omicsbase-engine
+  port:
+    targetPort: 8001
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
