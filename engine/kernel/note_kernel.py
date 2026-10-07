@@ -590,3 +590,20 @@ def start_reaper() -> threading.Thread:
         "note kernel reaper started: idle=%ss max_sessions=%s", IDLE_SECONDS, MAX_SESSIONS
     )
     return thread
+
+
+def save_all_kernels(wait_seconds: float = SAVE_WAIT_SECONDS) -> int:
+    """Save and stop every live session at once, so their objects survive an engine
+    restart (for example when Rahti moves or restarts the pod)."""
+    handles = _live_kernels()
+    threads = [
+        threading.Thread(target=shutdown_kernel, args=(handle, wait_seconds), daemon=True)
+        for handle in handles
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(wait_seconds + 10)
+    if handles:
+        logger.info("note kernels saved on engine shutdown: %d", len(handles))
+    return len(handles)

@@ -31,6 +31,8 @@ spec:
       labels:
         app: omicsbase-engine
     spec:
+      # Time for every live R session to save its workspace before the pod is killed.
+      terminationGracePeriodSeconds: 150
       containers:
         - name: engine
           image: image-registry.apps.2.rahti.csc.fi/omicsbase-utu/omicsbase-engine:rahti

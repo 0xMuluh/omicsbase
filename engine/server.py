@@ -1,5 +1,6 @@
 import os
 import asyncio
+import contextlib
 import fcntl
 import re
 import subprocess
@@ -16,7 +17,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from engine.kernel.executor import execute_note_cell
-from engine.kernel.note_kernel import start_reaper
+from engine.kernel.note_kernel import save_all_kernels, start_reaper
 from engine.knowledge.search import search_bioc_knowledge
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
@@ -478,6 +479,21 @@ cat("R and Bioconductor runtime initialized.\\n")
 app = mcp.sse_app(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
 )
+
+# The R sessions are child processes and get no signal of their own when the engine is
+# stopped (e.g. Rahti moving the pod), so save them during the app's shutdown. Exit
+# hooks would be too late: uvicorn re-raises SIGTERM after shutting down.
+_serve_lifespan = app.router.lifespan_context
+
+
+@contextlib.asynccontextmanager
+async def _lifespan_saving_sessions(application):
+    async with _serve_lifespan(application) as state:
+        yield state
+    await asyncio.to_thread(save_all_kernels)
+
+
+app.router.lifespan_context = _lifespan_saving_sessions
 
 from engine.access import ProjectAccess
 app.add_middleware(ProjectAccess)

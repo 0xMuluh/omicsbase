@@ -86,6 +86,17 @@ class KernelLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"DFrame"', result["stdout"])
         self.assertIn("[1] TRUE", result["stdout"])
 
+    async def test_engine_shutdown_saves_every_session(self):
+        await asyncio.to_thread(self.run_cell, "one", "a <- 1")
+        await asyncio.to_thread(self.run_cell, "two", "b <- 2")
+        self.assertEqual(await asyncio.to_thread(note_kernel.save_all_kernels), 2)
+        self.assertNotIn(self.scope("one"), note_kernel._kernels)
+        result = await asyncio.to_thread(self.run_cell, "one", "print(a)")
+        self.assertIn("restored", result["stdout"])
+        self.assertIn("[1] 1", result["stdout"])
+        result = await asyncio.to_thread(self.run_cell, "two", "print(b)")
+        self.assertIn("[1] 2", result["stdout"])
+
     async def test_running_session_is_not_reaped(self):
         running = asyncio.create_task(asyncio.to_thread(self.run_cell, "busy", "Sys.sleep(4); print('done')"))
         await asyncio.sleep(2)
