@@ -25,6 +25,7 @@ from engine.kernel.note_kernel import (
     save_all_kernels, start_reaper,
 )
 from engine.knowledge.search import search_bioc_knowledge
+from engine import note_pods
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
@@ -155,6 +156,11 @@ def _cancel_path(thread_id, execution_id=None):
 
 
 def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
+    if note_pods.ENABLED:
+        # The note's own pod runs the cell, takes the note's lock and sees cancel flags.
+        payload = {"code": code, "thread_id": thread_id, "execution_id": execution_id,
+                   "timeout_seconds": timeout_seconds}
+        return note_pods.run_cell(thread_id, payload, timeout_seconds)
     cancel_path = _cancel_path(thread_id, execution_id)
     if not execution_id:
         Path(cancel_path).unlink(missing_ok=True)
@@ -703,5 +709,8 @@ app.mount("/projects", StaticFiles(directory=PROJECTS_DIR, html=True), name="pro
 if __name__ == "__main__":
     import uvicorn
     print("Starting NoteThreads MCP & Execution Server on 0.0.0.0:8001...")
-    start_reaper()
+    if note_pods.ENABLED:
+        note_pods.start(INTERNAL_SECRET)
+    else:
+        start_reaper()
     uvicorn.run(app, host="0.0.0.0", port=8001)
