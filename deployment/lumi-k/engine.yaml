@@ -40,7 +40,7 @@ spec:
         - name: engine
           # One tag per build: nodes keep a tag they already have, so a reused tag
           # would keep running the old code.
-          image: registry.apps.v1.lumi-k.eu/omicsbase-utu/omicsbase-engine:lumik-09b1c04
+          image: registry.apps.v1.lumi-k.eu/omicsbase-utu/omicsbase-engine:lumik-0794d0d
           command: ["python3", "-m", "engine.server"]
           ports:
             - containerPort: 8001
