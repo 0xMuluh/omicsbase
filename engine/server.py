@@ -2,22 +2,28 @@ import os
 import asyncio
 import contextlib
 import fcntl
+import hmac
 import re
+import shutil
 import subprocess
 import threading
 import urllib.request
+import uuid
 from urllib.parse import quote
 import json
 from pathlib import Path
 from starlette.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.requests import Request
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from engine.kernel.executor import execute_note_cell
-from engine.kernel.note_kernel import save_all_kernels, start_reaper
+from engine.kernel.note_kernel import (
+    DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, START_LOCK_NAME,
+    save_all_kernels, start_reaper,
+)
 from engine.knowledge.search import search_bioc_knowledge
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
@@ -549,6 +555,77 @@ async def handle_cancel(request: Request):
 
 app.add_route("/api/execute", handle_execute, methods=["POST"])
 app.add_route("/api/cancel", handle_cancel, methods=["POST"])
+
+
+# Note files arrive and are copied through the engine, so LibreChat needs no access to
+# the engine's disk (the engine may run on another platform).
+_NOTE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+# A live session's process and lock files; a copied note starts a session of its own.
+_SESSION_RUNTIME_FILES = shutil.ignore_patterns(
+    PID_FILE_NAME, START_LOCK_NAME, EXECUTE_LOCK_NAME, REQUEST_FILE_NAME, f"{DONE_PREFIX}*", "*.flag"
+)
+
+
+def _internal_caller(request: Request) -> bool:
+    provided = request.headers.get("x-internal-secret", "")
+    return bool(INTERNAL_SECRET and provided and hmac.compare_digest(provided, INTERNAL_SECRET))
+
+
+async def handle_put_data_file(request: Request):
+    """Store an uploaded file as data/<filename> in a note. An existing copy is kept.
+
+    HEAD answers 200 or 404, so callers can skip uploading a file the note already has.
+    """
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    thread_id = request.path_params["project_id"]
+    filename = request.path_params["filename"]
+    if not _NOTE_ID.match(thread_id) or os.path.basename(filename) != filename or filename.startswith("."):
+        return JSONResponse({"success": False, "error": "Invalid note or file name"}, status_code=400)
+    data_dir = Path(PROJECTS_DIR) / thread_id / "data"
+    target = data_dir / filename
+    if request.method == "HEAD":
+        return Response(status_code=200 if target.is_file() and not target.is_symlink() else 404)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    partial = data_dir / f".upload-{uuid.uuid4().hex}"
+    try:
+        with open(partial, "wb") as handle:
+            async for chunk in request.stream():
+                handle.write(chunk)
+        try:
+            os.link(partial, target)
+        except FileExistsError:
+            pass
+    finally:
+        partial.unlink(missing_ok=True)
+    if target.is_symlink() or not target.is_file():
+        return JSONResponse({"success": False, "error": "Invalid attachment target"}, status_code=409)
+    return JSONResponse({"success": True, "workspacePath": f"data/{filename}", "bytes": target.stat().st_size})
+
+
+async def handle_copy_note(request: Request):
+    """Copy another note's files into this one, as when a conversation is forked."""
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    try:
+        source_id = (await request.json()).get("source", "")
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+    target_id = request.path_params["project_id"]
+    if not _NOTE_ID.match(target_id) or not _NOTE_ID.match(str(source_id)):
+        return JSONResponse({"success": False, "error": "Invalid note id"}, status_code=400)
+    source = Path(PROJECTS_DIR) / source_id
+    if not source.is_dir():
+        return JSONResponse({"success": True, "copied": False})
+    await asyncio.to_thread(
+        shutil.copytree, source, Path(PROJECTS_DIR) / target_id,
+        ignore=_SESSION_RUNTIME_FILES, symlinks=True, dirs_exist_ok=True,
+    )
+    return JSONResponse({"success": True, "copied": True})
+
+
+app.add_route("/api/projects/{project_id}/data/{filename}", handle_put_data_file, methods=["PUT", "HEAD"])
+app.add_route("/api/projects/{project_id}/copy", handle_copy_note, methods=["POST"])
 
 # Direct HTTP endpoint for frontend knowledge queries
 async def handle_knowledge_search(request: Request):
