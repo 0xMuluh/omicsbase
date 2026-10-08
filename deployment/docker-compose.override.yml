@@ -9,7 +9,8 @@ services:
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:8000
-      - NOTEKERNEL_URL=http://engine:8001
+      # Where notes run: the VM engine (default) or LUMI-K (deployment/lumi-k/engine.yaml).
+      - NOTEKERNEL_URL=${OMICSBASE_ENGINE_URL:-http://engine:8001}
       - PROJECTS_DIR=/app/projects
     volumes:
       - ./api/server/controllers/auth/LogoutController.js:/app/api/server/controllers/auth/LogoutController.js:ro

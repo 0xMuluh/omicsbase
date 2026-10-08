@@ -80,8 +80,9 @@ spec:
                 secretKeyRef:
                   name: omicsbase-engine
                   key: OMICSBASE_AUTH_SECRET
+            # Browsers reach plots through the OmicsBase site, which forwards to this route.
             - name: BASE_URL
-              value: https://omicsbase-engine-omicsbase-utu.apps.lumi-k.eu
+              value: https://omicsbase.utu.fi/omics-engine
             - name: DOMAIN_CLIENT
               value: https://omicsbase.utu.fi
             - name: LIBRECHAT_INTERNAL_URL
@@ -136,7 +137,8 @@ metadata:
   annotations:
     # Only the OmicsBase VM may call the engine.
     haproxy.router.openshift.io/ip_whitelist: 128.214.252.225
-    haproxy.router.openshift.io/timeout: 700s
+    # The chat tool's event stream stays open between cells.
+    haproxy.router.openshift.io/timeout: 3600s
 spec:
   host: omicsbase-engine-omicsbase-utu.apps.lumi-k.eu
   to:

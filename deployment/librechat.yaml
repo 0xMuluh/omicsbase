@@ -64,6 +64,7 @@ fileConfig:
 
 mcpSettings:
   allowedDomains:
+    - 'omicsbase-engine-omicsbase-utu.apps.lumi-k.eu'
     - 'engine'
     - 'http://engine:8001'
     - 'host.docker.internal'
@@ -74,7 +75,8 @@ mcpSettings:
 mcpServers:
   notethreads:
     type: sse
-    url: http://engine:8001/sse
+    # Notes run on LUMI-K; the VM engine (http://engine:8001/sse) is the fallback.
+    url: https://omicsbase-engine-omicsbase-utu.apps.lumi-k.eu/sse
     timeout: 660000
     serverInstructions: true
 
