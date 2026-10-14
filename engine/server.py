@@ -1,24 +1,37 @@
 import os
 import asyncio
+import contextlib
 import fcntl
+import hmac
+import re
+import shutil
+import subprocess
+import threading
 import urllib.request
+import uuid
 from urllib.parse import quote
 import json
 from pathlib import Path
 from starlette.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.requests import Request
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from engine.kernel.executor import execute_note_cell
+from engine.kernel.note_kernel import (
+    DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, START_LOCK_NAME,
+    save_all_kernels, start_reaper,
+)
 from engine.knowledge.search import search_bioc_knowledge
+from engine import note_pods
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
 INTERNAL_SECRET = os.environ.get("OMICSBASE_AUTH_SECRET", "")
 LIBRECHAT_INTERNAL_URL = os.environ.get("LIBRECHAT_INTERNAL_URL", "http://api:3080").rstrip("/")
+CELL_TIMEOUT_SECONDS = 600
 
 # New project files remain writable by the shared project group.
 # prepare_runtime_dirs.sh assigns that group and setgid to existing directories.
@@ -28,15 +41,52 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 # Initialize MCP Server for NoteThreads
 mcp = MCPServer(
     name="OmicsBaseNoteThreads",
-    instructions="OmicsBase NoteThreads Execution Engine. Provides persistent, in-memory R execution, automatic plot generation, data frame formatting, and grounded Bioconductor knowledge retrieval for downstream bioinformatics."
+    instructions=(
+        "OmicsBase NoteThreads: a persistent R/Bioconductor session per note, with the\n"
+        "curated Bioconductor books and installed-package documentation.\n\n"
+        "Before you write code:\n"
+        "- For a workflow or method, call search_bioc_books.\n"
+        "- For a package function you have not already run successfully in this note,\n"
+        "  call r_help to get the installed version's usage and arguments.\n"
+        "- To find example data, call list_datasets. Use real datasets only.\n\n"
+        "When you run code (execute_r_cell):\n"
+        "- One step per cell, a few lines.\n"
+        "- Only use objects created by earlier successful cells in this note. If unsure,\n"
+        "  check with ls() first.\n"
+        "- Inspect before you transform: class(), dim(), names(colData()), assayNames(),\n"
+        "  reducedDimNames(), rowData columns.\n"
+        "- Keep data in its Bioconductor container (TreeSummarizedExperiment,\n"
+        "  SingleCellExperiment, SpatialExperiment, MultiAssayExperiment) and use the\n"
+        "  ecosystem's functions.\n"
+        "- Plot with the ecosystem's plotting functions:\n"
+        "  TreeSummarizedExperiment: miaViz (plotAbundance, plotBoxplot, plotPrevalence,\n"
+        "  plotRowTree, plotSeries, plotDMNFit, plotRDA, plotLoadings);\n"
+        "  reduced dimensions and ordinations: scater::plotReducedDim;\n"
+        "  SingleCellExperiment: scater (plotUMAP, plotExpression, plotColData, plotHeatmap);\n"
+        "  SpatialExperiment: ggspavis (plotSpots, plotVisium, plotSpotQC).\n"
+        "  Use ggplot2 only to adjust a plot these return, or when none of them fits,\n"
+        "  and say so when you do.\n"
+        "- To fix or redo a cell, pass its cell_id instead of creating a new cell.\n\n"
+        "Rules:\n"
+        "- Never simulate, mock or invent data or results. If the data or a package is\n"
+        "  not available, say so and suggest an installed alternative.\n"
+        "- Do not install packages.\n"
+        "- After an error: read it, look up the function with r_help, fix and re-run\n"
+        "  once. If it fails again, stop and explain.\n"
+        "- Do the step the user asked for, show the result, then stop and suggest the\n"
+        "  next step rather than doing it."
+    ),
 )
 
 @mcp.tool(
     name="execute_r_cell",
     description=(
-        "Execute an R code cell in the thread's persistent R kernel. Variables, data objects, and loaded libraries stay in memory across calls. "
-        "Automatically captures stdout, renders ggplot2 plots, and formats tables. "
-        "If correcting, refining, or re-running a previous cell that failed or needs updating, pass its cell ID in 'cell_id' to update that cell in place rather than creating a duplicate."
+        "Execute an R code cell in the note's persistent R session. Variables, objects, and loaded libraries stay in memory. "
+        "Captures output, plots, and tables. Keep steps small (a few lines per cell). "
+        "Only reference objects already created in earlier successful cells (or verify with ls()). "
+        "Plot with the ecosystem's functions (miaViz, scater, ggspavis) before reaching for ggplot2. "
+        "Pass 'cell_id' when editing or re-running a cell to update it in place instead of appending a new cell. "
+        "Do not install packages; suggest an installed alternative if a package is unavailable."
     )
 )
 async def execute_r_cell(code: str, thread_id: str = "default", cell_id: str = None) -> str:
@@ -59,7 +109,7 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
     saved = None
     if INTERNAL_SECRET and LIBRECHAT_INTERNAL_URL:
         try:
-            payload = {"code": code, "timeout_seconds": 180}
+            payload = {"code": code, "timeout_seconds": CELL_TIMEOUT_SECONDS}
             if cell_id:
                 payload["cell_id"] = str(cell_id).strip()
             saved = _persist_cell(thread_id, "start", payload)
@@ -67,19 +117,32 @@ def _execute_agent_cell(code, thread_id, cell_id=None):
             return f"Could not save the code cell; R was not executed: {exc}"
 
     try:
-        result = _run_cell(code, thread_id, 180, saved["executionId"] if saved else None)
+        result = _run_cell(code, thread_id, CELL_TIMEOUT_SECONDS, saved["executionId"] if saved else None)
     except Exception as exc:
         result = {"success": False, "error": str(exc), "markdown": f"Execution failed: {exc}"}
     status = ("cancelled" if result.get("cancelled") else "timed_out" if result.get("timed_out")
               else "failed" if result.get("success") is False else "completed")
     warning = ""
     if saved:
+        finish = f"finish/{saved['executionId']}"
         try:
-            _persist_cell(thread_id, f"finish/{saved['executionId']}", result)
+            _persist_cell(thread_id, finish, result)
         except Exception as exc:
             warning = f"\n\nResult could not be saved: {exc}. R has already run; do not rerun automatically."
+            # Close the cell with a small result so it is never left running.
+            try:
+                _persist_cell(thread_id, finish, {
+                    "success": False,
+                    "error": f"The result could not be saved: {exc}",
+                    "markdown": f"R ran, but its result could not be saved: {exc}",
+                    "cell_id": result.get("cell_id"),
+                    "engine_run_dir": result.get("engine_run_dir"),
+                })
+                status = "failed"
+            except Exception:
+                pass
         meta = (f"<!-- noteCell cellId={saved['cellId']} executionId={saved['executionId']} "
-                f"status={status} -->\n")
+                f"status={status} -->\n[cell_id: \"{saved['cellId']}\"]\n")
     else:
         meta = ""
     return meta + result.get("markdown", "") + warning
@@ -93,6 +156,11 @@ def _cancel_path(thread_id, execution_id=None):
 
 
 def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
+    if note_pods.ENABLED:
+        # The note's own pod runs the cell, takes the note's lock and sees cancel flags.
+        payload = {"code": code, "thread_id": thread_id, "execution_id": execution_id,
+                   "timeout_seconds": timeout_seconds}
+        return note_pods.run_cell(thread_id, payload, timeout_seconds)
     cancel_path = _cancel_path(thread_id, execution_id)
     if not execution_id:
         Path(cancel_path).unlink(missing_ok=True)
@@ -114,16 +182,199 @@ def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
 
 @mcp.tool(
     name="search_bioc_books",
-    description="Search the pinned Bioconductor QMD knowledge index (OSCA single-cell, OSTA spatial, OMA microbiome, Mass Spec, Metabonaut) for authoritative R code recipes, workflows, and statistical methodology. Use whenever asked how to perform omics tasks or when resolving package errors."
+    description=(
+        "Search the pinned Bioconductor QMD knowledge index across 12 curated books: "
+        "1. osca (Single-Cell Analysis), 2. osca-basic (Single-Cell Basics), 3. osca-advanced (Single-Cell Advanced), "
+        "4. scrapbook (Single-Cell with scrapper), 5. osta (Spatial Transcriptomics), 6. tidy-spatial (Tidy Spatial Analysis), "
+        "7. oma (Microbiome Analysis), 8. rnaseq-gene (RNA-seq Gene-Level & DE), 9. tidyomics (Tidyomics Tutorials), "
+        "10. mofa2 (Multi-Omics Factor Analysis), 11. r-for-mass-spectrometry (Mass Spectrometry), 12. metabonaut (Metabolomics). "
+        "Primary authority for canonical workflows, domain packages, and visualization idioms. "
+        "Consult this tool before generating analysis code to ensure standard Bioconductor methodology."
+    )
 )
 def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
     """
     Search curated Bioconductor books for canonical R code snippets and workflow guidance.
-    Optional books: 'osca', 'osta', 'oma', 'r-for-mass-spectrometry', 'metabonaut'.
+    Optional books: 'osca', 'osca-basic', 'osca-advanced', 'scrapbook', 'osta', 'tidy-spatial',
+    'oma', 'rnaseq-gene', 'tidyomics', 'mofa2', 'r-for-mass-spectrometry', 'metabonaut'.
+    Leave empty to search across all 12 books.
     """
     book_filter = book.strip().lower() if book and book.strip() else None
     res = search_bioc_knowledge(query=query, book=book_filter, limit=limit)
     return res.get("markdown", "")
+
+
+R_LIBRARY_DIRS = ("/usr/local/lib/R/site-library", "/usr/local/lib/R/library")
+_help_index_cache = None
+_help_index_lock = threading.Lock()
+
+
+def _help_index() -> dict:
+    """Map help aliases to the installed packages that document them (read once from help/AnIndex)."""
+    global _help_index_cache
+    with _help_index_lock:
+        if _help_index_cache is None:
+            index = {}
+            for lib in R_LIBRARY_DIRS:
+                if not os.path.isdir(lib):
+                    continue
+                for pkg in os.listdir(lib):
+                    try:
+                        with open(os.path.join(lib, pkg, "help", "AnIndex"), encoding="utf-8", errors="replace") as f:
+                            for line in f:
+                                alias = line.split("\t", 1)[0]
+                                if alias:
+                                    index.setdefault(alias, set()).add(pkg)
+                    except OSError:
+                        continue
+            _help_index_cache = index
+        return _help_index_cache
+
+
+# Build the alias index in the background at startup; reading ~750 indexes from a cold disk takes seconds.
+threading.Thread(target=_help_index, daemon=True).start()
+
+
+def _run_r_helper_script(r_code: str, timeout: int = 15) -> str:
+    """Run a fast, isolated R snippet via Rscript and return stdout."""
+    try:
+        res = subprocess.run(
+            ["Rscript", "--vanilla", "-e", r_code],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        out = res.stdout.strip()
+        if not out and res.stderr:
+            err = res.stderr.strip()
+            if res.returncode != 0:
+                return f"Error querying R: {err}"
+        return out or "No output returned."
+    except subprocess.TimeoutExpired:
+        return "R helper query timed out."
+    except Exception as e:
+        return f"Error executing R helper: {str(e)}"
+
+
+@mcp.tool(
+    name="r_help",
+    description=(
+        "Look up canonical documentation (Usage, Arguments, Value, and Examples) for an installed R function or topic. "
+        "Call this before writing code for any unfamiliar package function to verify exact argument names and signatures. "
+        "Runs in a fast, isolated process without adding a visible cell to the note canvas."
+    )
+)
+def r_help(topic: str, package: str = "") -> str:
+    """
+    Look up documentation for an R function/topic from installed packages.
+    Args:
+        topic: Function or topic name (e.g. 'agglomerateByRank', 'DESeq', 'runPCA').
+        package: Optional package name to narrow search (e.g. 'mia', 'DESeq2', 'scater').
+    """
+    topic = topic.strip()
+    package = package.strip()
+    if not re.match(r"^[A-Za-z0-9._]+$", topic):
+        return f"Invalid topic name: '{topic}'. Must contain only letters, numbers, dots, and underscores."
+    if package and not re.match(r"^[A-Za-z0-9._]+$", package):
+        return f"Invalid package name: '{package}'. Must contain only letters, numbers, dots, and underscores."
+
+    if not package:
+        owners = sorted(_help_index().get(topic, ()))
+        if not owners:
+            return f"Help topic '{topic}' was not found in any installed package."
+        if len(owners) > 1:
+            return (f"Help topic '{topic}' is documented in several installed packages: "
+                    f"{', '.join(owners)}. Call r_help again with the package you mean.")
+        package = owners[0]
+
+    r_script = f"""
+    topic <- "{topic}"
+    pkg <- "{package}"
+
+    if (length(find.package(pkg, quiet = TRUE)) == 0) {{
+        cat(sprintf("Package '%s' is not installed in the R environment.", pkg))
+        quit(save = "no", status = 0)
+    }}
+
+    h <- help(topic, package = (pkg))
+    if (length(h) == 0) {{
+        cat(sprintf("Help topic '%s' was not found in package '%s'.", topic, pkg))
+        quit(save = "no", status = 0)
+    }}
+    cat(sprintf("Package: %s\\n\\n", pkg))
+
+    rd <- utils:::.getHelpFile(h)
+    tmp <- tempfile()
+    on.exit(unlink(tmp))
+    tools::Rd2txt(rd, out = tmp, stages = c("build", "render"), options = list(underline_titles = FALSE))
+    txt <- readChar(tmp, file.info(tmp)$size)
+    if (nchar(txt) > 4000) {{
+        txt <- paste0(substr(txt, 1, 3950), "\\n... [documentation truncated to 4000 characters]")
+    }}
+    cat(txt)
+    """
+    return _run_r_helper_script(r_script)
+
+
+@mcp.tool(
+    name="list_datasets",
+    description=(
+        "List all real bundled example datasets available inside an installed R package. "
+        "Use this to find real data (e.g. GlobalPatterns, airway, ZeiselBrainData) instead of inventing or mocking data. "
+        "Runs in a fast, isolated process without adding a visible cell to the note canvas."
+    )
+)
+def list_datasets(package: str) -> str:
+    """
+    List datasets available in an installed package.
+    Args:
+        package: Name of the package (e.g. 'mia', 'scRNAseq', 'airway', 'pasilla').
+    """
+    package = package.strip()
+    if not re.match(r"^[A-Za-z0-9._]+$", package):
+        return f"Invalid package name: '{package}'. Must contain only letters, numbers, dots, and underscores."
+
+    r_script = f"""
+    pkg <- "{package}"
+    if (length(find.package(pkg, quiet = TRUE)) == 0) {{
+        cat(sprintf("Package '%s' is not installed in the R environment.", pkg))
+        quit(save = "no", status = 0)
+    }}
+    
+    d <- data(package = pkg)$results
+    lines <- if (is.null(d) || nrow(d) == 0) character() else sprintf("- %s: %s", d[, "Item"], d[, "Title"])
+
+    # Experiment-data packages (STexampleData, scRNAseq, imcdatasets, ...) expose datasets as loader functions.
+    views <- packageDescription(pkg)$biocViews
+    if (!is.null(views) && grepl("ExperimentData|ExperimentHub", views)) {{
+        tag <- function(rd, t) unlist(lapply(rd[vapply(rd, function(x) identical(attr(x, "Rd_tag"), t), logical(1))], as.character))
+        title <- character()
+        for (rd in tools::Rd_db(pkg)) {{
+            t <- trimws(gsub("\\\\s+", " ", paste(tag(rd, "\\\\title"), collapse = "")))
+            for (a in tag(rd, "\\\\alias")) title[a] <- t
+        }}
+        # Read exports from NAMESPACE rather than loading the package (hub packages load slowly).
+        ns <- parseNamespaceFile(pkg, dirname(find.package(pkg)))
+        ex <- ns$exports
+        if (length(ns$exportPatterns)) ex <- c(ex, grep(paste(ns$exportPatterns, collapse = "|"), names(title), value = TRUE))
+        # Hub packages that create accessors at load time (createHubAccessors) declare no exports; use their documented aliases.
+        if (!length(ex)) ex <- setdiff(grep("-package$|-class$|-method|^[.]", names(title), value = TRUE, invert = TRUE), pkg)
+        ex <- sort(unique(ex[ex %in% names(title)]))
+        if (length(ex)) lines <- c(lines, sprintf("- %s(): %s", ex, title[ex]))
+    }}
+
+    if (length(lines) == 0) {{
+        cat(sprintf("Package '%s' has no bundled example datasets.", pkg))
+        quit(save = "no", status = 0)
+    }}
+    out <- paste(lines, collapse = "\\n")
+    if (nchar(out) > 4000) {{
+        out <- paste0(substr(out, 1, 3950), "\\n... [dataset list truncated]")
+    }}
+    cat(out)
+    """
+    return _run_r_helper_script(r_script)
+
 
 @mcp.tool(
     name="list_thread_files",
@@ -140,6 +391,25 @@ def list_thread_files(thread_id: str = "default") -> list[str]:
             files.append(rel)
     return sorted(files)
 
+def _resolve_project_dir(project_id: str) -> str:
+    """Resolve project directory under /app/projects/{project_id} or /app/projects/users/*/{project_id}."""
+    direct = os.path.join(PROJECTS_DIR, project_id)
+    if os.path.isdir(direct):
+        return direct
+    users_root = os.path.join(PROJECTS_DIR, "users")
+    if os.path.isdir(users_root):
+        for user_dir in os.listdir(users_root):
+            candidate = os.path.join(users_root, user_dir, project_id)
+            if os.path.isdir(candidate):
+                try:
+                    if not os.path.exists(direct) and not os.path.islink(direct):
+                        rel_target = os.path.join("users", user_dir, project_id)
+                        os.symlink(rel_target, direct)
+                except Exception:
+                    pass
+                return candidate
+    return direct
+
 @mcp.tool(
     name="render_quarto_report",
     description="Compile the Quarto website project into HTML for the given project_id. Returns compilation status, stdout, stderr, and the live preview URL."
@@ -149,7 +419,7 @@ def render_quarto_report(project_id: str = "default") -> str:
     Compile the Quarto project at /app/projects/{project_id} into an HTML website.
     """
     import subprocess
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
     if not os.path.exists(os.path.join(project_dir, "_quarto.yml")) and len(qmd_files) == 0:
@@ -213,10 +483,6 @@ This publication-grade report is generated and maintained by OmicsBase.
 ```{{r}}
 #| echo: true
 #| warning: false
-suppressPackageStartupMessages({{
-  library(ggplot2)
-}})
-
 cat("R and Bioconductor runtime initialized.\\n")
 ```
 """)
@@ -225,6 +491,21 @@ cat("R and Bioconductor runtime initialized.\\n")
 app = mcp.sse_app(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
 )
+
+# The R sessions are child processes and get no signal of their own when the engine is
+# stopped (e.g. Rahti moving the pod), so save them during the app's shutdown. Exit
+# hooks would be too late: uvicorn re-raises SIGTERM after shutting down.
+_serve_lifespan = app.router.lifespan_context
+
+
+@contextlib.asynccontextmanager
+async def _lifespan_saving_sessions(application):
+    async with _serve_lifespan(application) as state:
+        yield state
+    await asyncio.to_thread(save_all_kernels)
+
+
+app.router.lifespan_context = _lifespan_saving_sessions
 
 from engine.access import ProjectAccess
 app.add_middleware(ProjectAccess)
@@ -250,7 +531,7 @@ async def handle_execute(request: Request):
 
     code = data.get("code", "")
     thread_id = data.get("thread_id", "default")
-    timeout_seconds = int(data.get("timeout_seconds") or 180)
+    timeout_seconds = int(data.get("timeout_seconds") or CELL_TIMEOUT_SECONDS)
     if not code.strip():
         return JSONResponse({"success": False, "error": "Code cannot be empty"}, status_code=400)
 
@@ -281,6 +562,77 @@ async def handle_cancel(request: Request):
 app.add_route("/api/execute", handle_execute, methods=["POST"])
 app.add_route("/api/cancel", handle_cancel, methods=["POST"])
 
+
+# Note files arrive and are copied through the engine, so LibreChat needs no access to
+# the engine's disk (the engine may run on another platform).
+_NOTE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+# A live session's process and lock files; a copied note starts a session of its own.
+_SESSION_RUNTIME_FILES = shutil.ignore_patterns(
+    PID_FILE_NAME, START_LOCK_NAME, EXECUTE_LOCK_NAME, REQUEST_FILE_NAME, f"{DONE_PREFIX}*", "*.flag"
+)
+
+
+def _internal_caller(request: Request) -> bool:
+    provided = request.headers.get("x-internal-secret", "")
+    return bool(INTERNAL_SECRET and provided and hmac.compare_digest(provided, INTERNAL_SECRET))
+
+
+async def handle_put_data_file(request: Request):
+    """Store an uploaded file as data/<filename> in a note. An existing copy is kept.
+
+    HEAD answers 200 or 404, so callers can skip uploading a file the note already has.
+    """
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    thread_id = request.path_params["project_id"]
+    filename = request.path_params["filename"]
+    if not _NOTE_ID.match(thread_id) or os.path.basename(filename) != filename or filename.startswith("."):
+        return JSONResponse({"success": False, "error": "Invalid note or file name"}, status_code=400)
+    data_dir = Path(PROJECTS_DIR) / thread_id / "data"
+    target = data_dir / filename
+    if request.method == "HEAD":
+        return Response(status_code=200 if target.is_file() and not target.is_symlink() else 404)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    partial = data_dir / f".upload-{uuid.uuid4().hex}"
+    try:
+        with open(partial, "wb") as handle:
+            async for chunk in request.stream():
+                handle.write(chunk)
+        try:
+            os.link(partial, target)
+        except FileExistsError:
+            pass
+    finally:
+        partial.unlink(missing_ok=True)
+    if target.is_symlink() or not target.is_file():
+        return JSONResponse({"success": False, "error": "Invalid attachment target"}, status_code=409)
+    return JSONResponse({"success": True, "workspacePath": f"data/{filename}", "bytes": target.stat().st_size})
+
+
+async def handle_copy_note(request: Request):
+    """Copy another note's files into this one, as when a conversation is forked."""
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    try:
+        source_id = (await request.json()).get("source", "")
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+    target_id = request.path_params["project_id"]
+    if not _NOTE_ID.match(target_id) or not _NOTE_ID.match(str(source_id)):
+        return JSONResponse({"success": False, "error": "Invalid note id"}, status_code=400)
+    source = Path(PROJECTS_DIR) / source_id
+    if not source.is_dir():
+        return JSONResponse({"success": True, "copied": False})
+    await asyncio.to_thread(
+        shutil.copytree, source, Path(PROJECTS_DIR) / target_id,
+        ignore=_SESSION_RUNTIME_FILES, symlinks=True, dirs_exist_ok=True,
+    )
+    return JSONResponse({"success": True, "copied": True})
+
+
+app.add_route("/api/projects/{project_id}/data/{filename}", handle_put_data_file, methods=["PUT", "HEAD"])
+app.add_route("/api/projects/{project_id}/copy", handle_copy_note, methods=["POST"])
+
 # Direct HTTP endpoint for frontend knowledge queries
 async def handle_knowledge_search(request: Request):
     q = request.query_params.get("q", "")
@@ -295,7 +647,7 @@ app.add_route("/api/knowledge/search", handle_knowledge_search, methods=["GET"])
 async def handle_quarto_render(request: Request):
     import asyncio
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     os.makedirs(project_dir, exist_ok=True)
     
     qmd_files = [f for f in os.listdir(project_dir) if f.endswith(".qmd")]
@@ -329,7 +681,7 @@ app.add_route("/api/projects/{project_id}/render", handle_quarto_render, methods
 # Endpoint for checking project status (report existence, files)
 async def handle_project_status(request: Request):
     project_id = request.path_params.get("project_id", "default")
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    project_dir = _resolve_project_dir(project_id)
     has_site = os.path.exists(os.path.join(project_dir, "_site", "index.html"))
     report_url = f"{BASE_URL}/projects/{project_id}/_site/index.html" if has_site else None
     
@@ -357,4 +709,8 @@ app.mount("/projects", StaticFiles(directory=PROJECTS_DIR, html=True), name="pro
 if __name__ == "__main__":
     import uvicorn
     print("Starting NoteThreads MCP & Execution Server on 0.0.0.0:8001...")
+    if note_pods.ENABLED:
+        note_pods.start(INTERNAL_SECRET)
+    else:
+        start_reaper()
     uvicorn.run(app, host="0.0.0.0", port=8001)

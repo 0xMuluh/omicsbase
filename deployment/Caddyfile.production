@@ -36,9 +36,13 @@
             reverse_proxy 127.0.0.1:8001
         }
 
+        # Note plots and tables come from the notes' engine on LUMI-K (fallback:
+        # reverse_proxy 127.0.0.1:8001). Reports' sites stay on the VM engine.
         handle @engine_runs {
             uri strip_prefix /omics-engine
-            reverse_proxy 127.0.0.1:8001
+            reverse_proxy https://omicsbase-engine-omicsbase-utu.apps.lumi-k.eu {
+                header_up Host {upstream_hostport}
+            }
         }
 
 

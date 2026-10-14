@@ -2,15 +2,15 @@
 
 The repository contains the source and image build inputs. It is not a one-command packaged release. A new developer needs Git, Python 3.12+, Docker Engine with Compose/build support, Node.js 24.16 or compatible Node 24, npm, internet access, and their own model-provider credentials. The inherited base build targets Linux amd64 and installs a substantial R/Bioconductor environment. Allow adequate disk, memory, and build time.
 
-## Restore the customized upstream sources
+## Initialize the customized upstream submodules
 
 From the cloned OmicsBase repository:
 
 ```bash
-python3 scripts/restore_upstream.py --in-place
+git submodule update --init --recursive
 ```
 
-This reconstructs `librechat/` and `openhands/` at the saved upstream commits and applies the preserved changes. It refuses to overwrite existing checkouts. Nothing from OB2 or an archived directory is needed.
+This populates `librechat/` and `openhands/` from the maintained forks (`0xMuluh/LibreChat` and `0xMuluh/OpenHands`) at their pinned commit baselines. Nothing from OB2 or an archived directory is needed.
 
 ## Prepare local configuration
 
@@ -66,9 +66,9 @@ The repository-local base and engine builds passed (with available Docker cache)
 
 ## Production image build and host preparation
 
-Restore the pinned customized upstream source trees:
+Initialize or update the pinned customized upstream submodules:
 
-    python3 scripts/restore_upstream.py --in-place
+    git submodule update --init --recursive
 
 Prepare writable host directories:
 
@@ -80,8 +80,7 @@ Build the pinned application images:
     python3 scripts/build_engine.py --context default
     python3 scripts/build_openhands.py --context default
 
-The LibreChat builder derives its image tag from the pinned LibreChat commit in
-`upstream/manifest.json`.
+The LibreChat builder derives its image tag from the pinned submodule commit.
 
 Production deployments require a dedicated shared authentication secret:
 

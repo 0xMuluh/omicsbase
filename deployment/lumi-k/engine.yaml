@@ -1,0 +1,151 @@
+# OmicsBase engine on LUMI-K. The engine pod is a gateway (NOTE_RUNNER=pods): each live
+# note runs in a pod of its own, which the gateway starts from its own pod spec and
+# deletes when the note is idle (engine/note_pods.py). A shared (CephFS) volume holds
+# note folders and caches, and a TLS route lets only the OmicsBase VM in. The image is
+# the Rahti one (deployment/rahti/Dockerfile), which already runs as LUMI-K's random
+# non-root user. The engine secret is created separately:
+#   oc create secret generic omicsbase-engine --from-file=OMICSBASE_AUTH_SECRET=<file>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omicsbase-engine-data
+spec:
+  # ReadWriteMany, so every note pod can open any note's workspace.
+  accessModes: [ReadWriteMany]
+  storageClassName: rook-ceph-fs
+  resources:
+    requests:
+      storage: 100Gi
+---
+# The gateway may start, inspect and delete pods in this project, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omicsbase-engine
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omicsbase-note-pods
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omicsbase-note-pods
+subjects:
+  - kind: ServiceAccount
+    name: omicsbase-engine
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omicsbase-note-pods
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omicsbase-engine
+  labels:
+    app: omicsbase-engine
+spec:
+  replicas: 1
+  # One gateway: it alone decides which note pods run.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: omicsbase-engine
+  template:
+    metadata:
+      labels:
+        app: omicsbase-engine
+    spec:
+      serviceAccountName: omicsbase-engine
+      # Note pods inherit this: time for the R session to save before the pod is killed.
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: engine
+          # One tag per build: nodes keep a tag they already have, so a reused tag
+          # would keep running the old code.
+          image: registry.apps.v1.lumi-k.eu/omicsbase-utu/omicsbase-engine:lumik-pods3
+          command: ["python3", "-m", "engine.server"]
+          ports:
+            - containerPort: 8001
+          env:
+            - name: OMICSBASE_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: omicsbase-engine
+                  key: OMICSBASE_AUTH_SECRET
+            # Browsers reach plots through the OmicsBase site, which forwards to this route.
+            - name: BASE_URL
+              value: https://omicsbase.utu.fi/omics-engine
+            - name: DOMAIN_CLIENT
+              value: https://omicsbase.utu.fi
+            - name: LIBRECHAT_INTERNAL_URL
+              value: https://omicsbase.utu.fi
+            - name: NOTE_RUNNER
+              value: pods
+            # Live note pods at most. Each has a limit of 2 cores and 4 GiB
+            # (NOTE_POD_* in note_pods.py); with the 1-core gateway, five fit the
+            # project's default quota of 12 cores.
+            - name: NOTE_MAX_SESSIONS
+              value: "5"
+            # Room for a stopped note pod to save its session and free its quota.
+            - name: NOTE_QUEUE_SECONDS
+              value: "240"
+          # The gateway runs no notes itself, only the help and search tools.
+          # LUMI-K allows a limit at most 5 times the request.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: omicsbase-engine-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omicsbase-engine
+spec:
+  selector:
+    app: omicsbase-engine
+  ports:
+    - port: 8001
+      targetPort: 8001
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: omicsbase-engine
+  annotations:
+    # Only the OmicsBase VM may call the engine.
+    haproxy.router.openshift.io/ip_whitelist: 128.214.252.225
+    # The chat tool's event stream stays open between cells.
+    haproxy.router.openshift.io/timeout: 3600s
+spec:
+  host: omicsbase-engine-omicsbase-utu.apps.lumi-k.eu
+  to:
+    kind: Service
+    name: omicsbase-engine
+  port:
+    targetPort: 8001
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

@@ -39,11 +39,14 @@ The archive excludes secrets, dependencies, builds, user/project data and the fu
 
 ### Updating upstream
 
-Keep feature logic in the OmicsBase modules and upstream changes limited to imports, adapters and configuration. Run `python3 scripts/snapshot_upstream.py` after editing reconstructed checkouts; only this snapshot is distributed by the outer repository. Review its diff before committing.
+Customizations are maintained in dedicated GitHub forks (`0xMuluh/LibreChat` and `0xMuluh/OpenHands`) tracked as Git submodules on branch `omicsbase`. Keep feature logic in the OmicsBase modules and upstream changes limited to imports, adapters, and configuration.
 
-For LibreChat upgrades, apply the saved patch to the proposed upstream commit in a separate checkout, resolve remaining host-file changes, then run workspace typechecks, the note-service/agent tests and the frontend build before updating the saved baseline. Do not run an unchecked pull on the running deployment.
-
-For the deployed OpenHands version, update the backend digest in `docker/openhands/Dockerfile` and matching source commit in `integrations/openhands/frontend.json` together. Rebase `frontend.patch`, update its SHA-256, and rebuild with `scripts/build_openhands.py`. Run the Python module/identity and HTTP-auth integration tests against that image before recreating the OpenHands service. The separate `upstream/openhands` checkout snapshot is not the source of the deployed 0.59.0 backend.
+For upstream upgrades:
+1. In the submodule directory, fetch upstream tags and merge or rebase the stable release tag onto the `omicsbase` branch.
+2. Run workspace typechecks, integration/contract tests, and UI bundle builds.
+3. Push the tested `omicsbase` branch to the GitHub fork (`origin`).
+4. Update the submodule pointer in the root OmicsBase repository and commit.
+See [UPSTREAM.md](../UPSTREAM.md) for full step-by-step instructions. Do not run an unchecked pull on the running deployment.
 
 This reduces conflict surface and makes failures visible during builds; it does not guarantee conflict-free upstream upgrades. Branding CSS, translations, host UI hooks and copied backend patches still require review when upstream changes those areas. A clean source merge also cannot prove runtime API compatibility.
 

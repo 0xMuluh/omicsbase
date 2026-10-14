@@ -1,0 +1,8 @@
+[submodule "librechat"]
+	path = librechat
+	url = https://github.com/0xMuluh/LibreChat.git
+	branch = omicsbase
+[submodule "openhands"]
+	path = openhands
+	url = https://github.com/0xMuluh/OpenHands.git
+	branch = omicsbase

@@ -1,6 +1,8 @@
 **/__pycache__
 **/*.pyc
 **/*.db
+# The Bioconductor knowledge index ships with the image (search_bioc_books).
+!knowledge/knowledge.db
 **/*.db-*
 **/*.sqlite*
 **/.env*

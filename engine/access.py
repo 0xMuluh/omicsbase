@@ -10,10 +10,12 @@ from starlette.responses import JSONResponse
 
 
 def verify_project(token, project_id):
+    if not token:
+        return False
     try:
         header, payload, signature = token.split('.')
         decode = lambda part: base64.urlsafe_b64decode(part + '=' * (-len(part) % 4))
-        secret = os.environ['OMICSBASE_AUTH_SECRET']
+        secret = os.environ.get('OMICSBASE_AUTH_SECRET', '')
         if not secret:
             return False
         expected = hmac.new(secret.encode(), f'{header}.{payload}'.encode(), hashlib.sha256).digest()
@@ -21,7 +23,7 @@ def verify_project(token, project_id):
             return False
         metadata, claims = json.loads(decode(header)), json.loads(decode(payload))
         return (metadata.get('alg') == 'HS256' and claims.get('aud') == 'omicsbase-openhands'
-                and claims.get('iss') == 'librechat' and claims.get('purpose') == 'project'
+                and claims.get('iss') == 'librechat' and claims.get('purpose') in ('project', 'launch')
                 and claims.get('project_id') == project_id and claims.get('exp', 0) > time.time())
     except (ValueError, KeyError, TypeError, AttributeError):
         return False
@@ -35,11 +37,26 @@ class ProjectAccess(BaseHTTPMiddleware):
             project_id = parts[1]
         elif len(parts) >= 3 and parts[:2] == ['api', 'projects']:
             project_id = parts[2]
+        token = None
         if project_id is not None:
             internal = request.headers.get('x-internal-secret', '')
             secret = os.environ.get('OMICSBASE_AUTH_SECRET', '')
             trusted = bool(secret and internal and hmac.compare_digest(internal, secret))
-            token = request.cookies.get('omicsbase_project_' + project_id, '')
+            token = (
+                request.query_params.get('token')
+                or request.query_params.get('ticket')
+                or request.headers.get('authorization', '').replace('Bearer ', '').strip()
+                or request.cookies.get('omicsbase_project_' + project_id, '')
+            )
             if not trusted and not verify_project(token, project_id):
                 return JSONResponse({'error': 'Project authorization required'}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        if project_id is not None and token and verify_project(token, project_id):
+            response.set_cookie(
+                'omicsbase_project_' + project_id,
+                token,
+                path='/',
+                samesite='lax',
+                httponly=True,
+            )
+        return response

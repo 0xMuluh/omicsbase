@@ -2,12 +2,69 @@ version: 1.2.0
 
 cache: true
 
+balance:
+  enabled: true
+  startBalance: 50000000
+  autoRefillEnabled: true
+  refillIntervalValue: 5
+  refillIntervalUnit: 'hours'
+  refillAmount: 50000000
+
 interface:
   appTitle: "OmicsBase"
-  customFooter: ""
+  modelSelect: true
+  customFooter: "OmicsBase | University of Turku | [Support](mailto:gtmulu@utu.fi)"
+
+  privacyPolicy:
+    externalUrl: "https://www.utu.fi/en/privacy"
+    openNewTab: true
+
+  termsOfService:
+    externalUrl: "https://www.utu.fi/en/university/it-services"
+    openNewTab: true
+
+fileConfig:
+  endpoints:
+    default:
+      supportedMimeTypes:
+        - "image/.*"
+        - "text/.*"
+        - "application/pdf"
+        - "application/json"
+        - "application/xml"
+        - "application/zip"
+        - "application/x-zip-compressed"
+        - "application/x-tar"
+        - "application/gzip"
+        - "application/x-gzip"
+        - "application/x-r-rds"
+        - "application/x-parquet"
+        - "application/vnd.apache.parquet"
+        - "application/x-hdf"
+        - "application/x-hdf5"
+        - "application/octet-stream"
+    custom:
+      supportedMimeTypes:
+        - "image/.*"
+        - "text/.*"
+        - "application/pdf"
+        - "application/json"
+        - "application/xml"
+        - "application/zip"
+        - "application/x-zip-compressed"
+        - "application/x-tar"
+        - "application/gzip"
+        - "application/x-gzip"
+        - "application/x-r-rds"
+        - "application/x-parquet"
+        - "application/vnd.apache.parquet"
+        - "application/x-hdf"
+        - "application/x-hdf5"
+        - "application/octet-stream"
 
 mcpSettings:
   allowedDomains:
+    - 'omicsbase-engine-omicsbase-utu.apps.lumi-k.eu'
     - 'engine'
     - 'http://engine:8001'
     - 'host.docker.internal'
@@ -18,9 +75,16 @@ mcpSettings:
 mcpServers:
   notethreads:
     type: sse
-    url: http://engine:8001/sse
+    # Notes run on LUMI-K; the VM engine (http://engine:8001/sse) is the fallback.
+    url: https://omicsbase-engine-omicsbase-utu.apps.lumi-k.eu/sse
+    timeout: 660000
+    serverInstructions: true
 
 endpoints:
+  agents:
+    # Each tool call uses two graph steps; 24 allows about 11 calls per turn (lookups included).
+    recursionLimit: 24
+    maxRecursionLimit: 30
   custom:
     - name: "Qwen"
       apiKey: "${DASHSCOPE_API_KEY}"
@@ -30,6 +94,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "Qwen (DashScope)"
+      iconURL: "qwen"
     - name: "z.ai"
       apiKey: "${ZAI_API_KEY}"
       baseURL: "${ZAI_BASE_URL}"
@@ -38,14 +103,16 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "z.ai (GLM)"
+      iconURL: "/assets/providers/zai.svg"
     - name: "ZenMux"
       apiKey: "${ZENMUX_API_KEY}"
       baseURL: "${ZENMUX_BASE_URL}"
       models:
-        default: ["glm-5.3-flash"]
+        default: ["glm-5.3-flash", "glm-5.2"]
         fetch: true
       titleConvo: true
       modelDisplayLabel: "ZenMux"
+      iconURL: "/assets/providers/zenmux.svg"
     - name: "GMI Cloud"
       apiKey: "${GMI_API_KEY}"
       baseURL: "${GMI_BASE_URL}"
@@ -54,6 +121,7 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "GMI Cloud"
+      iconURL: "/assets/providers/gmi.png"
     - name: "BAI"
       apiKey: "${BAI_API_KEY}"
       baseURL: "${BAI_BASE_URL}"
@@ -62,3 +130,159 @@ endpoints:
         fetch: true
       titleConvo: true
       modelDisplayLabel: "BAI (b.ai)"
+      iconURL: "/assets/providers/bai.png"
+    - name: "Groq"
+      apiKey: "${GROQ_API_KEY}"
+      baseURL: "${GROQ_BASE_URL}"
+      models:
+        default: ["llama-3.3-70b-versatile"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "Groq"
+      iconURL: "groq"
+    - name: "OpenRouter"
+      apiKey: "${OPENROUTER_KEY}"
+      baseURL: "${OPENROUTER_BASE_URL}"
+      models:
+        default: ["meta-llama/llama-3.3-70b-instruct"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenRouter"
+      iconURL: "openrouter"
+    - name: "OpenCode"
+      apiKey: "${OPENCODE_API_KEY}"
+      baseURL: "${OPENCODE_BASE_URL}"
+      models:
+        default: ["space-bunny-free"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenCode"
+      iconURL: "/assets/providers/opencode.svg"
+    - name: "APMIX"
+      apiKey: "${APMIX_API_KEY}"
+      baseURL: "${APMIX_BASE_URL}"
+      models:
+        default: ["deepseek-v4-flash-free", "space-bunny-free"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "APMIX"
+      iconURL: "/assets/providers/apmix.ico"
+    - name: "APMIX-Anthropic"
+      provider: "anthropic"
+      apiKey: "${APMIX_API_KEY}"
+      baseURL: "${APMIX_ANTHROPIC_BASE_URL}"
+      headers:
+        anthropic-version: "2023-06-01"
+      models:
+        default:
+          - "deepseek-v4-flash-free"
+          - "space-bunny-free"
+        fetch: false
+      titleConvo: true
+      modelDisplayLabel: "APMIX (Anthropic)"
+      iconURL: "anthropic"
+
+modelSpecs:
+  enforce: false
+  prioritize: true
+  list:
+    # --- Recording Models (Highest Reliability) ---
+    - name: "gemini-3.8-flash"
+      label: "Gemini 3.8 Flash"
+      description: "Next-gen Google multimodal reasoning model"
+      default: true
+      preset:
+        endpoint: "google"
+        model: "gemini-3.8-flash"
+      mcpServers:
+        - "notethreads"
+
+    - name: "claude-sonnet-4-6-free"
+      label: "Claude Sonnet 4.6 (Free)"
+      description: "Anthropic's Sonnet 4.6 on APMIX's free tier; limits may apply"
+      iconURL: "anthropic"
+      preset:
+        endpoint: "APMIX"
+        model: "claude-sonnet-4-6-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "glm-5.2"
+      label: "GLM-5.2 (ZenMux)"
+      iconURL: "/assets/providers/zai.svg"
+      description: "High-capability reasoning and coding model via ZenMux"
+      preset:
+        endpoint: "ZenMux"
+        model: "glm-5.2"
+      mcpServers:
+        - "notethreads"
+
+    - name: "gemini-3.7-flash"
+      label: "Gemini 3.7 Flash"
+      description: "High-speed hybrid reasoning model"
+      preset:
+        endpoint: "google"
+        model: "gemini-3.7-flash"
+      mcpServers:
+        - "notethreads"
+
+    # --- Fast / Free Models ---
+    - name: "apmix-deepseek-flash"
+      label: "DeepSeek V4 Flash (APMIX Free)"
+      iconURL: "deepseek"
+      description: "High-speed reasoning model with 1M context via APMIX"
+      preset:
+        endpoint: "APMIX"
+        model: "deepseek-v4-flash-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "space-bunny"
+      label: "Space Bunny (Free)"
+      iconURL: "openrouter"
+      description: "Fast multimodal reasoning with 1M context via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "stealth/space-bunny-alpha"
+      mcpServers:
+        - "notethreads"
+
+    - name: "opencode-space-bunny"
+      label: "Space Bunny (OpenCode)"
+      iconURL: "/assets/providers/opencode.svg"
+      description: "Fast reasoning model via OpenCode Zen API"
+      preset:
+        endpoint: "OpenCode"
+        model: "space-bunny-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "apmix-space-bunny"
+      label: "Space Bunny (APMIX Free)"
+      iconURL: "/assets/providers/apmix.ico"
+      description: "Multimodal reasoning with 1M context via APMIX"
+      preset:
+        endpoint: "APMIX"
+        model: "space-bunny-free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "nex-mini-free"
+      label: "Nex AGI Mini (Free)"
+      iconURL: "openrouter"
+      description: "Fast compact reasoning model via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "nex-agi/nex-n2.5-mini:free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "cohere-code-free"
+      label: "Cohere Code (Free)"
+      iconURL: "cohere"
+      description: "Code generation and scripting model via OpenRouter"
+      preset:
+        endpoint: "OpenRouter"
+        model: "cohere/north-mini-code:free"
+      mcpServers:
+        - "notethreads"
