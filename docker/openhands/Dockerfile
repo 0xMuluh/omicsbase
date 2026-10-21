@@ -12,17 +12,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install OpenHands Agent Server, Automation, Tools, and Gateway dependencies
-RUN pip install --no-cache-dir --break-system-packages \
-    openhands-agent-server==1.49.2 \
-    openhands-tools==1.49.2 \
-    openhands-automation==1.13.2 \
+# The base image's Debian PyYAML has no pip record, so pip cannot replace it; install
+# the newer one the agent server needs alongside it first.
+RUN pip install --no-cache-dir --break-system-packages --ignore-installed "PyYAML>=6.0.2" \
+    && pip install --no-cache-dir --break-system-packages \
+    openhands-agent-server==1.56.0 \
+    openhands-tools==1.56.0 \
+    openhands-automation==1.22.0 \
     fastapi uvicorn httpx pyjwt \
     && printf '#!/usr/bin/env bash\nexec python3 -m openhands.agent_server "$@"\n' > /usr/local/bin/openhands-agent-server \
-    && chmod +x /usr/local/bin/openhands-agent-server \
-    && python3 -c 'p = "/usr/local/lib/python3.12/dist-packages/openhands/sdk/llm/utils/telemetry.py"; s = open(p).read(); old = "details.cache_creation_tokens\n                if \"cache_creation_tokens\" in details.model_fields_set\n                else 0"; new = "getattr(details, \"cache_creation_tokens\", None) or getattr(details, \"cache_write_tokens\", None) or (details.get(\"cache_creation_tokens\") if isinstance(details, dict) else 0) or 0"; assert old in s, "Telemetry patch target not found"; open(p, "w").write(s.replace(old, new, 1))'
+    && chmod +x /usr/local/bin/openhands-agent-server
 
 # 3. Pull in Agent Canvas assets and static server scripts from upstream image
-COPY --from=ghcr.io/openhands/agent-canvas:1.20.0 /opt/agent-canvas /opt/agent-canvas
+COPY --from=ghcr.io/openhands/agent-canvas:1.29.0 /opt/agent-canvas /opt/agent-canvas
 
 # 4. Copy our customized frontend build, gateway, and entrypoint
 COPY frontend/ /opt/agent-canvas/frontend/
