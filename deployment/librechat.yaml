@@ -149,6 +149,17 @@ endpoints:
       titleConvo: true
       modelDisplayLabel: "OpenRouter"
       iconURL: "openrouter"
+    # Each user brings their own OpenRouter key; LibreChat stores it encrypted per user
+    # and the usage goes on that user's OpenRouter account.
+    - name: "OpenRouter (own key)"
+      apiKey: "user_provided"
+      baseURL: "https://openrouter.ai/api/v1"
+      models:
+        default: ["anthropic/claude-sonnet-5.5", "google/gemini-3.8-flash", "openai/gpt-6-luna"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenRouter"
+      iconURL: "openrouter"
     - name: "OpenCode"
       apiKey: "${OPENCODE_API_KEY}"
       baseURL: "${OPENCODE_BASE_URL}"
@@ -284,5 +295,35 @@ modelSpecs:
       preset:
         endpoint: "OpenRouter"
         model: "cohere/north-mini-code:free"
+      mcpServers:
+        - "notethreads"
+
+    - name: "byok-claude-sonnet-5-5"
+      label: "Claude Sonnet 5.5 (your OpenRouter key)"
+      iconURL: "anthropic"
+      description: "Strongest analysis model; billed to your own OpenRouter account"
+      preset:
+        endpoint: "OpenRouter (own key)"
+        model: "anthropic/claude-sonnet-5.5"
+      mcpServers:
+        - "notethreads"
+
+    - name: "byok-gemini-3-8-flash"
+      label: "Gemini 3.8 Flash (your OpenRouter key)"
+      iconURL: "google"
+      description: "Fast and capable; billed to your own OpenRouter account"
+      preset:
+        endpoint: "OpenRouter (own key)"
+        model: "google/gemini-3.8-flash"
+      mcpServers:
+        - "notethreads"
+
+    - name: "byok-gpt-6-luna"
+      label: "GPT-6 Luna (your OpenRouter key)"
+      iconURL: "openai"
+      description: "Very low cost; billed to your own OpenRouter account"
+      preset:
+        endpoint: "OpenRouter (own key)"
+        model: "openai/gpt-6-luna"
       mcpServers:
         - "notethreads"
