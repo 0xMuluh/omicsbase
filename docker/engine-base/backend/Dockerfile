@@ -41,6 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libhdf5-dev \
     libfftw3-dev \
     libtiff-dev \
+    mafft \
+    iqtree \
   && rm -rf /var/lib/apt/lists/*
 
 ARG CODEX_VERSION=0.151.0

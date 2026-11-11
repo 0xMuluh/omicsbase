@@ -5,7 +5,9 @@ USER root
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --break-system-packages -r /app/requirements.txt
+# Debian-installed Python packages (e.g. numpy) have no pip record and cannot be
+# uninstalled, so install the requirements alongside them.
+RUN pip install --break-system-packages --ignore-installed -r /app/requirements.txt
 
 COPY . /app/engine
 
