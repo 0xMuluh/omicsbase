@@ -65,6 +65,10 @@ services:
     image: ${OMICSBASE_OPENHANDS_IMAGE:-omicsbase-openhands:dev}
     container_name: openhands-engine
     restart: always
+    # The projects folder belongs to gid 1000 (setgid); Agent Canvas exits at startup
+    # if /projects is not writable.
+    group_add:
+      - "1000"
     ports:
       - "127.0.0.1:3001:8000"
     extra_hosts:
@@ -83,6 +87,9 @@ services:
       # The page carries the agent server's session key; safe only because port 3001 is
       # published on loopback and the public host is behind the OmicsBase login gate.
       - AGENT_CANVAS_ALLOW_LAN_SESSION_KEY=true
+      # The editor is the gateway's Monaco editor, not OpenHands' VS Code.
+      - VSCODE_PORT=18002
+      - OH_ENABLE_VSCODE=false
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GOOGLE_KEY=${GOOGLE_KEY}
       - GEMINI_API_KEY=${GOOGLE_KEY}

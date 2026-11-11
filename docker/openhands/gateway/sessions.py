@@ -213,11 +213,7 @@ async def ensure_llm_settings():
                 except Exception:
                     pass
 
-            # 3. Synchronize Agent Server Settings
-            patch_payload = {"agent_settings": {"llm": default_llm}}
-            await client.patch(f"{AGENT_SERVER_URL}/api/settings", headers=headers, json=patch_payload)
-
-            # 4. Activate the Reports default profile
+            # 3. Activate the Reports default profile (this also sets the settings' LLM)
             try:
                 await client.post(f"{AGENT_SERVER_URL}/api/profiles/{DEFAULT_PROFILE}/activate", headers=headers)
             except Exception:
