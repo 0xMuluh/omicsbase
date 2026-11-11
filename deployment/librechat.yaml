@@ -160,6 +160,20 @@ endpoints:
       titleConvo: true
       modelDisplayLabel: "OpenRouter"
       iconURL: "openrouter"
+    # Featherless: pay per token from our credit. Its catalogue is huge, so models are
+    # listed by hand: only families with native tool calls (Qwen 3, Kimi K2), 262k context.
+    - name: "Featherless"
+      apiKey: "${FEATHERLESS_API_KEY}"
+      baseURL: "https://api.featherless.ai/v1"
+      headers:
+        HTTP-Referer: "https://omicsbase.utu.fi"
+        X-Title: "OmicsBase"
+      models:
+        default: ["Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.5-397B-A17B", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.7-Code"]
+        fetch: false
+      titleConvo: true
+      modelDisplayLabel: "Featherless"
+      iconURL: "huggingface"
     - name: "OpenCode"
       apiKey: "${OPENCODE_API_KEY}"
       baseURL: "${OPENCODE_BASE_URL}"
@@ -205,6 +219,36 @@ modelSpecs:
       preset:
         endpoint: "google"
         model: "gemini-3.8-flash"
+      mcpServers:
+        - "notethreads"
+
+    - name: "gpt-6-luna"
+      label: "GPT-6 Luna"
+      iconURL: "openai"
+      description: "Fast, low-cost and follows instructions closely"
+      preset:
+        endpoint: "OpenRouter"
+        model: "openai/gpt-6-luna"
+      mcpServers:
+        - "notethreads"
+
+    - name: "gemini-4-argon"
+      label: "Gemini 4 Argon"
+      iconURL: "google"
+      description: "Google's newest and strongest model for complex analyses"
+      preset:
+        endpoint: "google"
+        model: "gemini-4-argon"
+      mcpServers:
+        - "notethreads"
+
+    - name: "gemini-3.1-pro"
+      label: "Gemini 3.1 Pro"
+      iconURL: "google"
+      description: "Google's Pro model, faster than Argon"
+      preset:
+        endpoint: "google"
+        model: "gemini-3.1-pro-preview"
       mcpServers:
         - "notethreads"
 
@@ -325,5 +369,55 @@ modelSpecs:
       preset:
         endpoint: "OpenRouter (own key)"
         model: "openai/gpt-6-luna"
+      mcpServers:
+        - "notethreads"
+
+    - name: "featherless-qwen3-8-flash-next"
+      label: "Qwen 3.8 Flash Next (Featherless)"
+      iconURL: "/assets/qwen.svg"
+      description: "Fast and very low cost"
+      preset:
+        endpoint: "Featherless"
+        model: "Qwen/Qwen3.8-Flash-Next"
+      mcpServers:
+        - "notethreads"
+
+    - name: "featherless-qwen3-8-27b"
+      label: "Qwen 3.8 27B (Featherless)"
+      iconURL: "/assets/qwen.svg"
+      description: "Compact, quick everyday model"
+      preset:
+        endpoint: "Featherless"
+        model: "Qwen/Qwen3.8-27B"
+      mcpServers:
+        - "notethreads"
+
+    - name: "featherless-qwen3-5-397b"
+      label: "Qwen 3.5 397B (Featherless)"
+      iconURL: "/assets/qwen.svg"
+      description: "Large Qwen model for harder analyses"
+      preset:
+        endpoint: "Featherless"
+        model: "Qwen/Qwen3.5-397B-A17B"
+      mcpServers:
+        - "notethreads"
+
+    - name: "featherless-kimi-k2-6"
+      label: "Kimi K2.6 (Featherless)"
+      iconURL: "moonshot"
+      description: "Strong at multi-step tool use"
+      preset:
+        endpoint: "Featherless"
+        model: "moonshotai/Kimi-K2.6"
+      mcpServers:
+        - "notethreads"
+
+    - name: "featherless-kimi-k2-7-code"
+      label: "Kimi K2.7 Code (Featherless)"
+      iconURL: "moonshot"
+      description: "Tuned for writing and fixing code"
+      preset:
+        endpoint: "Featherless"
+        model: "moonshotai/Kimi-K2.7-Code"
       mcpServers:
         - "notethreads"
