@@ -405,9 +405,19 @@ RUNTIME_SERVICES_INFO="$(node /opt/agent-canvas/runtime-services-info.mjs \
   --automation-url "$AUTOMATION_BASE_URL")"
 
 # EFFECTIVE_SESSION_KEY is set above from LOCAL_BACKEND_API_KEY or the persisted api-key.txt
+# The frontend finds its backend through the session key the static server writes
+# into the page, which it only does for a non-loopback bind when allowed. Allow it
+# only where port $PORT is published on host loopback and the public host sits
+# behind the OmicsBase login gate (Caddy forward_auth to /api/omicsbase/auth).
+STATIC_SERVER_SESSION_KEY_ARGS=()
+if [ "${AGENT_CANVAS_ALLOW_LAN_SESSION_KEY:-false}" = "true" ]; then
+  log "WARNING: Embedding the session API key in frontend HTML; publish port $PORT on host loopback only."
+  STATIC_SERVER_SESSION_KEY_ARGS+=(--allow-lan-session-key)
+fi
 node /opt/agent-canvas/static-server.mjs \
   --port "$PORT" \
   --host :: \
+  "${STATIC_SERVER_SESSION_KEY_ARGS[@]}" \
   --dir /opt/agent-canvas/frontend \
   --base-path "$AGENT_CANVAS_BASE_PATH" \
   --session-api-key "$EFFECTIVE_SESSION_KEY" \

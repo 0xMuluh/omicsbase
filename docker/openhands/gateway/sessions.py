@@ -21,6 +21,9 @@ from gateway.core import (
 )
 from gateway.auth import TicketRequest, verify_ticket, get_authenticated_user
 
+# Profile built from LLM_MODEL / LLM_BASE_URL / LLM_API_KEY and activated for Reports.
+DEFAULT_PROFILE = "omicsbase-default"
+
 router = APIRouter(tags=["sessions"])
 
 
@@ -180,8 +183,8 @@ async def ensure_llm_settings():
                 ])
 
             # BAI / GLM
-            bkey = os.environ.get("BAI_API_KEY") or os.environ.get("LLM_API_KEY")
-            burl = os.environ.get("BAI_BASE_URL") or os.environ.get("LLM_BASE_URL", "https://api.b.ai/v1")
+            bkey = os.environ.get("BAI_API_KEY")
+            burl = os.environ.get("BAI_BASE_URL", "https://api.b.ai/v1")
             if _is_valid(bkey):
                 profiles_to_ensure.extend([
                     ("bai-glm-5.3-flash", {"model": "openai/glm-5.3-flash", "base_url": burl, "api_key": bkey}),
@@ -191,6 +194,14 @@ async def ensure_llm_settings():
                     ("bai-qwen3.8-flash", {"model": "openai/qwen3.8-flash", "base_url": burl, "api_key": bkey}),
                     ("bai-glm-flash", {"model": "openai/glm-5.3-flash", "base_url": burl, "api_key": bkey}),
                 ])
+
+            # The Reports default, set by LLM_MODEL / LLM_BASE_URL / LLM_API_KEY.
+            default_llm = {
+                "model": os.environ.get("LLM_MODEL", "openai/glm-5.3-flash"),
+                "base_url": os.environ.get("LLM_BASE_URL", "https://api.b.ai/v1"),
+                "api_key": os.environ.get("LLM_API_KEY", ""),
+            }
+            profiles_to_ensure.append((DEFAULT_PROFILE, default_llm))
 
             for name, llm_conf in profiles_to_ensure:
                 try:
@@ -203,21 +214,12 @@ async def ensure_llm_settings():
                     pass
 
             # 3. Synchronize Agent Server Settings
-            patch_payload = {
-                "agent_settings": {
-                    "llm": {
-                        "model": os.environ.get("LLM_MODEL", "openai/glm-5.3-flash"),
-                        "base_url": os.environ.get("LLM_BASE_URL", "https://api.b.ai/v1"),
-                        "api_key": os.environ.get("LLM_API_KEY", "")
-                    }
-                }
-            }
+            patch_payload = {"agent_settings": {"llm": default_llm}}
             await client.patch(f"{AGENT_SERVER_URL}/api/settings", headers=headers, json=patch_payload)
 
-            # 4. Activate default profile (bai-glm-5.3-flash)
-            default_profile = "bai-glm-5.3-flash"
+            # 4. Activate the Reports default profile
             try:
-                await client.post(f"{AGENT_SERVER_URL}/api/profiles/{default_profile}/activate", headers=headers)
+                await client.post(f"{AGENT_SERVER_URL}/api/profiles/{DEFAULT_PROFILE}/activate", headers=headers)
             except Exception:
                 pass
         except Exception as e:

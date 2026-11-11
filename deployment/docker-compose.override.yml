@@ -74,9 +74,15 @@ services:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
-      - LLM_MODEL=${LLM_MODEL:-openai/glm-5.3-flash}
-      - LLM_BASE_URL=${BAI_BASE_URL:-https://api.b.ai/v1}
-      - LLM_API_KEY=${BAI_API_KEY}
+      # Reports model: a free OpenRouter model (change OPENHANDS_LLM_MODEL in .env to switch).
+      - LLM_MODEL=${OPENHANDS_LLM_MODEL:-openrouter/nvidia/nemotron-3-super-120b-a12b:free}
+      - LLM_BASE_URL=https://openrouter.ai/api/v1
+      - LLM_API_KEY=${OPENROUTER_KEY}
+      - BAI_BASE_URL=${BAI_BASE_URL:-https://api.b.ai/v1}
+      - BAI_API_KEY=${BAI_API_KEY}
+      # The page carries the agent server's session key; safe only because port 3001 is
+      # published on loopback and the public host is behind the OmicsBase login gate.
+      - AGENT_CANVAS_ALLOW_LAN_SESSION_KEY=true
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GOOGLE_KEY=${GOOGLE_KEY}
       - GEMINI_API_KEY=${GOOGLE_KEY}
