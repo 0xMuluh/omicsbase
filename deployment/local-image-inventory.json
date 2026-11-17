@@ -1,17 +1,17 @@
 {
   "LibreChat": {
-    "configured_image": "omicsbase-librechat:12d78909d",
-    "image_id": "sha256:56b7eac3a508b891e7d6b03b4af77e32abbdeeb61c9ba40d67a38613c33ee115",
+    "configured_image": "omicsbase-librechat:d7e810f0c",
+    "image_id": "sha256:30953c5af23dfffdb19dd9d4388667c48c0052bee10aa877fbdf4ea5fe1971d9",
     "repo_digests": []
   },
   "omicsbase-engine": {
-    "configured_image": "omicsbase-engine:dev",
-    "image_id": "sha256:15bbbadfa2cb53da63768487b322a364177d56e18bc18cebdfb78e11a123f851",
+    "configured_image": "omicsbase-engine:ecca5a3",
+    "image_id": "sha256:e9093bc255917c0efbbd5079c34f9709c10f25870fabb808db181900222ea2be",
     "repo_digests": []
   },
   "openhands-engine": {
-    "configured_image": "omicsbase-openhands:dev",
-    "image_id": "sha256:7835eb5578d5cad067705081a36db7b961aa6396ec320b7d8846ea9d57ac3ef1",
+    "configured_image": "omicsbase-openhands:v1.41.0",
+    "image_id": "sha256:a7ac6a60b5afe03c98e82d2297b1e43eda10faf4f1ff773a9543e01aedec3d12",
     "repo_digests": []
   }
 }

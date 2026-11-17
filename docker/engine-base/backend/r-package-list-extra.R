@@ -2,7 +2,10 @@
 # so the cached layers for r-package-list.R stay valid. Fold these into
 # r-package-list.R the next time the base image is rebuilt from scratch.
 cran_packages <- c(
-  "mikropml"
+  "mikropml",
+  # Phylogenetics: ips wraps the MAFFT program; phangorn builds trees in R.
+  "ips",
+  "phangorn"
 )
 
 bioc_packages <- c(

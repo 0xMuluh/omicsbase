@@ -3,10 +3,11 @@
 Main application entrypoint configuring CORS, static asset mounting,
 and modular routers for sessions, proxying, Monaco editor, and reports.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from gateway.auth import request_is_authorized
 from gateway.core import ASSETS_DIR
 from gateway.sessions import router as sessions_router
 from gateway.proxy import router as proxy_router
@@ -26,6 +27,12 @@ app.add_middleware(
 # Mount static assets for custom Monaco editor
 if ASSETS_DIR.is_dir():
     app.mount("/api/omicsbase/assets", StaticFiles(directory=str(ASSETS_DIR)), name="editor-assets")
+
+
+@app.get("/api/omicsbase/auth")
+async def login_gate(request: Request):
+    """Caddy forward_auth check for the public OpenHands host."""
+    return Response(status_code=204 if request_is_authorized(request) else 401)
 
 
 @app.get("/api/omicsbase/health")

@@ -1,4 +1,12 @@
 {$OMICSBASE_APP_HOST} {
+    # robots.txt and sitemap.xml (scripts/build_sitemap.sh) come from deployment/seo,
+    # copied to /srv/omicsbase/seo.
+    @seo path /robots.txt /sitemap.xml
+    handle @seo {
+        root * /srv/omicsbase/seo
+        file_server
+    }
+
     handle /omics-engine/* {
         @engine_status {
             method GET
@@ -59,6 +67,13 @@
 {$OMICSBASE_WORKSPACE_HOST} {
     @internal path /api/omicsbase/revoke
     respond @internal 404
+    # OpenHands sits behind the OmicsBase login: the gateway lets a request through
+    # only with a valid launch ticket or its signed session cookie. Pre-flight
+    # requests carry no credentials and are let through.
+    @needs_login not method OPTIONS
+    forward_auth @needs_login 127.0.0.1:3001 {
+        uri /api/omicsbase/auth
+    }
     reverse_proxy 127.0.0.1:3001
 }
 

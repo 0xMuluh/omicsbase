@@ -1,0 +1,9 @@
+User-agent: *
+# Public example notes load their content from these API paths.
+Allow: /api/config
+Allow: /api/share/
+Allow: /api/notes/
+Disallow: /api/
+Allow: /
+
+Sitemap: https://omicsbase.utu.fi/sitemap.xml

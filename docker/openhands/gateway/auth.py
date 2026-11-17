@@ -1,6 +1,7 @@
 """Authentication, ticket verification, and identity extraction for OmicsBase Gateway."""
 import os
 from typing import Optional
+from urllib.parse import parse_qs, urlsplit
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 import jwt
@@ -75,3 +76,31 @@ def get_authenticated_user(request: Request, authorization: Optional[str] = None
             pass
 
     return None
+
+
+def request_is_authorized(request: Request) -> bool:
+    """Whether a request to the public OpenHands host may pass Caddy's login gate.
+
+    Only signed credentials count: a launch ticket (Authorization header or the
+    original URL's ``ticket`` query) or the signed ``omicsbase_user_token`` cookie
+    set by /api/omicsbase/session. The unsigned ``omicsbase_user_id`` cookie does not.
+    """
+    tickets = []
+    auth_hdr = request.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        tickets.append(auth_hdr[len("Bearer "):].strip())
+    original_uri = request.headers.get("X-Forwarded-Uri", "")
+    tickets += parse_qs(urlsplit(original_uri).query).get("ticket", [])
+    for ticket in tickets:
+        try:
+            if verify_ticket(ticket).get("sub"):
+                return True
+        except HTTPException:
+            pass
+    user_token = request.cookies.get("omicsbase_user_token")
+    if user_token and AUTH_SECRET:
+        try:
+            return bool(jwt.decode(user_token, AUTH_SECRET, algorithms=["HS256"]).get("sub"))
+        except jwt.PyJWTError:
+            return False
+    return False
