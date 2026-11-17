@@ -16,15 +16,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # the newer one the agent server needs alongside it first.
 RUN pip install --no-cache-dir --break-system-packages --ignore-installed "PyYAML>=6.0.2" \
     && pip install --no-cache-dir --break-system-packages \
-    openhands-agent-server==1.61.0 \
-    openhands-tools==1.61.0 \
-    openhands-automation==1.31.0 \
+    openhands-agent-server==1.62.0 \
+    openhands-tools==1.62.0 \
+    openhands-automation==1.32.1 \
     fastapi uvicorn httpx pyjwt \
     && printf '#!/usr/bin/env bash\nexec python3 -m openhands.agent_server "$@"\n' > /usr/local/bin/openhands-agent-server \
     && chmod +x /usr/local/bin/openhands-agent-server
 
 # 3. Pull in Agent Canvas assets and static server scripts from upstream image
-COPY --from=ghcr.io/openhands/agent-canvas:1.38.0 /opt/agent-canvas /opt/agent-canvas
+COPY --from=ghcr.io/openhands/agent-canvas:1.41.0 /opt/agent-canvas /opt/agent-canvas
 
 # 4. Copy our customized frontend build, gateway, and entrypoint
 COPY frontend/ /opt/agent-canvas/frontend/
