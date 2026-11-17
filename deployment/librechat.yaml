@@ -22,7 +22,7 @@ interface:
     openNewTab: true
 
   termsOfService:
-    externalUrl: "https://www.utu.fi/en/university/it-services"
+    externalUrl: "https://www.utu.fi/en/university/wireless-networks-utu-accounts-and-it-support/utu-account-and-password/rules"
     openNewTab: true
 
 fileConfig:
@@ -162,6 +162,11 @@ endpoints:
       titleConvo: true
       modelDisplayLabel: "OpenRouter"
       iconURL: "openrouter"
+      # The user's own key pays, so these models cost no OmicsBase credits.
+      tokenConfig:
+        "anthropic/claude-sonnet-5.5": { prompt: 0, completion: 0, context: 1000000 }
+        "google/gemini-3.8-flash": { prompt: 0, completion: 0, context: 1048576 }
+        "openai/gpt-6-luna": { prompt: 0, completion: 0, context: 1050000 }
     # Featherless: pay per token from our credit. Its catalogue is huge, so models are
     # listed by hand: only families with native tool calls (Qwen 3, Kimi K2), 262k context.
     - name: "Featherless"
@@ -176,6 +181,13 @@ endpoints:
       titleConvo: true
       modelDisplayLabel: "Featherless"
       iconURL: "huggingface"
+      # Featherless prices (USD per 1M tokens), so credits track what our credit pays.
+      tokenConfig:
+        "Qwen/Qwen3.8-Flash-Next": { prompt: 0.15, completion: 0.5, context: 262144 }
+        "Qwen/Qwen3.8-27B": { prompt: 0.4, completion: 3, context: 262144 }
+        "Qwen/Qwen3.5-397B-A17B": { prompt: 0.55, completion: 3.5, context: 262144 }
+        "moonshotai/Kimi-K2.6": { prompt: 0.8, completion: 3.4, context: 262144 }
+        "moonshotai/Kimi-K2.7-Code": { prompt: 0.8, completion: 3.4, context: 262144 }
     - name: "OpenCode"
       apiKey: "${OPENCODE_API_KEY}"
       baseURL: "${OPENCODE_BASE_URL}"
