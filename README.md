@@ -1,60 +1,70 @@
-# OmicsBase
+<div align="center">
+  <h1>OmicsBase</h1>
+  <p><strong>Analyse omics data in R with an AI assistant, and keep every step reproducible.</strong></p>
+  <p>
+    <a href="https://omicsbase.utu.fi">Open OmicsBase</a> ·
+    <a href="#example-notes">Examples</a> ·
+    <a href="docs/SETUP.md">Developer setup</a> ·
+    <a href="docs/DEPLOYMENT.md">Deployment</a> ·
+    <a href="https://github.com/0xMuluh/omicsbase/issues">Issues</a>
+  </p>
+</div>
 
-OmicsBase is an experimental workspace for conversational omics analysis. It combines LibreChat's chat interface, durable R analysis cells, project workspaces, and an embedded OpenHands coding environment with report and file-editing surfaces.
+<p align="center">
+  <img src="docs/images/example-note.png" alt="An OmicsBase note comparing BANKSY cell types and spatial domains" width="100%">
+</p>
 
-This is the primary OmicsBase implementation, previously named `omicsbase3`. The earlier `omicsbase2` product is retired and retained separately for reference.
+OmicsBase is a workspace for microbiome, single-cell, spatial transcriptomics and mass spectrometry analysis with Bioconductor. You ask a question in a **note**; the assistant writes R code, runs it, and keeps the code, output and figures together in your project, so anyone can see exactly how a result was produced. For longer work, **Reports** hands the project to an agent that writes and renders a Quarto report.
 
-## Development status
+| | |
+| --- | --- |
+| **Notes that run R** | Each answer can contain R cells that run on the server, with Bioconductor, mia and related packages installed. Code, output and plots stay in the note. |
+| **Grounded in the books** | The assistant searches *Orchestrating Microbiome Analysis*, *Orchestrating Single-Cell Analysis*, *Orchestrating Spatial Transcriptomics Analysis*, *R for Mass Spectrometry* and *Metabonaut*, and reads R help pages before answering. |
+| **Public data** | Notes load data from curatedMetagenomicData, Bioconductor data packages, MGnify and Zenodo. |
+| **Reports** | An OpenHands agent works on the project files and builds a Quarto report site. |
+| **Share and continue** | Share a note as a public link; others can read it without an account and continue it in their own workspace. |
+| **Choose the model** | Pick from several hosted models for each note. |
 
-For a new clone, follow [fresh-clone setup](docs/SETUP.md). This is a developer setup, not a one-command packaged release.
+## Example notes
 
-Upstream integrations (LibreChat and OpenHands) are tracked as **maintained GitHub forks registered as Git submodules** (`0xMuluh/LibreChat` and `0xMuluh/OpenHands`), pinned to stable release commits on their respective `omicsbase` branches. See [UPSTREAM.md](UPSTREAM.md) for provenance, branch management, and upgrade workflows.
+Over 300 example notes are public. A few:
 
-The engine and its shared analysis base can be built directly from this repository with `python3 scripts/build_engine.py`. The base recipe and all its source inputs are under `docker/engine-base/`; no OB2 or archived directory is required. See [engine build instructions](docs/ENGINE_IMAGE.md). The curated knowledge library is reproducible using [knowledge setup](knowledge/README.md), which downloads pinned public sources and builds the local index. Private analysis/project data and running sessions are not distributed.
+- [Cell types versus tissue domains with BANKSY](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX) (spatial)
+- [Cell classes across slices of the hypothalamus](https://omicsbase.utu.fi/share/hJYFU7EbAvFR2pINPOefN) (spatial)
+- [How many false positives? Differential abundance with no real difference](https://omicsbase.utu.fi/share/Sq0r_YiM7dLT_T8uTRrTW) (microbiome)
+- [Seasons in the Hadza gut](https://omicsbase.utu.fi/share/fr7JQZRjzcaH9wvCO1gEe) (microbiome)
+- [Quality control with spike-ins in 416B cells](https://omicsbase.utu.fi/share/INn_qf2cAft-0pzA2ujGy) (single-cell)
+- [Reporter ions in a TMT11 MS3 run](https://omicsbase.utu.fi/share/EO_LG89UzF_5c-nPTXI8J) (proteomics)
 
-## Layout
+## Getting started
 
-- `engine/`: R execution, MCP/HTTP endpoints, and knowledge search/indexing.
-- `librechat/`: Git submodule tracking maintained fork (`0xMuluh/LibreChat:omicsbase`) with NoteCells, modular Workspace Canvas, and bioinformatics tooling.
-- `openhands/`: Git submodule tracking maintained fork (`0xMuluh/OpenHands:omicsbase`) with Agent Canvas integrations and verified file validation.
-- `deployment/`: configuration templates and a non-secret inventory of current deployment image identities.
-- `scripts/`: container build and runtime preparation scripts.
-- `docker/`: Dockerfiles and entrypoints for engine, runtime, and OpenHands gateway.
-- `knowledge/`: pinned book sources, attribution, and setup instructions.
-- `licenses/`: retained upstream notices.
-- `docs/`: maintenance findings and architecture records.
+**Use it**: open <https://omicsbase.utu.fi> and sign in with your University of Turku account or Google.
 
-## Setup and Submodules
-
-Python 3.12+, Node.js 20+, Docker, and Git are required.
-
-To clone OmicsBase with all submodules populated:
+**Run your own instance**: OmicsBase is a developer setup, not a packaged release. You need Git, Python 3.12+, Docker with Compose, Node.js 24 and your own model-provider keys.
 
 ```bash
 git clone --recurse-submodules https://github.com/0xMuluh/omicsbase.git
 ```
 
-If already cloned without submodules:
+Then follow [docs/SETUP.md](docs/SETUP.md) to build the images, configure `librechat/.env` and set up the [knowledge library](knowledge/README.md).
 
-```bash
-git submodule update --init --recursive
-```
+## Repository
 
-To verify the submodule source trees before building:
+| Path | Contents |
+| --- | --- |
+| `engine/` | R execution, MCP tools and knowledge search |
+| `librechat/` | Submodule: [0xMuluh/LibreChat](https://github.com/0xMuluh/LibreChat), the notes interface |
+| `openhands/` | Submodule: [0xMuluh/OpenHands](https://github.com/0xMuluh/OpenHands), the Reports agent |
+| `docker/` | Image recipes for the engine, its analysis base and Reports |
+| `deployment/` | Compose override, `librechat.yaml`, Caddy, LUMI-K and Rahti manifests |
+| `knowledge/` | Pinned book sources and attribution |
+| `scripts/` | Image builds, runtime preparation, sitemap |
+| `docs/` | Setup, deployment and maintenance records |
 
-```bash
-python3 scripts/build_librechat.py --verify-only
-python3 scripts/build_openhands.py --verify-only
-```
+Each submodule pins one commit of its fork; [UPSTREAM.md](UPSTREAM.md) describes how upstream releases are merged.
 
-For a complete development layout, install/build dependencies inside each submodule directory according to [docs/SETUP.md](docs/SETUP.md). Copy `.env.example` to `librechat/.env` and populate it locally. Copy `deployment/librechat.yaml` and `deployment/docker-compose.override.yml` into `librechat/`. The override paths are relative to that directory. Build the engine with `python3 scripts/build_engine.py` and provision required knowledge assets before starting services.
+## License
 
-## Existing local deployment
+Original OmicsBase code is under the [MIT License](LICENSE). Third-party code keeps its own copyright and license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The book texts used by the knowledge search have their own terms; see [knowledge/ATTRIBUTION.md](knowledge/ATTRIBUTION.md).
 
-The inspected running stack uses Docker context `default`; this machine's selected context was `desktop-linux`, which shows different containers. Use an explicit context when inspecting this deployment. Do not use this machine-specific context assumption on other hosts without checking.
-
-The active Compose services and persistent OpenHands runtime were recreated with `omicsbase/` paths on 2026-09-07. See [migration verification](docs/PATH_MIGRATION.md).
-
-## Licensing
-
-Original OmicsBase code is available under the [MIT License](LICENSE). Third-party code retains its respective copyrights and license notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+OmicsBase is developed at the University of Turku ([datascience.utu.fi](https://datascience.utu.fi)).
