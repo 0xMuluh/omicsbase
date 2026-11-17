@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 import httpx
 import jwt
+from openhands.sdk.settings.acp_providers import get_acp_provider
 
 from gateway.core import (
     AUTH_SECRET,
@@ -23,6 +24,36 @@ from gateway.auth import TicketRequest, verify_ticket, get_authenticated_user
 
 # Profile built from LLM_MODEL / LLM_BASE_URL / LLM_API_KEY and activated for Reports.
 DEFAULT_PROFILE = "omicsbase-default"
+
+# ACP engines offered in Reports. Launch commands and their pinned versions come from the
+# OpenHands SDK registry, so they move with each OpenHands update. Per engine: the default
+# model, extra launch arguments, and each secret the agent needs with the environment
+# variables it is filled from (first one set wins).
+_GOOGLE_KEY_VARS = ["GEMINI_API_KEY", "GOOGLE_KEY", "GOOGLE_API_KEY"]
+ACP_ENGINES = {
+    "claude-code": {
+        "model": "opus[1m]",
+        "secrets": {"ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY"]},
+    },
+    "codex": {
+        "model": "gpt-5.5",
+        "secrets": {"OPENAI_API_KEY": ["OPENAI_API_KEY"]},
+    },
+    "gemini-cli": {
+        "model": "gemini-3.8-flash",
+        "args": ["--skip-trust"],
+        "secrets": {"GEMINI_API_KEY": _GOOGLE_KEY_VARS, "GOOGLE_API_KEY": _GOOGLE_KEY_VARS},
+    },
+    "pi": {
+        "model": "anthropic/claude-opus-5-5",
+        "secrets": {"ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY"]},
+    },
+    # OpenCode runs on OpenRouter models with the OmicsBase OpenRouter key.
+    "opencode": {
+        "model": "openrouter/moonshotai/kimi-k2.7-code",
+        "secrets": {"OPENROUTER_API_KEY": ["OPENROUTER_API_KEY", "OPENROUTER_KEY"]},
+    },
+}
 
 router = APIRouter(tags=["sessions"])
 
@@ -383,34 +414,22 @@ async def create_conversation(
             agent_settings = settings.get("agent_settings", {})
 
             secrets = {}
-            if agent_engine in ("codex", "claude-code", "gemini-cli"):
+            acp = ACP_ENGINES.get(agent_engine)
+            if acp:
+                provider = get_acp_provider(agent_engine)
+                if provider is None:
+                    raise HTTPException(status_code=400, detail=f"Unknown agent engine: {agent_engine}")
+                # ACP agents bring their own model client; SDK 1.62 rejects an `llm` block for them.
                 agent_settings.pop("agent", None)
-
-            if agent_engine == "codex":
+                agent_settings.pop("llm", None)
                 agent_settings["agent_kind"] = "acp"
-                agent_settings["acp_server"] = "codex"
-                agent_settings["acp_command"] = ["npx", "-y", "@agentclientprotocol/codex-acp@1.10.0"]
-                agent_settings["acp_model"] = (data.model if data and data.model else "gpt-5.5")
-                okey = os.environ.get("OPENAI_API_KEY")
-                if okey:
-                    secrets["OPENAI_API_KEY"] = okey
-            elif agent_engine == "claude-code":
-                agent_settings["agent_kind"] = "acp"
-                agent_settings["acp_server"] = "claude-code"
-                agent_settings["acp_command"] = ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.63.0"]
-                agent_settings["acp_model"] = (data.model if data and data.model else "opus[1m]")
-                ckey = os.environ.get("ANTHROPIC_API_KEY")
-                if ckey:
-                    secrets["ANTHROPIC_API_KEY"] = ckey
-            elif agent_engine == "gemini-cli":
-                agent_settings["agent_kind"] = "acp"
-                agent_settings["acp_server"] = "gemini-cli"
-                agent_settings["acp_command"] = ["npx", "-y", "@google/gemini-cli@0.46.0", "--skip-trust", "--acp"]
-                agent_settings["acp_model"] = (data.model if data and data.model else "gemini-3.8-flash")
-                gkey = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_KEY") or os.environ.get("GOOGLE_API_KEY")
-                if gkey:
-                    secrets["GEMINI_API_KEY"] = gkey
-                    secrets["GOOGLE_API_KEY"] = gkey
+                agent_settings["acp_server"] = provider.key
+                agent_settings["acp_command"] = [*provider.default_command, *acp.get("args", [])]
+                agent_settings["acp_model"] = (data.model if data and data.model else acp["model"])
+                for secret_name, env_names in acp["secrets"].items():
+                    value = next((os.environ[n] for n in env_names if os.environ.get(n)), None)
+                    if value:
+                        secrets[secret_name] = value
             else:  # "openhands" default
                 agent_settings["agent_kind"] = "openhands"
                 llm_settings = agent_settings.get("llm") or {}
