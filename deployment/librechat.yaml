@@ -4,11 +4,13 @@ cache: true
 
 balance:
   enabled: true
-  startBalance: 50000000
+  # 1,000,000 credits = 1 USD. Every account is set back to 5M credits once a day.
+  startBalance: 5000000
   autoRefillEnabled: true
-  refillIntervalValue: 5
-  refillIntervalUnit: 'hours'
-  refillAmount: 50000000
+  refillMode: 'reset'
+  refillIntervalValue: 1
+  refillIntervalUnit: 'days'
+  refillAmount: 5000000
 
 interface:
   appTitle: "OmicsBase"
