@@ -19,6 +19,7 @@ services:
       - ./api/server/middleware/uaParser.js:/app/api/server/middleware/uaParser.js:ro
       - ./api/server/routes/index.js:/app/api/server/routes/index.js:ro
       - ./api/server/index.js:/app/api/server/index.js:ro
+      - ./api/server/middleware/publicPageMeta.js:/app/api/server/middleware/publicPageMeta.js:ro
       - ./api/server/experimental.js:/app/api/server/experimental.js:ro
       - ./api/server/services/Files/process.js:/app/api/server/services/Files/process.js:ro
       - ./api/server/services/NoteCells:/app/api/server/services/NoteCells:ro
