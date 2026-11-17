@@ -67,14 +67,42 @@
 {$OMICSBASE_WORKSPACE_HOST} {
     @internal path /api/omicsbase/revoke
     respond @internal 404
-    # OpenHands sits behind the OmicsBase login: the gateway lets a request through
-    # only with a valid launch ticket or its signed session cookie. Pre-flight
-    # requests carry no credentials and are let through.
-    @needs_login not method OPTIONS
-    forward_auth @needs_login 127.0.0.1:3001 {
-        uri /api/omicsbase/auth
+    route {
+        # Reports on Roihu (deployment/roihu): tunnel clients from users' jobs carry their
+        # own per-job credentials (roihu-relay service).
+        @chisel header Sec-WebSocket-Protocol chisel-v3*
+        reverse_proxy @chisel 127.0.0.1:18090
+
+        # One route per job (roihu-router service). /roihu/open swaps a one-time code for a
+        # signed cookie; /check turns a valid cookie into that job's tunnel port and session
+        # key. Port and key headers from the browser are dropped first.
+        @roihu_router path /roihu/open /roihu/close
+        reverse_proxy @roihu_router 127.0.0.1:18095
+        @roihu_job header_regexp Cookie (^|;\s*)roihu_route=
+        route @roihu_job {
+            request_header -X-Roihu-Port
+            request_header -X-Session-API-Key
+            forward_auth 127.0.0.1:18095 {
+                uri /check
+                copy_headers X-Roihu-Port X-Session-API-Key
+                header_up -Upgrade
+                header_up -Connection
+            }
+            reverse_proxy 127.0.0.1:{http.request.header.X-Roihu-Port}
+        }
+
+        # The shared Reports container sits behind the OmicsBase login: the gateway lets a
+        # request through only with a valid launch ticket or its signed session cookie.
+        # Pre-flight requests carry no credentials and are let through.
+        @needs_login not method OPTIONS
+        forward_auth @needs_login 127.0.0.1:3001 {
+            uri /api/omicsbase/auth
+            # Send the login check as a plain request even when the original is a WebSocket.
+            header_up -Upgrade
+            header_up -Connection
+        }
+        reverse_proxy 127.0.0.1:3001
     }
-    reverse_proxy 127.0.0.1:3001
 }
 
 {$OMICSBASE_ADMIN_HOST} {
