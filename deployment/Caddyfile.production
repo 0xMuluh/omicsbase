@@ -1,4 +1,12 @@
 {$OMICSBASE_APP_HOST} {
+    # robots.txt and sitemap.xml (scripts/build_sitemap.sh) come from deployment/seo,
+    # copied to /srv/omicsbase/seo.
+    @seo path /robots.txt /sitemap.xml
+    handle @seo {
+        root * /srv/omicsbase/seo
+        file_server
+    }
+
     handle /omics-engine/* {
         @engine_status {
             method GET
