@@ -95,12 +95,12 @@ and OpenHands through `deployment/docker-compose.override.yml`.
 
 Set the browser-facing values in the deployment environment:
 
-    DOMAIN_CLIENT=https://omicsbase.learnpanta.com
-    OMICSBASE_APP_HOST=omicsbase.learnpanta.com
-    OMICSBASE_OPENHANDS_PUBLIC_URL=https://openhands.learnpanta.com
-    OMICSBASE_WORKSPACE_HOST=openhands.learnpanta.com
-    OMICSBASE_ENGINE_PUBLIC_URL=https://omicsbase.learnpanta.com/omics-engine
-    OMICSBASE_ADMIN_HOST=admin.omicsbase.learnpanta.com
+    DOMAIN_CLIENT=https://omicsbase.example.org
+    OMICSBASE_APP_HOST=omicsbase.example.org
+    OMICSBASE_OPENHANDS_PUBLIC_URL=https://openhands.omicsbase.example.org
+    OMICSBASE_WORKSPACE_HOST=openhands.omicsbase.example.org
+    OMICSBASE_ENGINE_PUBLIC_URL=https://omicsbase.example.org/omics-engine
+    OMICSBASE_ADMIN_HOST=admin.omicsbase.example.org
 
 The Caddy template uses these host variables, and the engine uses the configured
 public URL when it creates report links. Keep the application and workspace
