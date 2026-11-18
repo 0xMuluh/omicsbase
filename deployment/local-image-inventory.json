@@ -1,9 +1,9 @@
 {
   "LibreChat": {
-    "configured_image": "omicsbase-librechat:b09b41cba-roihu1",
-    "image_id": "sha256:b8783f82d6bd346b1f5840764db6685cec15d4664386d5a9364a31ead950cbe5",
+    "configured_image": "omicsbase-librechat:e9b5458d5-roihu2",
+    "image_id": "sha256:daaf128b393e336bdd8540ec8aca36db7e4432825f337b05d23cfe823d3e4672",
     "repo_digests": [
-      "omicsbase-librechat@sha256:b8783f82d6bd346b1f5840764db6685cec15d4664386d5a9364a31ead950cbe5"
+      "omicsbase-librechat@sha256:daaf128b393e336bdd8540ec8aca36db7e4432825f337b05d23cfe823d3e4672"
     ]
   },
   "omicsbase-engine": {
