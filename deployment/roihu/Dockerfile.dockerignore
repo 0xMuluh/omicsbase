@@ -1,0 +1,7 @@
+# Built from the repository root (see Dockerfile); send only what the image needs.
+*
+!openhands/build
+!docker/openhands/gateway
+!docker/openhands/patch_entrypoint.py
+!deployment/roihu/roihu_entrypoint.py
+**/__pycache__

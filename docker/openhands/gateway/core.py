@@ -1,5 +1,6 @@
 """Core configuration, filesystem paths, and base helpers for OmicsBase Gateway."""
 import os
+import re
 import json
 import logging
 from pathlib import Path
@@ -15,6 +16,11 @@ PROJECTS_ROOT = Path(os.environ.get("PROJECTS_ROOT", "/projects"))
 SESSION_REGISTRY_DIR = Path("/home/openhands/.openhands/omicsbase_sessions")
 CONVERSATIONS_DIR = Path(os.environ.get("OH_CONVERSATIONS_PATH", "/home/openhands/.openhands/agent-canvas/conversations"))
 ASSETS_DIR = Path(__file__).parent / "assets"
+# In a user's own Reports job on Roihu the gateway serves one person: each report is a
+# folder under PROJECTS_ROOT, and every request must carry the job's session key.
+ROIHU = os.environ.get("OMICSBASE_GATEWAY_MODE") == "roihu"
+# OmicsBase report (project) ids are MongoDB object ids.
+PROJECT_ID = re.compile(r"^[a-f0-9]{24}$")
 
 # Normalize Google/Gemini API key environment variables for ACP agents & LiteLLM
 if os.environ.get("GOOGLE_KEY"):
@@ -65,6 +71,11 @@ def _get_project_dir(conversation_id: str) -> Path:
             return PROJECTS_ROOT / conversation_id
 
     # Fallback to most recently updated project
+    if ROIHU:
+        reports = [p for p in PROJECTS_ROOT.glob("*") if p.is_dir()]
+        if reports:
+            return max(reports, key=lambda p: p.stat().st_mtime)
+        return PROJECTS_ROOT
     user_projects = list((PROJECTS_ROOT / "users").glob("*/*"))
     if user_projects:
         user_projects.sort(key=lambda p: p.stat().st_mtime if p.is_dir() else 0, reverse=True)
