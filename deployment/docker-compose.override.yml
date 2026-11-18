@@ -12,12 +12,23 @@ services:
       # Where notes run: the VM engine (default) or LUMI-K (deployment/lumi-k/engine.yaml).
       - NOTEKERNEL_URL=${OMICSBASE_ENGINE_URL:-http://engine:8001}
       - PROJECTS_DIR=/app/projects
+      # Reports on Roihu (deployment/roihu): the router's private interface on the Docker
+      # network, the image release, and the relay users' jobs connect to. The router secret
+      # and relay fingerprint come from .env; without them the Reports page says it is not set up.
+      - ROIHU_ROUTER_URL=${ROIHU_ROUTER_URL:-http://172.18.0.1:18096}
+      - ROIHU_ROUTER_SECRET=${ROIHU_ROUTER_SECRET:-}
+      - ROIHU_IMAGE_TAG=${ROIHU_IMAGE_TAG:-v1.41.0-roihu1}
+      - ROIHU_RELAY_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
+      - ROIHU_RELAY_FINGERPRINT=${ROIHU_RELAY_FINGERPRINT:-}
+      - ROIHU_SCRIPTS_DIR=/app/roihu
     volumes:
       - ./api/server/controllers/auth/LogoutController.js:/app/api/server/controllers/auth/LogoutController.js:ro
       - ./api/server/routes/projects.js:/app/api/server/routes/projects.js:ro
       - ./api/server/routes/notes.js:/app/api/server/routes/notes.js:ro
       - ./api/server/middleware/uaParser.js:/app/api/server/middleware/uaParser.js:ro
       - ./api/server/routes/index.js:/app/api/server/routes/index.js:ro
+      - ./api/server/routes/roihu.js:/app/api/server/routes/roihu.js:ro
+      - ../deployment/roihu:/app/roihu:ro
       - ./api/server/index.js:/app/api/server/index.js:ro
       - ./api/server/middleware/publicPageMeta.js:/app/api/server/middleware/publicPageMeta.js:ro
       - ./api/server/experimental.js:/app/api/server/experimental.js:ro

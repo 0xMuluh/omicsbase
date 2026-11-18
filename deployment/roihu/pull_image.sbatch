@@ -1,33 +1,39 @@
 #!/bin/bash
-# Pull a Reports image release from ghcr.io into an Apptainer image on Roihu.
+# Turn a Reports image release from ghcr.io into the project's Apptainer image on Roihu.
 #
-#   sbatch --account=<project> pull_image.sbatch <tag> <images folder>
-#
-# Writes <images folder>/omicsbase-reports_<tag>.sif. Run once per release; every
-# user's Reports job then starts from the same file.
-#SBATCH --partition=small
-#SBATCH --time=02:00:00
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --job-name=omicsbase-reports-pull
-#SBATCH --output=%x-%j.out
+# OmicsBase submits this through FirecREST before a project's first Reports session, with:
+#   REPORTS_TAG       image tag, e.g. v1.41.0-roihu1
+#   REPORTS_IMAGES    the project's image folder; writes omicsbase-reports_<tag>.sif there
+# Project members share the image; a lock keeps two first launches from building it twice.
 set -euo pipefail
+umask 027
 
-tag=$1
-images=$2
+tag=$REPORTS_TAG
+images=$REPORTS_IMAGES
 sif=$images/omicsbase-reports_$tag.sif
+mkdir -p "$images"
+exec 9> "$images/.pull.lock"
+flock 9
+if [ -f "$sif" ]; then
+  echo "$sif is already there."
+  exit 0
+fi
+
 work=$(mktemp -d "$images/.pull-$tag-XXXX")
 # Unpacking the R library means many small files: slow on Lustre scratch, fast in the
-# node's memory (/dev/shm, counted against --mem).
+# node's memory (/dev/shm, counted against the job's memory).
 shm=$(mktemp -d /dev/shm/omicsbase-pull-XXXX)
 trap 'rm -rf "$work" "$shm"' EXIT
-
 export APPTAINER_CACHEDIR=$shm/cache
 export APPTAINER_TMPDIR=$shm/tmp
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
 start=$(date +%s)
-apptainer pull --force "$work/image.sif" "docker://ghcr.io/0xmuluh/omicsbase-reports:$tag"
+# Fast path: the finished image, published with each release (publish_sif.sh). Otherwise
+# convert the Docker image (about 7 minutes and 64 GB of memory).
+if ! apptainer pull --force "$work/image.sif" "oras://ghcr.io/0xmuluh/omicsbase-reports:$tag-sif"; then
+  echo "No published image for $tag; converting the Docker image."
+  apptainer pull --force "$work/image.sif" "docker://ghcr.io/0xmuluh/omicsbase-reports:$tag"
+fi
 mv "$work/image.sif" "$sif"
-ls -la "$sif"
-echo "seconds: $(( $(date +%s) - start ))"
+echo "$sif built in $(( $(date +%s) - start )) s"
