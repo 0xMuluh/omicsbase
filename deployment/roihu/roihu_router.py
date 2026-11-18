@@ -40,10 +40,13 @@ LISTEN = ("127.0.0.1", 18095)
 ADMIN_LISTEN = (os.environ.get("ROIHU_ROUTER_ADMIN_HOST", "172.18.0.1"), 18096)
 COOKIE = "roihu_route"
 PUBLIC_URL = "https://openhands.omicsbase.utu.fi"
+APP_URL = "https://omicsbase.utu.fi"
 OPEN_CODE_SECONDS = 600
 # The page runs in auth-required mode (the key stays out of the HTML, since other users on
 # the compute node can reach the job's port), so the browser needs a registered backend
 # carrying some key. It gets a placeholder; Caddy replaces it with the job's real key.
+# Opened in a hidden frame by the OmicsBase workspace, the page reports back instead of
+# loading the agent.
 OPEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Opening Reports</title>
 <script>
 const id = "omicsbase-roihu";
@@ -54,8 +57,12 @@ localStorage.setItem("openhands-backends", JSON.stringify(list));
 const sel = JSON.stringify({backendId: id});
 localStorage.setItem("openhands-active-backend", sel);
 sessionStorage.setItem("openhands-active-backend", sel);
-location.replace("/");
-</script>"""
+if (window.parent !== window) {
+  window.parent.postMessage({type: "omicsbase:roihu-open"}, "%s");
+} else {
+  location.replace("/");
+}
+</script>""" % APP_URL
 LOCK = threading.Lock()
 
 
@@ -77,8 +84,9 @@ def _secret():
     return SECRET.read_text().strip().encode()
 
 
-def sign(job, expires):
-    body = base64.urlsafe_b64encode(json.dumps({"j": job, "e": expires}).encode()).decode().rstrip("=")
+def sign(job, expires, generation=0):
+    claims = {"j": job, "e": expires, "g": generation}
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     mac = hmac.new(_secret(), body.encode(), hashlib.sha256).hexdigest()
     return f"{body}.{mac}"
 
@@ -95,6 +103,9 @@ def verify(token):
         return None
     route = _load(ROUTES, {}).get(claims.get("j"))
     if not route or claims.get("e", 0) < time.time() or route["expires"] < time.time():
+        return None
+    # Signing out raises the route's cookie generation, which ends every older cookie.
+    if claims.get("g", 0) != route.get("cookie_generation", 0):
         return None
     return route
 
@@ -202,8 +213,21 @@ def use_open_code(code):
                 r.pop("open_code")
                 valid = r.pop("open_code_expires") >= time.time() and r["expires"] >= time.time()
                 _save(ROUTES, routes)
-                return sign(job, r["expires"]) if valid else None
+                return sign(job, r["expires"], r.get("cookie_generation", 0)) if valid else None
     return None
+
+
+def sign_out(user):
+    """End every browser's access to the user's jobs (OmicsBase logout). The jobs keep
+    running; the user reconnects with a new open link."""
+    with LOCK:
+        routes = _load(ROUTES, {})
+        for r in routes.values():
+            if r["user"] == str(user):
+                r["cookie_generation"] = r.get("cookie_generation", 0) + 1
+                r.pop("open_code", None)
+                r.pop("open_code_expires", None)
+        _save(ROUTES, routes)
 
 
 def _prune_loop():
@@ -263,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/roihu/close":
             self.send_response(302)
             self.send_header("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
-            self.send_header("Location", "https://omicsbase.utu.fi/")
+            self.send_header("Location", APP_URL + "/")
             self.end_headers()
         else:
             self.send_response(404)
@@ -324,6 +348,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return self._reply(201, create_route(body["user"], hours, body.get("meta")))
             except RuntimeError as e:
                 return self._reply(503, {"error": str(e)})
+        if len(parts) == 3 and parts[0] == "users" and parts[2] == "sign-out":
+            sign_out(parts[1])
+            return self._reply(204)
         if len(parts) == 3 and parts[0] == "routes" and parts[2] == "link":
             url = open_link(parts[1], body.get("user"))
             return self._reply(200, {"url": url}) if url else self._reply(404)

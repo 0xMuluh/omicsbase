@@ -15,6 +15,8 @@ from gateway.core import (
     AUTH_SECRET,
     AGENT_SERVER_URL,
     PROJECTS_ROOT,
+    PROJECT_ID,
+    ROIHU,
     SESSION_REGISTRY_DIR,
     CONVERSATIONS_DIR,
     logger,
@@ -314,8 +316,9 @@ async def session(
         raise HTTPException(status_code=401, detail="Ticket required")
     claims = verify_ticket(ticket)
 
-    # Ensure Agent Server has LLM credentials configured
-    await ensure_llm_settings()
+    # Ensure Agent Server has LLM credentials configured (on Roihu users bring their own)
+    if not ROIHU:
+        await ensure_llm_settings()
 
     user_id = str(claims.get("sub"))
     project_id = str(claims.get("project_id"))
@@ -384,18 +387,24 @@ async def create_conversation(
     if not user_id or not project_id:
         raise HTTPException(status_code=400, detail="Missing user_id or project_id in claims")
 
-    project_dir = PROJECTS_ROOT / "users" / str(user_id) / str(project_id)
-    project_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(project_dir, 0o777)
-    except Exception:
-        pass
-    try:
-        symlink_path = PROJECTS_ROOT / str(project_id)
-        if not symlink_path.exists() and not symlink_path.is_symlink():
-            symlink_path.symlink_to(f"users/{user_id}/{project_id}")
-    except Exception:
-        pass
+    if ROIHU:
+        if not PROJECT_ID.match(str(project_id)):
+            raise HTTPException(status_code=400, detail="Invalid project_id")
+        project_dir = PROJECTS_ROOT / str(project_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        project_dir = PROJECTS_ROOT / "users" / str(user_id) / str(project_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(project_dir, 0o777)
+        except Exception:
+            pass
+        try:
+            symlink_path = PROJECTS_ROOT / str(project_id)
+            if not symlink_path.exists() and not symlink_path.is_symlink():
+                symlink_path.symlink_to(f"users/{user_id}/{project_id}")
+        except Exception:
+            pass
     logger.info(f"Scoped project workspace created/verified at: {project_dir}")
 
     api_key = get_session_api_key()

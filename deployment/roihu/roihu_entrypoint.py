@@ -5,9 +5,17 @@ server must ask for the session key instead of writing it into the page. Each ch
 is anchored on a line of upstream's script; if upstream moves one, this stops instead
 of producing an entrypoint that listens on all interfaces.
 
+The OmicsBase gateway (editor, report viewer, OmicsBase's launch API) starts as on the
+VM (patch_entrypoint.py, next to this file in the build), on the job's own random port
+$OMICSBASE_GATEWAY_PORT. Conversation listing stays upstream's: the job has one user.
+
     python3 roihu_entrypoint.py <upstream entrypoint.sh> <output>
 """
 import sys
+
+from patch_entrypoint import add_gateway
+
+GATEWAY_ROUTES = ("/api/omicsbase", "/api/vscode")
 
 CHANGES = [
     # Agent server and automation server.
@@ -39,6 +47,6 @@ def adapt(script: str) -> str:
 if __name__ == "__main__":
     src, dst = sys.argv[1], sys.argv[2]
     with open(src) as f:
-        adapted = adapt(f.read())
+        adapted = add_gateway(adapt(f.read()), "${OMICSBASE_GATEWAY_PORT}", GATEWAY_ROUTES)
     with open(dst, "w") as f:
         f.write(adapted)

@@ -8,7 +8,6 @@ services:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
-      - OMICSBASE_OPENHANDS_INTERNAL_URL=http://openhands:8000
       # Where notes run: the VM engine (default) or LUMI-K (deployment/lumi-k/engine.yaml).
       - NOTEKERNEL_URL=${OMICSBASE_ENGINE_URL:-http://engine:8001}
       - PROJECTS_DIR=/app/projects
@@ -17,7 +16,7 @@ services:
       # and relay fingerprint come from .env; without them the Reports page says it is not set up.
       - ROIHU_ROUTER_URL=${ROIHU_ROUTER_URL:-http://172.18.0.1:18096}
       - ROIHU_ROUTER_SECRET=${ROIHU_ROUTER_SECRET:-}
-      - ROIHU_IMAGE_TAG=${ROIHU_IMAGE_TAG:-v1.41.0-roihu1}
+      - ROIHU_IMAGE_TAG=${ROIHU_IMAGE_TAG:-v1.41.0-roihu2}
       - ROIHU_RELAY_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - ROIHU_RELAY_FINGERPRINT=${ROIHU_RELAY_FINGERPRINT:-}
       - ROIHU_SCRIPTS_DIR=/app/roihu
@@ -72,49 +71,6 @@ services:
       - ../projects:/app/projects
       - engine-cache:/app/cache
     command: ["python3", "-m", "engine.server"]
-
-  openhands:
-    image: ${OMICSBASE_OPENHANDS_IMAGE:-omicsbase-openhands:dev}
-    container_name: openhands-engine
-    restart: always
-    # The projects folder belongs to gid 1000 (setgid); Agent Canvas exits at startup
-    # if /projects is not writable.
-    group_add:
-      - "1000"
-    ports:
-      - "127.0.0.1:3001:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - AGENT_CANVAS_BASE_PATH=/
-      - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
-      - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
-      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
-      # Reports model: a free OpenRouter model (change OPENHANDS_LLM_MODEL in .env to switch).
-      - LLM_MODEL=${OPENHANDS_LLM_MODEL:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}
-      - LLM_BASE_URL=https://openrouter.ai/api/v1
-      - LLM_API_KEY=${OPENROUTER_KEY}
-      - BAI_BASE_URL=${BAI_BASE_URL:-https://api.b.ai/v1}
-      - BAI_API_KEY=${BAI_API_KEY}
-      # The page carries the agent server's session key; safe only because port 3001 is
-      # published on loopback and the public host is behind the OmicsBase login gate.
-      - AGENT_CANVAS_ALLOW_LAN_SESSION_KEY=true
-      # The editor is the gateway's Monaco editor, not OpenHands' VS Code.
-      - VSCODE_PORT=18002
-      - OH_ENABLE_VSCODE=false
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GOOGLE_KEY=${GOOGLE_KEY}
-      - GEMINI_API_KEY=${GOOGLE_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - OPENROUTER_KEY=${OPENROUTER_KEY}
-    volumes:
-      - ../projects:/projects:rw
-      - ${OPENHANDS_STATE_DIR:-${HOME}/.openhands}:/home/openhands/.openhands
-      - ../docker/openhands/gateway:/opt/agent-canvas/gateway:ro
-
-
 
   admin-panel:
     ports: !override

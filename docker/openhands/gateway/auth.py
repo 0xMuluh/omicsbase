@@ -6,7 +6,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel
 import jwt
 
-from gateway.core import AUTH_SECRET, logger
+from gateway.core import AUTH_SECRET, ROIHU, logger
 
 
 class TicketRequest(BaseModel):
@@ -22,6 +22,14 @@ class SaveEditorFileRequest(BaseModel):
 
 
 def verify_ticket(ticket: str) -> dict:
+    if ROIHU:
+        # The job holds no OmicsBase secret. The caller already passed the session-key
+        # check (only the job's owner has it); the ticket just names the report.
+        try:
+            return jwt.decode(ticket, options={"verify_signature": False, "verify_exp": True})
+        except Exception as e:
+            logger.warning(f"Ticket could not be read: {e}")
+            raise HTTPException(status_code=403, detail="Invalid or expired ticket")
     if not AUTH_SECRET:
         raise HTTPException(status_code=503, detail="OMICSBASE_AUTH_SECRET is not configured")
     try:

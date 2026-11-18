@@ -24,7 +24,9 @@ freeport() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 
 export APPTAINERENV_PORT=$(freeport)
 export APPTAINERENV_AGENT_SERVER_PORT=$(freeport)
 export APPTAINERENV_AUTOMATION_PORT=$(freeport)
-export APPTAINERENV_VSCODE_PORT=$(freeport)
+# The OmicsBase gateway; it also stands in for VS Code with OmicsBase's own editor.
+export APPTAINERENV_OMICSBASE_GATEWAY_PORT=$(freeport)
+export APPTAINERENV_VSCODE_PORT=$APPTAINERENV_OMICSBASE_GATEWAY_PORT
 export APPTAINERENV_OH_ENABLE_VSCODE=false
 export APPTAINERENV_AGENT_CANVAS_BASE_PATH=/
 export APPTAINERENV_XDG_CONFIG_HOME=/home/openhands/.config

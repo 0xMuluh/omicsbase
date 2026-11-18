@@ -65,8 +65,6 @@
 }
 
 {$OMICSBASE_WORKSPACE_HOST} {
-    @internal path /api/omicsbase/revoke
-    respond @internal 404
     route {
         # Reports on Roihu (deployment/roihu): tunnel clients from users' jobs carry their
         # own per-job credentials (roihu-relay service).
@@ -91,17 +89,17 @@
             reverse_proxy 127.0.0.1:{http.request.header.X-Roihu-Port}
         }
 
-        # The shared Reports container sits behind the OmicsBase login: the gateway lets a
-        # request through only with a valid launch ticket or its signed session cookie.
-        # Pre-flight requests carry no credentials and are let through.
-        @needs_login not method OPTIONS
-        forward_auth @needs_login 127.0.0.1:3001 {
-            uri /api/omicsbase/auth
-            # Send the login check as a plain request even when the original is a WebSocket.
-            header_up -Upgrade
-            header_up -Connection
-        }
-        reverse_proxy 127.0.0.1:3001
+        # Without a Roihu session nothing sits behind this host. OmicsBase's pages call the
+        # session's gateway cross-site; their pre-flight checks carry no cookies, so they are
+        # answered here.
+        @preflight method OPTIONS
+        header @preflight Access-Control-Allow-Origin "https://{$OMICSBASE_APP_HOST}"
+        header @preflight Access-Control-Allow-Credentials true
+        header @preflight Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE"
+        header @preflight Access-Control-Allow-Headers "Authorization, Content-Type"
+        header @preflight Vary Origin
+        respond @preflight 204
+        respond "No Reports session is open in this browser." 404
     }
 }
 
