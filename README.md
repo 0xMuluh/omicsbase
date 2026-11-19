@@ -97,10 +97,38 @@ Self-hosting is a developer setup: see [docs/SETUP.md](docs/SETUP.md).
 git clone --recurse-submodules https://github.com/0xMuluh/omicsbase.git
 ```
 
-Built on [LibreChat](https://github.com/0xMuluh/LibreChat) and [OpenHands](https://github.com/0xMuluh/OpenHands); see [UPSTREAM.md](UPSTREAM.md) and [docs/](docs/).
+## Related projects
+
+OmicsBase builds on open-source AI and bioinformatics projects. See [UPSTREAM.md](UPSTREAM.md) for fork provenance and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licences.
+
+<p align="center">
+  <a href="https://github.com/LibreChat-AI/LibreChat"><img alt="LibreChat" src="https://img.shields.io/badge/LibreChat-Notes_UI-111827?style=for-the-badge"></a>
+  <a href="https://github.com/OpenHands/OpenHands"><img alt="OpenHands" src="https://img.shields.io/badge/OpenHands-Autonomous_Agents-4c1d95?style=for-the-badge"></a>
+  <a href="https://bioconductor.org"><img alt="Bioconductor" src="https://img.shields.io/badge/Bioconductor-R_Ecosystem-1a5f7a?style=for-the-badge"></a>
+  <a href="https://quarto.org"><img alt="Quarto" src="https://img.shields.io/badge/Quarto-Reproducible_Reports-3b82f6?style=for-the-badge"></a>
+</p>
+
+| Project | Role in OmicsBase |
+| --- | --- |
+| [**LibreChat**](https://github.com/LibreChat-AI/LibreChat) | Workspace UI, model routing and the notes that run R |
+| [**OpenHands**](https://github.com/OpenHands/OpenHands) | The Reports agent and Agent Canvas, run in your own Roihu job |
+| [**Bioconductor**](https://bioconductor.org) | R packages, reference datasets, and books powering the knowledge base |
+| [**Quarto**](https://quarto.org) | Multi-page HTML, PDF, and Word report rendering |
 
 ## Licence
 
 [MIT](LICENSE) for original OmicsBase code. Third-party code: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Book texts: [knowledge/ATTRIBUTION.md](knowledge/ATTRIBUTION.md).
 
-Developed at the University of Turku · [datascience.utu.fi](https://datascience.utu.fi)
+---
+
+<div align="center">
+
+💖 Thank you for using OmicsBase
+
+If OmicsBase helps your work, give it a ⭐
+
+[Documentation](docs/) • [Issue Feedback](https://github.com/0xMuluh/omicsbase/issues)
+
+Developed by [Turku Data Science](https://datascience.utu.fi), University of Turku
+
+</div>
