@@ -52,6 +52,25 @@ services:
       - ./data/logs:/app/logs
       - ./data/projects:/app/projects
 
+  # Loads the example notes in ./examples into this install on every start, so the landing
+  # page has examples. Safe to run again. install.sh downloads them; by hand:
+  #   mkdir -p examples && curl -fsSL https://github.com/0xMuluh/omicsbase/releases/download/examples-2026-11-20/omicsbase-examples.tgz | tar xz -C examples --strip-components=1
+  examples:
+    image: ghcr.io/0xmuluh/omicsbase-librechat:${OMICSBASE_VERSION:-latest}
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: "no"
+    depends_on:
+      - mongodb
+    entrypoint: ["node", "/import_examples.js"]
+    working_dir: /app
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - NODE_PATH=/app/node_modules
+    volumes:
+      - ./import_examples.js:/import_examples.js:ro
+      - ./examples:/examples:ro
+      - ./data/projects:/app/projects
+
   mongodb:
     image: mongo:8.0.20
     restart: unless-stopped
