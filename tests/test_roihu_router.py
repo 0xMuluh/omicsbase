@@ -46,3 +46,50 @@ def test_cookies_from_before_generations_still_work(router):
     ).decode().rstrip("=")
     mac = router.hmac.new(router._secret(), legacy_body.encode(), router.hashlib.sha256).hexdigest()
     assert router.verify(f"{legacy_body}.{mac}") is not None
+
+
+def test_a_pairing_code_attaches_one_machine_once(router):
+    code = router.create_pairing("u1")["code"]
+    route = router.claim_pairing(code.lower().replace("-", " "), "lab-pc\x07")
+    assert route["user"] == "u1" and route["expires"] is None
+    assert route["relay_auth"].startswith(f"job-{route['route']}:")
+    assert router.claim_pairing(code, "again") is None
+    [live] = router.user_routes("u1")
+    assert live["meta"] == {"kind": "attached", "name": "lab-pc"}
+
+
+def test_an_attached_machine_stays_until_removed_and_its_cookies_expire(router, monkeypatch):
+    route = router.claim_pairing(router.create_pairing("u1")["code"], "pc")["route"]
+    cookie = cookie_for(router, route, "u1")
+    later = router.time.time() + router.ATTACHED_COOKIE_SECONDS + 60
+    monkeypatch.setattr(router.time, "time", lambda: later)
+    assert router.verify(cookie) is None
+    assert router._prune(router._load(router.ROUTES, {}))
+    assert router.verify(cookie_for(router, route, "u1"))["user"] == "u1"
+    assert router.remove(route, "u1") and router.user_routes("u1") == []
+
+
+def test_pairing_codes_expire_and_a_newer_code_replaces_the_older(router, monkeypatch):
+    first = router.create_pairing("u1")["code"]
+    second = router.create_pairing("u1")["code"]
+    assert router.claim_pairing(first, "pc") is None
+    now = router.time.time()
+    monkeypatch.setattr(router.time, "time", lambda: now + router.PAIRING_SECONDS + 1)
+    assert router.claim_pairing(second, "pc") is None
+
+
+def test_a_user_with_a_session_cannot_attach_another_machine(router):
+    router.create_route("u1", 1)
+    assert router.claim_pairing(router.create_pairing("u1")["code"], "pc") == "busy"
+    assert router.claim_pairing("not-a-code", "pc") is None
+
+
+def test_a_port_still_bound_by_an_old_tunnel_is_not_handed_out(router, monkeypatch):
+    import socket
+    with socket.socket() as squatter:
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen()
+        held = squatter.getsockname()[1]
+        monkeypatch.setattr(router, "PORTS", range(held, held + 2))
+        route = router.create_route("u1", 1)["route"]
+        assert router._load(router.ROUTES, {})[route]["port"] == held + 1

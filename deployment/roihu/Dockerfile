@@ -1,7 +1,8 @@
-# Reports image for per-user jobs on Roihu: the Reports image plus the tunnel client, the
-# current OmicsBase gateway, and upstream's entrypoint adapted for a shared compute node
-# (roihu_entrypoint.py). Our own patched entrypoint stays for the VM; Roihu jobs start
-# entrypoint.roihu.sh. Built from the repository root:
+# Reports image for per-user jobs on Roihu and for machines users attach themselves: the
+# Reports image plus the tunnel client, the current OmicsBase gateway, and upstream's
+# entrypoint adapted for a shared compute node (roihu_entrypoint.py). Our own patched
+# entrypoint stays for the VM; Roihu jobs start entrypoint.roihu.sh. Built from the
+# repository root:
 #
 #   docker build -f deployment/roihu/Dockerfile -t ghcr.io/0xmuluh/omicsbase-reports:<tag> .
 ARG BASE_IMAGE=omicsbase-openhands:v1.41.0
@@ -34,4 +35,14 @@ RUN curl -fsSL -o /tmp/chisel.gz \
     && chmod 755 /usr/local/bin/chisel \
     && rm /tmp/chisel.gz
 
+# "Use my own computer": `docker run <image> https://omicsbase.utu.fi --pair <code>` pairs the
+# machine and starts the agent (connect.py). Roihu jobs start entrypoint.roihu.sh themselves
+# (apptainer exec), so this entrypoint does not apply to them. /projects is created here so a
+# new named volume mounted there belongs to openhands.
+COPY deployment/roihu/connect.py /usr/local/bin/omicsbase-connect
+RUN chmod 755 /usr/local/bin/omicsbase-connect \
+    && mkdir -p /projects && chown openhands:openhands /projects
+
 USER openhands
+ENTRYPOINT ["python3", "/usr/local/bin/omicsbase-connect"]
+CMD []
