@@ -81,10 +81,14 @@ if [ ! -d examples/db ]; then
 fi
 mkdir -p examples
 
-# 6. Start.
+# 6. Start. Docker Compose knows this install as the project "omicsbase"; another project of
+#    that name in a different folder would be taken over, so stop instead.
+other=$(docker ps -a --filter label=com.docker.compose.project=omicsbase \
+  --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | grep -vxF -e "$PWD" -e "$(pwd -P)" || true)
+[ -z "$other" ] || fail "Docker already has a project called \"omicsbase\", from $other. Nothing was changed. Remove it first (cd $other && docker compose down), then run this again."
 say "Downloading the images (about 8 GB the first time)..."
 docker compose pull --quiet || fail "the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped."
-docker compose up -d --remove-orphans || fail "the services did not start. See: cd $DIR && docker compose logs"
+docker compose up -d || fail "the services did not start. See: cd $DIR && docker compose logs"
 
 say "Starting (about a minute)..."
 i=0
