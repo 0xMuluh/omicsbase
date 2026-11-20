@@ -86,7 +86,7 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 | **📦 Reproducible runs** | Every session runs in the same pinned container image |
 | **🤖 Your agent** | OpenHands, Claude Code, Codex, Gemini CLI, Pi or OpenCode, with your own key |
 
-Needs a CSC account and a project with Roihu access.
+Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent. It connects out to OmicsBase, so it needs no open ports, and your files stay on it.
 
 ## Getting started
 
@@ -100,7 +100,12 @@ With Docker installed, one command sets it up in `~/omicsbase` and opens it on h
 curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | sh
 ```
 
-The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine; what leaves it is what you send to the model provider you chose. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes.
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine; what leaves it is what you send to the model provider you chose. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
+
+Either half can run on a bigger machine while the install stays on your laptop:
+
+- **Notes:** start the engine on a server and set `ENGINE_URL` in `~/omicsbase/.env`; see [local/engine-server](local/engine-server/README.md).
+- **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine, which must be reachable from the install on port 8443; paste the pairing string it prints, and Reports runs there.
 
 To work on OmicsBase itself, see [docs/SETUP.md](docs/SETUP.md).
 
