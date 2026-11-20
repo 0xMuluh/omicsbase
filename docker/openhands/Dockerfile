@@ -41,6 +41,18 @@ RUN id -u openhands >/dev/null 2>&1 || useradd -u 10001 -m -s /bin/bash openhand
     && mkdir -p /projects /home/openhands/.openhands \
     && chown -R openhands:openhands /projects /home/openhands /opt/agent-canvas
 
+# 6. "Use my own computer" in a local install: the reports-link service runs the router
+# (deployment/roihu/roihu_router.py) and dials out to users' machines with chisel 1.12.0
+# (checksums of the release archive, from its checksums file, and of the binary).
+COPY roihu_router.py /opt/omicsbase/roihu_router.py
+RUN curl -fsSL -o /tmp/chisel.gz \
+        https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_linux_amd64.gz \
+    && echo "f3f180f1d93aa72cce4e6386f98cc06569a0146fbd65eb4423cf83e6434bcfe6  /tmp/chisel.gz" | sha256sum -c - \
+    && gunzip -c /tmp/chisel.gz > /usr/local/bin/chisel \
+    && echo "811362311f13ac4bdc42fe4e7650aca618a68e3a40f930de88536d18b14d2b52  /usr/local/bin/chisel" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/chisel /opt/omicsbase && chmod 644 /opt/omicsbase/roihu_router.py \
+    && rm /tmp/chisel.gz
+
 # No usage analytics from the Reports page or the agent server.
 ENV AGENT_CANVAS_DISABLE_TELEMETRY=1 \
     VITE_DO_NOT_TRACK=1 \

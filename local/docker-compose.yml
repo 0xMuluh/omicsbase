@@ -43,6 +43,11 @@ services:
       # Reports runs in the container below, behind the reports-gate login check.
       - OMICSBASE_REPORTS_MODE=local
       - OMICSBASE_OPENHANDS_PUBLIC_URL=http://localhost:3001
+      # "Use my own computer": users' machines, through the reports-link service.
+      - ROIHU_ROUTER_URL=http://reports-link:18096
+      # The image users run on their own machine (deployment/roihu/Dockerfile).
+      - ROIHU_IMAGE_TAG=v1.41.0-roihu4
+      - ROIHU_ROUTER_SECRET=${OMICSBASE_LINK_SECRET:?run install.sh or set OMICSBASE_LINK_SECRET in .env}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -130,6 +135,25 @@ services:
       - ./data/projects:/projects
       - ./data/reports:/home/openhands/.openhands
 
+  # "Use my own computer": each user's Reports on a machine of their own. Keeps the users'
+  # routes and dials out to their machines, one tunnel each; reports-gate asks it which
+  # machine a request belongs to. The same image as Reports, so nothing extra to download.
+  reports-link:
+    image: ghcr.io/0xmuluh/omicsbase-reports:${OMICSBASE_VERSION:-latest}
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: ["python3", "/opt/omicsbase/roihu_router.py", "serve"]
+    environment:
+      - ROIHU_ROUTER_STATE=/state
+      - ROIHU_ROUTER_HOST=0.0.0.0
+      - ROIHU_ROUTER_ADMIN_HOST=0.0.0.0
+      - ROIHU_ROUTER_ADMIN_SECRET=${OMICSBASE_LINK_SECRET:?run install.sh or set OMICSBASE_LINK_SECRET in .env}
+      - ROIHU_ROUTER_CHECK_FALLBACK=1
+      - ROIHU_PUBLIC_URL=http://localhost:3001
+      - ROIHU_APP_URL=http://localhost:3080
+    volumes:
+      - ./data/reports-link:/state
+
   # Lets a request through to Reports only with a valid OmicsBase ticket or the signed
   # cookie the gateway sets after one.
   reports-gate:
@@ -139,6 +163,7 @@ services:
       - "127.0.0.1:3001:3001"
     depends_on:
       - reports
+      - reports-link
     volumes:
       - ./reports-gate.Caddyfile:/etc/caddy/Caddyfile:ro
 

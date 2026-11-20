@@ -73,6 +73,7 @@ def main():
         gateway_src = ROOT / 'docker/openhands/gateway'
         shutil.copytree(gateway_src, context / 'gateway', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         shutil.copyfile(ROOT / 'docker/openhands/patch_entrypoint.py', context / 'patch_entrypoint.py')
+        shutil.copyfile(ROOT / 'deployment/roihu/roihu_router.py', context / 'roihu_router.py')
         shutil.copyfile(ROOT / 'docker/openhands/Dockerfile', context / 'Dockerfile')
         run(['docker', '--context', args.context, 'build', '-t', args.tag, str(context)])
 
