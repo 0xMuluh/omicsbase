@@ -1,0 +1,186 @@
+# OmicsBase on one machine: notes, Reports and the app, reachable only from this machine.
+# Start with `docker compose up -d` in this folder, then open http://localhost:3080.
+#
+# Optional extras: `--profile files` for attached-file search (needs an embeddings key),
+# `--profile admin` for the admin panel on http://localhost:3000.
+
+name: omicsbase
+
+services:
+  api:
+    image: ghcr.io/0xmuluh/omicsbase-librechat:${OMICSBASE_VERSION:-latest}
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "127.0.0.1:3080:3080"
+    depends_on:
+      - mongodb
+      - meilisearch
+      - engine
+    env_file: .env
+    environment:
+      - HOST=0.0.0.0
+      - APP_TITLE=OmicsBase
+      - CUSTOM_FOOTER=OmicsBase · open source · [GitHub](https://github.com/0xMuluh/omicsbase)
+      - HELP_AND_FAQ_URL=https://github.com/0xMuluh/omicsbase
+      - PORT=3080
+      - DOMAIN_CLIENT=http://localhost:3080
+      - DOMAIN_SERVER=http://localhost:3080
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - SEARCH=true
+      # One app process, no Redis: scheduled agents run in this process.
+      - SCHEDULES_SINGLE_PROCESS=true
+      - LIBRECHAT_TEMP_CREDENTIALS_PATH=/app/data/.env.temp
+      # Email and password; the first account becomes the admin.
+      - ALLOW_EMAIL_LOGIN=true
+      - ALLOW_REGISTRATION=true
+      - ALLOW_SOCIAL_LOGIN=false
+      - ALLOW_SOCIAL_REGISTRATION=false
+      - NOTEKERNEL_URL=http://engine:8001
+      - PROJECTS_DIR=/app/projects
+      # Reports runs in the container below, behind the reports-gate login check.
+      - OMICSBASE_REPORTS_MODE=local
+      - OMICSBASE_OPENHANDS_PUBLIC_URL=http://localhost:3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+      - ./data/app:/app/data
+      - ./data/uploads:/app/uploads
+      - ./data/images:/app/client/public/images
+      - ./data/logs:/app/logs
+      - ./data/projects:/app/projects
+
+  # Loads the example notes in ./examples into this install on every start, so the landing
+  # page has examples. Safe to run again. install.sh downloads them; by hand:
+  #   mkdir -p examples && curl -fsSL https://github.com/0xMuluh/omicsbase/releases/download/examples-2026-11-20/omicsbase-examples.tgz | tar xz -C examples --strip-components=1
+  examples:
+    image: ghcr.io/0xmuluh/omicsbase-librechat:${OMICSBASE_VERSION:-latest}
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: "no"
+    depends_on:
+      - mongodb
+    entrypoint: ["node", "/import_examples.js"]
+    working_dir: /app
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - NODE_PATH=/app/node_modules
+    volumes:
+      - ./import_examples.js:/import_examples.js:ro
+      - ./examples:/examples:ro
+      - ./data/projects:/app/projects
+
+  mongodb:
+    image: mongo:8.0.20
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: mongod --noauth --bind_ip_all
+    volumes:
+      - ./data/mongodb:/data/db
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.35.1
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:?run install.sh or set MEILI_MASTER_KEY in .env}
+    volumes:
+      - ./data/meilisearch:/meili_data
+
+  # R and Bioconductor for notes. The browser loads plots from it on localhost:8001.
+  engine:
+    image: ghcr.io/0xmuluh/omicsbase-engine:${OMICSBASE_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - PROJECTS_DIR=/app/projects
+      - BASE_URL=http://localhost:8001
+      - DOMAIN_CLIENT=http://localhost:3080
+      - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?run install.sh or set OMICSBASE_AUTH_SECRET in .env}
+      - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
+      - LIBRECHAT_INTERNAL_URL=http://api:3080
+      - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
+      - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
+      - RETICULATE_PYTHON=/usr/bin/python3
+    volumes:
+      - ./data/projects:/app/projects
+      - ./data/engine-cache:/app/cache
+    command: ["python3", "-m", "engine.server"]
+
+  # The Reports agent and viewer. Not published itself: the page carries the agent's
+  # session key, so it is reached only through reports-gate.
+  reports:
+    image: ghcr.io/0xmuluh/omicsbase-reports:${OMICSBASE_VERSION:-latest}
+    restart: unless-stopped
+    group_add:
+      - "${GID:-1000}"
+    environment:
+      - AGENT_CANVAS_BASE_PATH=/
+      - AGENT_CANVAS_ALLOW_LAN_SESSION_KEY=true
+      - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?run install.sh or set OMICSBASE_AUTH_SECRET in .env}
+      - DOMAIN_CLIENT=http://localhost:3080
+      - OMICSBASE_OPENHANDS_PUBLIC_URL=http://localhost:3001
+      - VSCODE_PORT=18002
+      - OH_ENABLE_VSCODE=false
+      # No provider keys: each user adds their own in Reports' settings.
+    volumes:
+      - ./data/projects:/projects
+      - ./data/reports:/home/openhands/.openhands
+
+  # Lets a request through to Reports only with a valid OmicsBase ticket or the signed
+  # cookie the gateway sets after one.
+  reports-gate:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      - reports
+    volumes:
+      - ./reports-gate.Caddyfile:/etc/caddy/Caddyfile:ro
+
+  # --profile files: attached-file search. Embeddings go to the provider set in .env.
+  vectordb:
+    profiles: [files]
+    image: pgvector/pgvector:0.8.0-pg15-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    volumes:
+      - ./data/vectordb:/var/lib/postgresql/data
+
+  rag_api:
+    profiles: [files]
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev-lite:latest
+    restart: unless-stopped
+    depends_on:
+      - vectordb
+    env_file: .env
+    environment:
+      - DB_HOST=vectordb
+      - POSTGRES_DB=rag
+      - POSTGRES_USER=rag
+      - POSTGRES_PASSWORD=rag
+      - RAG_PORT=8000
+
+  # --profile admin: the admin panel on http://localhost:3000.
+  admin-panel:
+    profiles: [admin]
+    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+    environment:
+      - PORT=3000
+      - SESSION_SECRET=${ADMIN_PANEL_SESSION_SECRET:-}
+      - API_SERVER_URL=http://api:3080
+      - VITE_API_BASE_URL=http://localhost:3080
+      - SESSION_COOKIE_SECURE=false
+      - ADMIN_SSO_ENABLED=false

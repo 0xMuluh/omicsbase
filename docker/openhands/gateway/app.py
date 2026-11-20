@@ -69,5 +69,4 @@ app.include_router(sessions_router)
 app.include_router(proxy_router)
 app.include_router(editor_router)
 app.include_router(report_router)
-if ROIHU:
-    app.include_router(project_router)
+app.include_router(project_router)

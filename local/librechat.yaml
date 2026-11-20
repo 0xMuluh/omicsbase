@@ -1,0 +1,77 @@
+# OmicsBase on one machine. Each user enters their own model key in the browser (stored
+# encrypted per user), or uses a model already running in Ollama on this machine.
+version: 1.2.0
+
+cache: true
+
+interface:
+  appTitle: "OmicsBase"
+  modelSelect: true
+
+fileConfig:
+  endpoints:
+    default:
+      supportedMimeTypes: &dataFiles
+        - "image/.*"
+        - "text/.*"
+        - "application/pdf"
+        - "application/json"
+        - "application/xml"
+        - "application/zip"
+        - "application/x-zip-compressed"
+        - "application/x-tar"
+        - "application/gzip"
+        - "application/x-gzip"
+        - "application/x-r-rds"
+        - "application/x-parquet"
+        - "application/vnd.apache.parquet"
+        - "application/x-hdf"
+        - "application/x-hdf5"
+        - "application/octet-stream"
+    custom:
+      supportedMimeTypes: *dataFiles
+
+mcpSettings:
+  allowedDomains:
+    - 'engine'
+    - 'http://engine:8001'
+  allowedAddresses:
+    - 'engine:8001'
+
+# The notes tools (R cells, packages, files). Every note selects them.
+mcpServers:
+  notethreads:
+    type: sse
+    url: http://engine:8001/sse
+    timeout: 660000
+    serverInstructions: true
+
+endpoints:
+  # Ollama on this machine is a private address; allow just its port.
+  allowedAddresses:
+    - 'host.docker.internal:11434'
+  agents:
+    # Each tool call uses two graph steps; 24 allows about 11 calls per turn.
+    recursionLimit: 24
+    maxRecursionLimit: 30
+  custom:
+    - name: "OpenRouter"
+      apiKey: "user_provided"
+      baseURL: "https://openrouter.ai/api/v1"
+      models:
+        default: ["openai/gpt-6-luna"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "OpenRouter"
+      iconURL: "openrouter"
+    # Models already pulled in Ollama (https://ollama.com) show up here. Notes need a
+    # model that supports tool calls.
+    - name: "Ollama"
+      apiKey: "ollama"
+      baseURL: "http://host.docker.internal:11434/v1"
+      models:
+        default: ["qwen3"]
+        fetch: true
+      titleConvo: true
+      modelDisplayLabel: "Ollama"
+      iconURL: "ollama"

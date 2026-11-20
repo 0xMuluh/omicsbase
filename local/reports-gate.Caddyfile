@@ -1,0 +1,12 @@
+# Reports' login check: every request except a CORS pre-flight must carry a valid
+# OmicsBase launch ticket or the gateway's signed cookie (the gateway's /api/omicsbase/auth).
+:3001 {
+	@needs_login not method OPTIONS
+	forward_auth @needs_login reports:8000 {
+		uri /api/omicsbase/auth
+		# Send the check as a plain request even when the original is a WebSocket.
+		header_up -Upgrade
+		header_up -Connection
+	}
+	reverse_proxy reports:8000
+}

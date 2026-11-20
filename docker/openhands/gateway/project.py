@@ -1,23 +1,24 @@
-"""Report rendering inside a user's Reports job on Roihu.
+"""Report rendering where the report's files live: in the Reports container or job.
 
-On the VM the notes engine renders reports; on Roihu the report's files live in the job,
-so the job renders them. Same answer as the engine's /api/projects/<id>/render, under
+Same answer as the notes engine's /api/projects/<id>/render, under
 /api/omicsbase/projects/<id>/render. Status comes from the report viewer (report.py).
 """
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from gateway.core import PROJECTS_ROOT, PROJECT_ID
+from gateway.auth import require_user
+from gateway.core import PROJECTS_ROOT, PROJECT_ID, ROIHU
 
 router = APIRouter(tags=["project"])
 
-def _report_dir(project_id: str) -> Path:
+def _report_dir(project_id: str, user_id) -> Path:
+    """On Roihu a report is PROJECTS_ROOT/<id>; with several users, PROJECTS_ROOT/users/<user>/<id>."""
     if not PROJECT_ID.match(project_id):
         raise HTTPException(status_code=400, detail="Invalid project id")
-    return PROJECTS_ROOT / project_id
+    return PROJECTS_ROOT / project_id if ROIHU else PROJECTS_ROOT / "users" / str(user_id) / project_id
 
 
 def _scaffold(project_dir: Path, project_id: str) -> None:
@@ -65,8 +66,8 @@ cat("R and Bioconductor runtime initialized.\\n")
 
 
 @router.post("/api/omicsbase/projects/{project_id}/render")
-async def project_render(project_id: str):
-    project_dir = _report_dir(project_id)
+async def project_render(request: Request, project_id: str):
+    project_dir = _report_dir(project_id, require_user(request))
     project_dir.mkdir(parents=True, exist_ok=True)
     if not (project_dir / "_quarto.yml").exists() and not list(project_dir.glob("*.qmd")):
         _scaffold(project_dir, project_id)
