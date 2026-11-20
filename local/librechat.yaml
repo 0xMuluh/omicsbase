@@ -44,6 +44,9 @@ mcpServers:
     url: ${ENGINE_URL}/sse
     headers:
       X-Internal-Secret: ${OMICSBASE_ENGINE_SECRET}
+    # The engine is authenticated by the header above, not OAuth; without this, LibreChat
+    # probes it without the header, takes the 401 for OAuth and loads no tools.
+    requiresOAuth: false
     timeout: 660000
     serverInstructions: true
 
