@@ -1,4 +1,5 @@
-"""Route each user's browser to their own Reports job on Roihu.
+"""Route each user's browser to their own Reports session: a job on Roihu, or a machine of
+their own that they attached with a one-time pairing code (a route with no expiry).
 
 Every job gets its own tunnel port on the VM and its own relay credential that may open
 only that port (chisel reloads its authfile on change). The open link carries a one-time
@@ -31,6 +32,7 @@ from urllib.parse import parse_qs, urlsplit
 
 STATE = Path(os.environ.get("ROIHU_ROUTER_STATE", "/srv/omicsbase/roihu-relay"))
 ROUTES = STATE / "routes.json"
+PAIRINGS = STATE / "pairings.json"
 AUTHFILE = STATE / "users.json"
 SECRET = STATE / "router-secret"
 ADMIN_SECRET = STATE / "admin-secret"
@@ -42,6 +44,12 @@ COOKIE = "roihu_route"
 PUBLIC_URL = "https://openhands.omicsbase.utu.fi"
 APP_URL = "https://omicsbase.utu.fi"
 OPEN_CODE_SECONDS = 600
+PAIRING_SECONDS = 600
+# Browser access to an attached machine, whose route itself does not expire.
+ATTACHED_COOKIE_SECONDS = 12 * 3600
+# Pairing codes: no easily confused characters; 10 of 31 symbols is about 50 bits.
+PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+PAIRING_LENGTH = 10
 # The page runs in auth-required mode (the key stays out of the HTML, since other users on
 # the compute node can reach the job's port), so the browser needs a registered backend
 # carrying some key. It gets a placeholder; Caddy replaces it with the job's real key.
@@ -84,6 +92,11 @@ def _secret():
     return SECRET.read_text().strip().encode()
 
 
+def _live(r):
+    """A route is live until it expires; an attached machine's route never does."""
+    return r["expires"] is None or r["expires"] >= time.time()
+
+
 def sign(job, expires, generation=0):
     claims = {"j": job, "e": expires, "g": generation}
     body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
@@ -102,7 +115,7 @@ def verify(token):
     except Exception:
         return None
     route = _load(ROUTES, {}).get(claims.get("j"))
-    if not route or claims.get("e", 0) < time.time() or route["expires"] < time.time():
+    if not route or claims.get("e", 0) < time.time() or not _live(route):
         return None
     # Signing out raises the route's cookie generation, which ends every older cookie.
     if claims.get("g", 0) != route.get("cookie_generation", 0):
@@ -121,18 +134,23 @@ def _sync_authfile(routes):
 def create_route(user, hours, meta=None):
     """New route for one job of `user`: tunnel port, relay credential, session key.
 
-    `meta` is kept with the route for OmicsBase (job ids, settings, encrypted token)."""
+    `hours` None makes a route that does not expire (an attached machine). `meta` is kept
+    with the route for OmicsBase (job ids, settings, encrypted token, machine name)."""
     with LOCK:
         routes = _prune(_load(ROUTES, {}))
+        # A port can still be bound by a tunnel whose route is gone: chisel keeps an open
+        # connection after its credential is removed (a disconnected machine left running).
+        # Such a port is never handed out again, so that tunnel cannot receive another
+        # session's traffic.
         used = {r["port"] for r in routes.values()}
-        port = next((p for p in PORTS if p not in used), None)
+        port = next((p for p in PORTS if p not in used and not _listening(p)), None)
         if port is None:
             raise RuntimeError("no free tunnel port")
         job = secrets.token_hex(8)
         routes[job] = {
             "user": str(user),
             "port": port,
-            "expires": int(time.time() + float(hours) * 3600),
+            "expires": None if hours is None else int(time.time() + float(hours) * 3600),
             "session_key": secrets.token_hex(24),
             "relay_password": secrets.token_hex(24),
             "meta": meta or {},
@@ -151,7 +169,7 @@ def create_route(user, hours, meta=None):
 
 def _owned(routes, job, user):
     r = routes.get(job)
-    if r is None or r["expires"] < time.time() or (user is not None and r["user"] != str(user)):
+    if r is None or not _live(r) or (user is not None and r["user"] != str(user)):
         return None
     return r
 
@@ -183,25 +201,28 @@ def set_meta(job, user, meta):
 def user_routes(user):
     """The user's live routes, newest first, with meta and tunnel state."""
     routes = _load(ROUTES, {})
-    mine = [(j, r) for j, r in routes.items() if r["user"] == str(user) and r["expires"] >= time.time()]
-    mine.sort(key=lambda jr: jr[1]["expires"], reverse=True)
+    mine = [(j, r) for j, r in routes.items() if r["user"] == str(user) and _live(r)]
+    mine.sort(key=lambda jr: jr[1]["expires"] or float("inf"), reverse=True)
     return [{"route": j, "expires": r["expires"], "meta": r.get("meta", {}), "connected": connected(j)} for j, r in mine]
 
 
-def connected(job, user=None):
-    """Whether the job's tunnel is up (its port listens on the VM); None if no such route."""
-    r = _owned(_load(ROUTES, {}), job, user)
-    if r is None:
-        return None
+def _listening(port):
+    """Whether a tunnel is bound to this port on the VM."""
     try:
-        with socket.create_connection(("127.0.0.1", r["port"]), timeout=1):
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
             return True
     except OSError:
         return False
 
 
+def connected(job, user=None):
+    """Whether the job's tunnel is up (its port listens on the VM); None if no such route."""
+    r = _owned(_load(ROUTES, {}), job, user)
+    return None if r is None else _listening(r["port"])
+
+
 def _prune(routes):
-    return {j: r for j, r in routes.items() if r["expires"] >= time.time()}
+    return {j: r for j, r in routes.items() if _live(r)}
 
 
 def use_open_code(code):
@@ -211,9 +232,10 @@ def use_open_code(code):
         for job, r in routes.items():
             if r.get("open_code") and hmac.compare_digest(r["open_code"], code):
                 r.pop("open_code")
-                valid = r.pop("open_code_expires") >= time.time() and r["expires"] >= time.time()
+                valid = r.pop("open_code_expires") >= time.time() and _live(r)
                 _save(ROUTES, routes)
-                return sign(job, r["expires"], r.get("cookie_generation", 0)) if valid else None
+                expires = r["expires"] or int(time.time() + ATTACHED_COOKIE_SECONDS)
+                return sign(job, expires, r.get("cookie_generation", 0)) if valid else None
     return None
 
 
@@ -228,6 +250,42 @@ def sign_out(user):
                 r.pop("open_code", None)
                 r.pop("open_code_expires", None)
         _save(ROUTES, routes)
+
+
+def _pairing_key(code):
+    """Codes are stored hashed and compared without dashes, spaces or case."""
+    normal = "".join(c for c in str(code).upper() if c in PAIRING_ALPHABET)
+    return hashlib.sha256(normal.encode()).hexdigest() if len(normal) == PAIRING_LENGTH else None
+
+
+def create_pairing(user):
+    """A one-time code with which `user` attaches a machine of their own. A newer code
+    replaces the user's earlier one."""
+    code = "".join(secrets.choice(PAIRING_ALPHABET) for _ in range(PAIRING_LENGTH))
+    expires = int(time.time() + PAIRING_SECONDS)
+    with LOCK:
+        pairings = {k: p for k, p in _load(PAIRINGS, {}).items()
+                    if p["expires"] >= time.time() and p["user"] != str(user)}
+        pairings[_pairing_key(code)] = {"user": str(user), "expires": expires}
+        _save(PAIRINGS, pairings)
+    return {"code": f"{code[:5]}-{code[5:]}", "expires": expires}
+
+
+def claim_pairing(code, name):
+    """Use a pairing code: a route with no expiry for the code's user, named after the
+    machine. None for an unknown or expired code; "busy" when the user already has a session."""
+    key = _pairing_key(code)
+    with LOCK:
+        pairings = _load(PAIRINGS, {})
+        pairing = pairings.pop(key, None) if key else None
+        _save(PAIRINGS, {k: p for k, p in pairings.items() if p["expires"] >= time.time()})
+    if pairing is None or pairing["expires"] < time.time():
+        return None
+    if user_routes(pairing["user"]):
+        return "busy"
+    clean = "".join(c for c in str(name or "") if c.isprintable()).strip()[:64]
+    route = create_route(pairing["user"], None, {"kind": "attached", "name": clean or "Your computer"})
+    return {**route, "user": pairing["user"]}
 
 
 def _prune_loop():
@@ -298,6 +356,8 @@ class AdminHandler(BaseHTTPRequestHandler):
     """Private interface for OmicsBase's backend, on the Docker network only.
 
     POST   /routes              {"user", "hours", "meta"} -> route, relay settings, session key
+    POST   /pairings            {"user"}          -> {"code", "expires"}: one-time pairing code
+    POST   /pairings/claim      {"code", "name"}  -> route, relay settings, session key, user
     GET    /routes?user=                          -> {"routes": [...]}: live routes with meta
     PUT    /routes/<id>/meta    {"user", "meta"}
     POST   /routes/<id>/link    {"user"}          -> {"url"}: one-time open link
@@ -348,6 +408,18 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return self._reply(201, create_route(body["user"], hours, body.get("meta")))
             except RuntimeError as e:
                 return self._reply(503, {"error": str(e)})
+        if parts == ["pairings"]:
+            if not body.get("user"):
+                return self._reply(400, {"error": "user required"})
+            return self._reply(201, create_pairing(body["user"]))
+        if parts == ["pairings", "claim"]:
+            try:
+                route = claim_pairing(body.get("code", ""), body.get("name"))
+            except RuntimeError as e:
+                return self._reply(503, {"error": str(e)})
+            if route == "busy":
+                return self._reply(409, {"error": "a Reports session is already running"})
+            return self._reply(201, route) if route else self._reply(404)
         if len(parts) == 3 and parts[0] == "users" and parts[2] == "sign-out":
             sign_out(parts[1])
             return self._reply(204)

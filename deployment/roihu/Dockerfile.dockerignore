@@ -4,4 +4,5 @@
 !docker/openhands/gateway
 !docker/openhands/patch_entrypoint.py
 !deployment/roihu/roihu_entrypoint.py
+!deployment/roihu/connect.py
 **/__pycache__
