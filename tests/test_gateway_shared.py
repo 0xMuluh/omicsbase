@@ -112,6 +112,26 @@ def test_conversations_are_limited_to_their_owner(gw):
     assert client.post("/api/conversations", json={}).status_code == 401
 
 
+def test_reports_render_in_the_callers_own_folder(gw, monkeypatch):
+    client, tmp_path = gw
+    project = sys.modules["gateway.project"]
+    rendered = []
+
+    class Done:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def quarto(*args, cwd=None, **kwargs):
+        rendered.append(Path(cwd))
+        return Done()
+    monkeypatch.setattr(project.asyncio, "create_subprocess_exec", quarto)
+    assert client.post(f"/api/omicsbase/projects/{REPORT}/render").status_code == 401
+    assert client.post(f"/api/omicsbase/projects/{REPORT}/render", cookies=cookie("alice")).status_code == 200
+    assert rendered == [tmp_path / "projects" / "users" / "alice" / REPORT]
+
+
 def test_cross_origin_requests_only_from_the_app(gw):
     client, _ = gw
     ok = client.options("/api/omicsbase/session", headers={"Origin": APP, "Access-Control-Request-Method": "POST"})

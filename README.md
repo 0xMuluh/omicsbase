@@ -26,7 +26,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/omicsbase-film.webp" alt="OmicsBase in 45 seconds: from the landing page into a microbiome note, where the agent asks the question, fixes its own failing R code and plots the result" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/omicsbase-film-light.webp">
+    <img src="docs/images/omicsbase-film.webp" alt="OmicsBase in 45 seconds: from the landing page into a microbiome note, where the agent asks the question, fixes its own failing R code and plots the result" width="100%">
+  </picture>
 </p>
 
 <hr>
