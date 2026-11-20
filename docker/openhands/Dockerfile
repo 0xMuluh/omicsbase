@@ -41,6 +41,11 @@ RUN id -u openhands >/dev/null 2>&1 || useradd -u 10001 -m -s /bin/bash openhand
     && mkdir -p /projects /home/openhands/.openhands \
     && chown -R openhands:openhands /projects /home/openhands /opt/agent-canvas
 
+# No usage analytics from the Reports page or the agent server.
+ENV AGENT_CANVAS_DISABLE_TELEMETRY=1 \
+    VITE_DO_NOT_TRACK=1 \
+    DO_NOT_TRACK=1
+
 USER openhands
 WORKDIR /opt/agent-canvas
 EXPOSE 8000

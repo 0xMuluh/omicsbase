@@ -8,11 +8,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 import httpx
-import jwt
 from openhands.sdk.settings.acp_providers import get_acp_provider
 
 from gateway.core import (
-    AUTH_SECRET,
     AGENT_SERVER_URL,
     PROJECTS_ROOT,
     PROJECT_ID,
@@ -22,7 +20,7 @@ from gateway.core import (
     logger,
     get_session_api_key,
 )
-from gateway.auth import TicketRequest, verify_ticket, get_authenticated_user
+from gateway.auth import TicketRequest, verify_ticket, get_authenticated_user, set_user_token
 
 # Profile built from LLM_MODEL / LLM_BASE_URL / LLM_API_KEY and activated for Reports.
 DEFAULT_PROFILE = "omicsbase-default"
@@ -363,12 +361,9 @@ async def session(
         "conversation_valid": convo_valid,
         "conversations": project_convos,
     })
-    resp.set_cookie(key="omicsbase_user_id", value=user_id, max_age=86400 * 7, path="/", samesite="lax")
     user_theme = (data.theme if data and hasattr(data, "theme") and data.theme else "dark").lower()
     resp.set_cookie(key="omicsbase_theme", value=user_theme, max_age=86400 * 7, path="/", samesite="lax")
-    if AUTH_SECRET:
-        signed_tok = jwt.encode({"sub": user_id, "project_id": project_id}, AUTH_SECRET, algorithm="HS256")
-        resp.set_cookie(key="omicsbase_user_token", value=signed_tok, max_age=86400 * 7, path="/", samesite="lax", httponly=True)
+    set_user_token(resp, user_id, project_id)
     return resp
 
 
@@ -502,10 +497,7 @@ async def create_conversation(
                 "conversation_id": convo_id,
                 "agent_engine": agent_engine,
             })
-            ret.set_cookie(key="omicsbase_user_id", value=str(user_id), max_age=86400 * 7, path="/", samesite="lax")
-            if AUTH_SECRET:
-                signed_tok = jwt.encode({"sub": str(user_id), "project_id": str(project_id)}, AUTH_SECRET, algorithm="HS256")
-                ret.set_cookie(key="omicsbase_user_token", value=signed_tok, max_age=86400 * 7, path="/", samesite="lax", httponly=True)
+            set_user_token(ret, user_id, project_id)
             return ret
         except httpx.RequestError as exc:
             logger.error(f"Failed to connect to agent-server at {AGENT_SERVER_URL}: {exc}")

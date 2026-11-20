@@ -6,6 +6,7 @@ import httpx
 
 from gateway.core import (
     AGENT_SERVER_URL,
+    ROIHU,
     SESSION_REGISTRY_DIR,
     logger,
     get_session_api_key,
@@ -14,6 +15,26 @@ from gateway.core import (
 from gateway.auth import get_authenticated_user
 
 router = APIRouter(tags=["proxy"])
+
+
+def _authorize_conversation(request: Request, conversation_id: str) -> None:
+    """Let a request through only for the conversation's owner.
+
+    On Roihu the session key already limits the job to its owner. A gateway serving
+    several users needs a signed-in user who owns the conversation; conversations with
+    no recorded owner are refused.
+    """
+    user_id = get_authenticated_user(request)
+    owner = _get_conversation_owner(conversation_id)
+    if ROIHU:
+        allowed = not (owner and user_id and owner != str(user_id))
+    elif not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    else:
+        allowed = owner == str(user_id)
+    if not allowed:
+        logger.warning(f"Forbidden access: user {user_id} to conversation {conversation_id} owned by {owner}")
+        raise HTTPException(status_code=403, detail="Access denied: Conversation belongs to another user")
 
 
 @router.get("/api/conversations/search")
@@ -83,11 +104,7 @@ async def list_conversations(request: Request):
 
 @router.api_route("/api/conversations/{conversation_id}", methods=["GET", "DELETE", "PATCH", "PUT"])
 async def handle_single_conversation(conversation_id: str, request: Request):
-    user_id = get_authenticated_user(request)
-    owner = _get_conversation_owner(conversation_id)
-    if owner and user_id and owner != str(user_id):
-        logger.warning(f"Forbidden access: User {user_id} tried to access conversation {conversation_id} owned by {owner}")
-        raise HTTPException(status_code=403, detail="Access denied: Conversation belongs to another user")
+    _authorize_conversation(request, conversation_id)
 
     api_key = get_session_api_key()
     headers = {
@@ -112,11 +129,7 @@ async def handle_single_conversation(conversation_id: str, request: Request):
 
 @router.api_route("/api/conversations/{conversation_id}/{subpath:path}", methods=["GET", "POST", "DELETE", "PATCH", "PUT"])
 async def handle_conversation_subpath(conversation_id: str, subpath: str, request: Request):
-    user_id = get_authenticated_user(request)
-    owner = _get_conversation_owner(conversation_id)
-    if owner and user_id and owner != str(user_id):
-        logger.warning(f"Forbidden access: User {user_id} tried to access conversation subpath {conversation_id}/{subpath} owned by {owner}")
-        raise HTTPException(status_code=403, detail="Access denied: Conversation belongs to another user")
+    _authorize_conversation(request, conversation_id)
 
     api_key = get_session_api_key()
     headers = {
@@ -142,6 +155,8 @@ async def handle_conversation_subpath(conversation_id: str, subpath: str, reques
 @router.post("/api/conversations")
 async def create_agent_conversation_proxy(request: Request):
     user_id = get_authenticated_user(request)
+    if not user_id and not ROIHU:
+        raise HTTPException(status_code=401, detail="Authentication required")
     api_key = get_session_api_key()
     headers = {"X-Session-API-Key": api_key, "Content-Type": "application/json"}
     body = await request.body()

@@ -2,11 +2,11 @@
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from gateway.core import _get_project_dir, _resolve_safe_path
-from gateway.auth import SaveEditorFileRequest
+from gateway.auth import SaveEditorFileRequest, require_user
 
 router = APIRouter(tags=["editor"])
 
@@ -54,14 +54,14 @@ async def get_editor_page(conversation_id: str):
 
 
 @router.api_route("/api/omicsbase/editor/{conversation_id}/tree", methods=["GET", "HEAD"])
-async def get_editor_tree(conversation_id: str):
-    pdir = _get_project_dir(conversation_id)
+async def get_editor_tree(request: Request, conversation_id: str):
+    pdir = _get_project_dir(conversation_id, require_user(request))
     return _build_file_tree(pdir)
 
 
 @router.api_route("/api/omicsbase/editor/{conversation_id}/file", methods=["GET", "HEAD"])
-async def get_editor_file(conversation_id: str, path: str):
-    pdir = _get_project_dir(conversation_id)
+async def get_editor_file(request: Request, conversation_id: str, path: str):
+    pdir = _get_project_dir(conversation_id, require_user(request))
     target = _resolve_safe_path(pdir, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -84,8 +84,8 @@ async def get_editor_file(conversation_id: str, path: str):
 
 
 @router.post("/api/omicsbase/editor/{conversation_id}/file")
-async def save_editor_file(conversation_id: str, path: str, data: SaveEditorFileRequest):
-    pdir = _get_project_dir(conversation_id)
+async def save_editor_file(request: Request, conversation_id: str, path: str, data: SaveEditorFileRequest):
+    pdir = _get_project_dir(conversation_id, require_user(request))
     target = _resolve_safe_path(pdir, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_target = target.with_suffix(target.suffix + ".tmp")

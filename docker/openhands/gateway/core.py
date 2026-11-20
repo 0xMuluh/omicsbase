@@ -40,50 +40,50 @@ def get_session_api_key() -> str:
     return key
 
 
-def _get_conversation_owner(conversation_id: str) -> Optional[str]:
-    if not conversation_id or conversation_id == "default":
-        return None
+def _registry_entry(conversation_id: str) -> dict:
     session_file = SESSION_REGISTRY_DIR / f"{conversation_id}.json"
     if session_file.is_file():
         try:
-            data = json.loads(session_file.read_text())
-            return str(data.get("user_id")) if data.get("user_id") else None
+            return json.loads(session_file.read_text())
         except Exception:
             pass
-    return None
+    return {}
 
 
-def _get_project_dir(conversation_id: str) -> Path:
-    if conversation_id and conversation_id != "default":
-        session_file = SESSION_REGISTRY_DIR / f"{conversation_id}.json"
-        if session_file.is_file():
-            try:
-                data = json.loads(session_file.read_text())
-                pdir = Path(data.get("project_dir", ""))
-                if pdir.is_dir():
-                    return pdir
-            except Exception:
-                pass
-        for user_dir in (PROJECTS_ROOT / "users").glob("*"):
-            if (user_dir / conversation_id).is_dir():
-                return user_dir / conversation_id
-        if (PROJECTS_ROOT / conversation_id).is_dir():
-            return PROJECTS_ROOT / conversation_id
+def _get_conversation_owner(conversation_id: str) -> Optional[str]:
+    if not conversation_id or conversation_id == "default":
+        return None
+    owner = _registry_entry(conversation_id).get("user_id")
+    return str(owner) if owner else None
 
-    # Fallback to most recently updated project
+
+def _get_project_dir(conversation_id: str, user_id: Optional[str] = None) -> Path:
+    """The report folder for a conversation or report id.
+
+    On Roihu every report is a folder under PROJECTS_ROOT. When one gateway serves
+    several users, only the caller's own folders (PROJECTS_ROOT/users/<user_id>) are
+    searched; with no match the caller's most recent report is used, never another
+    user's.
+    """
     if ROIHU:
-        reports = [p for p in PROJECTS_ROOT.glob("*") if p.is_dir()]
-        if reports:
-            return max(reports, key=lambda p: p.stat().st_mtime)
-        return PROJECTS_ROOT
-    user_projects = list((PROJECTS_ROOT / "users").glob("*/*"))
-    if user_projects:
-        user_projects.sort(key=lambda p: p.stat().st_mtime if p.is_dir() else 0, reverse=True)
-        for p in user_projects:
-            if p.is_dir():
-                return p
+        root = PROJECTS_ROOT
+    elif user_id:
+        root = PROJECTS_ROOT / "users" / str(user_id)
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    base = root.resolve()
 
-    return PROJECTS_ROOT
+    if conversation_id and conversation_id != "default":
+        candidates = [Path(_registry_entry(conversation_id).get("project_dir") or root), root / conversation_id]
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved != base and resolved.is_relative_to(base) and resolved.is_dir():
+                return candidate
+
+    reports = [p for p in root.glob("*") if p.is_dir()]
+    if reports:
+        return max(reports, key=lambda p: p.stat().st_mtime)
+    return root
 
 
 def _resolve_safe_path(base_dir: Path, rel_path: str) -> Path:

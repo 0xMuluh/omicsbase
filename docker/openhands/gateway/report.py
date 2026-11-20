@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 import httpx
 import yaml
 
+from gateway.auth import require_user
 from gateway.core import _get_project_dir, _resolve_safe_path, get_session_api_key, AGENT_SERVER_URL
 
 router = APIRouter(tags=["report"])
@@ -270,8 +271,8 @@ async def get_report_page(request: Request, conversation_id: str):
 
 
 @router.api_route("/api/omicsbase/report/{conversation_id}/status", methods=["GET", "HEAD"])
-async def get_report_status(conversation_id: str):
-    pdir = _get_project_dir(conversation_id)
+async def get_report_status(request: Request, conversation_id: str):
+    pdir = _get_project_dir(conversation_id, require_user(request))
     report = _inspect_project_report(pdir)
     is_running = False
     agent_state_val = None
@@ -294,8 +295,8 @@ async def get_report_status(conversation_id: str):
 
 @router.api_route("/api/omicsbase/report/{conversation_id}/site/{path:path}", methods=["GET", "HEAD"])
 @router.api_route("/api/omicsbase/report/{conversation_id}/file/{path:path}", methods=["GET", "HEAD"])
-async def get_report_site_file(conversation_id: str, path: str):
-    pdir = _get_project_dir(conversation_id)
+async def get_report_site_file(request: Request, conversation_id: str, path: str):
+    pdir = _get_project_dir(conversation_id, require_user(request))
     site_dir = pdir / "_site"
     try:
         target = _resolve_safe_path(site_dir, path)

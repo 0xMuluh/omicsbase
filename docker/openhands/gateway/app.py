@@ -4,6 +4,7 @@ Main application entrypoint configuring CORS, static asset mounting,
 and modular routers for sessions, proxying, Monaco editor, and reports.
 """
 import hmac
+import os
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,9 +20,15 @@ from gateway.project import router as project_router
 
 app = FastAPI(title="OmicsBase OpenHands Gateway", version="1.0.0")
 
+# Credentialed cross-origin requests come only from the OmicsBase app (DOMAIN_CLIENT).
+# On Roihu the job's session key guards every request and the app's origin is not set.
+if ROIHU:
+    origins = {"allow_origin_regex": r"https?://.*"}
+else:
+    origins = {"allow_origins": [o.strip().rstrip("/") for o in os.environ.get("DOMAIN_CLIENT", "").split(",") if o.strip()]}
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://.*",
+    **origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

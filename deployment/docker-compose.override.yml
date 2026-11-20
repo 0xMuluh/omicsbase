@@ -6,6 +6,7 @@ services:
       - "127.0.0.1:3080:3080"
     environment:
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
+      - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_OPENHANDS_PUBLIC_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       # Where notes run: the VM engine (default) or LUMI-K (deployment/lumi-k/engine.yaml).
@@ -62,6 +63,7 @@ services:
       - BASE_URL=${OMICSBASE_ENGINE_PUBLIC_URL:-http://localhost:8001}
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
+      - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
       - LIBRECHAT_INTERNAL_URL=http://api:3080
       - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
       - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub

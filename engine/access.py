@@ -9,13 +9,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 
+def engine_secret():
+    """The secret shared with LibreChat; the Reports secret when not set separately."""
+    return os.environ.get('OMICSBASE_ENGINE_SECRET') or os.environ.get('OMICSBASE_AUTH_SECRET', '')
+
+
 def verify_project(token, project_id):
     if not token:
         return False
     try:
         header, payload, signature = token.split('.')
         decode = lambda part: base64.urlsafe_b64decode(part + '=' * (-len(part) % 4))
-        secret = os.environ.get('OMICSBASE_AUTH_SECRET', '')
+        secret = engine_secret()
         if not secret:
             return False
         expected = hmac.new(secret.encode(), f'{header}.{payload}'.encode(), hashlib.sha256).digest()
@@ -40,7 +45,7 @@ class ProjectAccess(BaseHTTPMiddleware):
         token = None
         if project_id is not None:
             internal = request.headers.get('x-internal-secret', '')
-            secret = os.environ.get('OMICSBASE_AUTH_SECRET', '')
+            secret = engine_secret()
             trusted = bool(secret and internal and hmac.compare_digest(internal, secret))
             token = (
                 request.query_params.get('token')
