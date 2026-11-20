@@ -83,8 +83,8 @@ mkdir -p examples
 
 # 6. Start.
 say "Downloading the images (about 8 GB the first time)..."
-docker compose pull --quiet
-docker compose up -d --remove-orphans
+docker compose pull --quiet || fail "the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped."
+docker compose up -d --remove-orphans || fail "the services did not start. See: cd $DIR && docker compose logs"
 
 say "Starting (about a minute)..."
 i=0
