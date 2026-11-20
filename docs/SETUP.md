@@ -90,8 +90,14 @@ Generate it independently from the LibreChat JWT secrets, for example:
 
     openssl rand -hex 32
 
-The same `OMICSBASE_AUTH_SECRET` is supplied to LibreChat, the OmicsBase engine,
-and OpenHands through `deployment/docker-compose.override.yml`.
+`OMICSBASE_AUTH_SECRET` is shared by LibreChat and Reports. LibreChat and the notes
+engine share `OMICSBASE_ENGINE_SECRET`; when it is empty they use
+`OMICSBASE_AUTH_SECRET` instead. Give the engine its own secret whenever it runs on
+another machine, so that machine never holds the Reports secret:
+
+    OMICSBASE_ENGINE_SECRET=
+
+Both reach the containers through `deployment/docker-compose.override.yml`.
 
 Set the browser-facing values in the deployment environment:
 

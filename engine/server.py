@@ -29,7 +29,8 @@ from engine import note_pods
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
-INTERNAL_SECRET = os.environ.get("OMICSBASE_AUTH_SECRET", "")
+# Shared with LibreChat only; falls back to the Reports secret when not set separately.
+INTERNAL_SECRET = os.environ.get("OMICSBASE_ENGINE_SECRET") or os.environ.get("OMICSBASE_AUTH_SECRET", "")
 LIBRECHAT_INTERNAL_URL = os.environ.get("LIBRECHAT_INTERNAL_URL", "http://api:3080").rstrip("/")
 CELL_TIMEOUT_SECONDS = 600
 
@@ -530,10 +531,8 @@ app.add_middleware(
 
 # Server-side execute only (LibreChat control plane). Browser must not call this.
 async def handle_execute(request: Request):
-    if INTERNAL_SECRET:
-        provided = request.headers.get("x-internal-secret") or request.headers.get("X-Internal-Secret")
-        if provided != INTERNAL_SECRET:
-            return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
     try:
         data = await request.json()
     except Exception:
@@ -554,10 +553,8 @@ async def handle_execute(request: Request):
 
 
 async def handle_cancel(request: Request):
-    if INTERNAL_SECRET:
-        provided = request.headers.get("x-internal-secret") or request.headers.get("X-Internal-Secret")
-        if provided != INTERNAL_SECRET:
-            return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
     try:
         data = await request.json()
     except Exception:
