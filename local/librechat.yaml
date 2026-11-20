@@ -31,10 +31,9 @@ fileConfig:
     custom:
       supportedMimeTypes: *dataFiles
 
+# The engine on this machine has a private address; allow just its port. An engine on
+# another machine (ENGINE_URL in .env) is reached at its public HTTPS address.
 mcpSettings:
-  allowedDomains:
-    - 'engine'
-    - 'http://engine:8001'
   allowedAddresses:
     - 'engine:8001'
 
@@ -42,7 +41,9 @@ mcpSettings:
 mcpServers:
   notethreads:
     type: sse
-    url: http://engine:8001/sse
+    url: ${ENGINE_URL}/sse
+    headers:
+      X-Internal-Secret: ${OMICSBASE_ENGINE_SECRET}
     timeout: 660000
     serverInstructions: true
 

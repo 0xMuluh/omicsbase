@@ -51,8 +51,6 @@ spec:
               value: https://omicsbase-engine.2.rahtiapp.fi
             - name: DOMAIN_CLIENT
               value: https://omicsbase.utu.fi
-            - name: LIBRECHAT_INTERNAL_URL
-              value: https://omicsbase.utu.fi
             # A 12 GiB limit holds about three live R sessions with data loaded.
             - name: NOTE_MAX_SESSIONS
               value: "3"

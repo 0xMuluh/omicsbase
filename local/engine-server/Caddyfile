@@ -1,0 +1,3 @@
+{$ENGINE_DOMAIN} {
+	reverse_proxy engine:8001
+}
