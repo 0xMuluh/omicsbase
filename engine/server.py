@@ -7,10 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
-import urllib.request
 import uuid
-from urllib.parse import quote
-import json
 from pathlib import Path
 from starlette.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
@@ -31,7 +28,6 @@ PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
 # Shared with LibreChat only; falls back to the Reports secret when not set separately.
 INTERNAL_SECRET = os.environ.get("OMICSBASE_ENGINE_SECRET") or os.environ.get("OMICSBASE_AUTH_SECRET", "")
-LIBRECHAT_INTERNAL_URL = os.environ.get("LIBRECHAT_INTERNAL_URL", "http://api:3080").rstrip("/")
 CELL_TIMEOUT_SECONDS = 600
 
 # New project files remain writable by the shared project group.
@@ -101,62 +97,18 @@ mcp = MCPServer(
     )
 )
 async def execute_r_cell(code: str, thread_id: str = "default", cell_id: str = None) -> str:
-    """Persist the lifecycle around direct R execution without blocking the ASGI loop."""
-    return await asyncio.to_thread(_execute_agent_cell, code, thread_id, cell_id)
+    """Run R without blocking the ASGI loop. OmicsBase answers this tool itself (it saves the
+    cell and runs it through /api/execute, so the engine never calls back); this serves other
+    MCP clients, which keep no cells, so cell_id is not used here."""
+    return await asyncio.to_thread(_execute_agent_cell, code, thread_id)
 
 
-def _persist_cell(thread_id, action, payload):
-    req = urllib.request.Request(
-        f"{LIBRECHAT_INTERNAL_URL}/api/notes/{quote(thread_id, safe='')}/internal/{action}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Internal-Secret": INTERNAL_SECRET},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _execute_agent_cell(code, thread_id, cell_id=None):
-    saved = None
-    if INTERNAL_SECRET and LIBRECHAT_INTERNAL_URL:
-        try:
-            payload = {"code": code, "timeout_seconds": CELL_TIMEOUT_SECONDS}
-            if cell_id:
-                payload["cell_id"] = str(cell_id).strip()
-            saved = _persist_cell(thread_id, "start", payload)
-        except Exception as exc:
-            return f"Could not save the code cell; R was not executed: {exc}"
-
+def _execute_agent_cell(code, thread_id):
     try:
-        result = _run_cell(code, thread_id, CELL_TIMEOUT_SECONDS, saved["executionId"] if saved else None)
+        result = _run_cell(code, thread_id, CELL_TIMEOUT_SECONDS)
     except Exception as exc:
-        result = {"success": False, "error": str(exc), "markdown": f"Execution failed: {exc}"}
-    status = ("cancelled" if result.get("cancelled") else "timed_out" if result.get("timed_out")
-              else "failed" if result.get("success") is False else "completed")
-    warning = ""
-    if saved:
-        finish = f"finish/{saved['executionId']}"
-        try:
-            _persist_cell(thread_id, finish, result)
-        except Exception as exc:
-            warning = f"\n\nResult could not be saved: {exc}. R has already run; do not rerun automatically."
-            # Close the cell with a small result so it is never left running.
-            try:
-                _persist_cell(thread_id, finish, {
-                    "success": False,
-                    "error": f"The result could not be saved: {exc}",
-                    "markdown": f"R ran, but its result could not be saved: {exc}",
-                    "cell_id": result.get("cell_id"),
-                    "engine_run_dir": result.get("engine_run_dir"),
-                })
-                status = "failed"
-            except Exception:
-                pass
-        meta = (f"<!-- noteCell cellId={saved['cellId']} executionId={saved['executionId']} "
-                f"status={status} -->\n[cell_id: \"{saved['cellId']}\"]\n")
-    else:
-        meta = ""
-    return meta + result.get("markdown", "") + warning
+        return f"Execution failed: {exc}"
+    return result.get("markdown", "")
 
 
 def _cancel_path(thread_id, execution_id=None):

@@ -85,8 +85,6 @@ spec:
               value: https://omicsbase.utu.fi/omics-engine
             - name: DOMAIN_CLIENT
               value: https://omicsbase.utu.fi
-            - name: LIBRECHAT_INTERNAL_URL
-              value: https://omicsbase.utu.fi
             - name: NOTE_RUNNER
               value: pods
             # Live note pods at most. Each has a limit of 2 cores and 4 GiB

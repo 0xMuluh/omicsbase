@@ -1,0 +1,33 @@
+# The OmicsBase engine on your own server, for an install that sets ENGINE_URL. Notes' R,
+# their files and plots then live here. Caddy gets an HTTPS certificate for ENGINE_DOMAIN,
+# so that name must point at this server, with ports 80 and 443 open.
+
+name: omicsbase-engine
+
+services:
+  engine:
+    image: ghcr.io/0xmuluh/omicsbase-engine:${OMICSBASE_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - PROJECTS_DIR=/app/projects
+      - BASE_URL=https://${ENGINE_DOMAIN:?set ENGINE_DOMAIN in .env}
+      - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:?copy OMICSBASE_ENGINE_SECRET from the install's .env}
+      - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
+      - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
+      - RETICULATE_PYTHON=/usr/bin/python3
+    volumes:
+      - ./data/projects:/app/projects
+      - ./data/engine-cache:/app/cache
+    command: ["python3", "-m", "engine.server"]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - ENGINE_DOMAIN=${ENGINE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data

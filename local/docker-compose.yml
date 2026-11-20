@@ -37,7 +37,8 @@ services:
       - ALLOW_REGISTRATION=true
       - ALLOW_SOCIAL_LOGIN=false
       - ALLOW_SOCIAL_REGISTRATION=false
-      - NOTEKERNEL_URL=http://engine:8001
+      # Notes run on the engine below, or on your own server when ENGINE_URL is set in .env.
+      - ENGINE_URL=${ENGINE_URL:-http://engine:8001}
       - PROJECTS_DIR=/app/projects
       # Reports runs in the container below, behind the reports-gate login check.
       - OMICSBASE_REPORTS_MODE=local
@@ -101,7 +102,6 @@ services:
       - DOMAIN_CLIENT=http://localhost:3080
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?run install.sh or set OMICSBASE_AUTH_SECRET in .env}
       - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
-      - LIBRECHAT_INTERNAL_URL=http://api:3080
       - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
       - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
       - RETICULATE_PYTHON=/usr/bin/python3

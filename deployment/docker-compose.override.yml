@@ -64,7 +64,6 @@ services:
       - DOMAIN_CLIENT=${DOMAIN_CLIENT:-http://localhost:3080}
       - OMICSBASE_AUTH_SECRET=${OMICSBASE_AUTH_SECRET:?OMICSBASE_AUTH_SECRET must be set}
       - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
-      - LIBRECHAT_INTERNAL_URL=http://api:3080
       - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
       - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
       - RETICULATE_PYTHON=/usr/bin/python3

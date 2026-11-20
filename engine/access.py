@@ -1,4 +1,4 @@
-"""Project-scoped browser authorization; internal MCP remains on the private network."""
+"""Who may use the engine: LibreChat with the shared secret, browsers with a project token."""
 import base64
 import hashlib
 import hmac
@@ -34,9 +34,19 @@ def verify_project(token, project_id):
         return False
 
 
+def internal_caller(request):
+    """LibreChat, holding the secret the engine shares with it."""
+    provided = request.headers.get('x-internal-secret', '')
+    secret = engine_secret()
+    return bool(secret and provided and hmac.compare_digest(provided, secret))
+
+
 class ProjectAccess(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         parts = request.url.path.strip('/').split('/')
+        # The notes tool connection (MCP) runs R, so it is LibreChat's alone.
+        if parts[0] in ('sse', 'messages') and not internal_caller(request):
+            return JSONResponse({'error': 'Unauthorized'}, status_code=401)
         project_id = None
         if len(parts) >= 2 and parts[0] == 'projects':
             project_id = parts[1]
@@ -44,9 +54,7 @@ class ProjectAccess(BaseHTTPMiddleware):
             project_id = parts[2]
         token = None
         if project_id is not None:
-            internal = request.headers.get('x-internal-secret', '')
-            secret = engine_secret()
-            trusted = bool(secret and internal and hmac.compare_digest(internal, secret))
+            trusted = internal_caller(request)
             token = (
                 request.query_params.get('token')
                 or request.query_params.get('ticket')

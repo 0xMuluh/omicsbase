@@ -44,6 +44,16 @@ class EngineSecretTests(unittest.TestCase):
             res = client.post("/api/execute", json={"code": "1"}, headers={"X-Internal-Secret": REPORTS})
             self.assertEqual(res.status_code, 401)
 
+    def test_the_notes_tool_connection_needs_the_secret(self):
+        client = TestClient(server.app)
+        with patch.dict(os.environ, {"OMICSBASE_ENGINE_SECRET": ENGINE}):
+            for headers in ({}, {"X-Internal-Secret": REPORTS}):
+                self.assertEqual(client.get("/sse", headers=headers).status_code, 401)
+                self.assertEqual(client.post("/messages/?session_id=x", headers=headers).status_code, 401)
+            # With the secret the request reaches MCP, which rejects the unknown session.
+            res = client.post("/messages/?session_id=x", headers={"X-Internal-Secret": ENGINE})
+            self.assertNotEqual(res.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()
