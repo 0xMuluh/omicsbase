@@ -1,5 +1,7 @@
 """Route each user's browser to their own Reports session: a job on Roihu, or a machine of
-their own that they attached with a one-time pairing code (a route with no expiry).
+their own that they attached with a one-time pairing code (a route with no expiry). In a
+local install the router also dials out to a user's machine (a "linked" route): the machine
+prints a pairing string, and the router keeps a tunnel client running to it.
 
 Every job gets its own tunnel port on the VM and its own relay credential that may open
 only that port (chisel reloads its authfile on change). The open link carries a one-time
@@ -37,12 +39,17 @@ AUTHFILE = STATE / "users.json"
 SECRET = STATE / "router-secret"
 ADMIN_SECRET = STATE / "admin-secret"
 PORTS = range(18100, 18200)
-LISTEN = ("127.0.0.1", 18095)
+LISTEN = (os.environ.get("ROIHU_ROUTER_HOST", "127.0.0.1"), 18095)
 # OmicsBase backend, from its Docker network only (librechat_default gateway).
 ADMIN_LISTEN = (os.environ.get("ROIHU_ROUTER_ADMIN_HOST", "172.18.0.1"), 18096)
 COOKIE = "roihu_route"
-PUBLIC_URL = "https://openhands.omicsbase.utu.fi"
-APP_URL = "https://omicsbase.utu.fi"
+PUBLIC_URL = os.environ.get("ROIHU_PUBLIC_URL", "https://openhands.omicsbase.utu.fi")
+APP_URL = os.environ.get("ROIHU_APP_URL", "https://omicsbase.utu.fi")
+# Local installs: a request without a valid route cookie goes on to the local Reports
+# (the check answers 204 without a port) instead of being refused.
+CHECK_FALLBACK = os.environ.get("ROIHU_ROUTER_CHECK_FALLBACK") == "1"
+# Pairing strings printed by `omicsbase-reports serve` on a user's machine.
+MACHINE_PREFIX = "omicsbase-machine:"
 OPEN_CODE_SECONDS = 600
 PAIRING_SECONDS = 600
 # Browser access to an attached machine, whose route itself does not expire.
@@ -60,7 +67,7 @@ OPEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Opening Reports</titl
 const id = "omicsbase-roihu";
 let list = [];
 try { list = JSON.parse(localStorage.getItem("openhands-backends") || "[]").filter(b => b.id !== id); } catch (e) {}
-list.unshift({id, name: "Roihu", host: location.origin, apiKey: "set-by-omicsbase", kind: "local"});
+list.unshift({id, name: "Reports", host: location.origin, apiKey: "set-by-omicsbase", kind: "local"});
 localStorage.setItem("openhands-backends", JSON.stringify(list));
 const sel = JSON.stringify({backendId: id});
 localStorage.setItem("openhands-active-backend", sel);
@@ -71,6 +78,28 @@ if (window.parent !== window) {
   location.replace("/");
 }
 </script>""" % APP_URL
+# Undoes the open page after a disconnect: in a local install the user's machine and the
+# Reports on this machine share one address, so the page must stop using the session's backend.
+CLOSE_PAGE = """<!doctype html><meta charset="utf-8"><title>Closing Reports</title>
+<script>
+const id = "omicsbase-roihu";
+try {
+  const list = JSON.parse(localStorage.getItem("openhands-backends") || "[]").filter(b => b.id !== id);
+  localStorage.setItem("openhands-backends", JSON.stringify(list));
+} catch (e) {}
+for (const store of [localStorage, sessionStorage]) {
+  try {
+    if ((JSON.parse(store.getItem("openhands-active-backend") || "null") || {}).backendId === id) {
+      store.removeItem("openhands-active-backend");
+    }
+  } catch (e) {}
+}
+if (window.parent !== window) {
+  window.parent.postMessage({type: "omicsbase:roihu-closed"}, "%s");
+} else {
+  location.replace("%s/");
+}
+</script>""" % (APP_URL, APP_URL)
 LOCK = threading.Lock()
 
 
@@ -83,6 +112,11 @@ def _save(path, data):
     tmp.write_text(json.dumps(data, indent=2))
     tmp.chmod(0o600)
     tmp.replace(path)
+
+
+def _admin_secret():
+    """Shared with OmicsBase's backend: from the environment in a local install, else a file."""
+    return os.environ.get("ROIHU_ROUTER_ADMIN_SECRET") or ADMIN_SECRET.read_text().strip()
 
 
 def _secret():
@@ -131,11 +165,12 @@ def _sync_authfile(routes):
     _save(AUTHFILE, users)
 
 
-def create_route(user, hours, meta=None):
+def create_route(user, hours, meta=None, session_key=None, link=None):
     """New route for one job of `user`: tunnel port, relay credential, session key.
 
     `hours` None makes a route that does not expire (an attached machine). `meta` is kept
-    with the route for OmicsBase (job ids, settings, encrypted token, machine name)."""
+    with the route for OmicsBase (job ids, settings, encrypted token, machine name). A linked
+    machine brings its own session key and the `link` the router dials out with."""
     with LOCK:
         routes = _prune(_load(ROUTES, {}))
         # A port can still be bound by a tunnel whose route is gone: chisel keeps an open
@@ -151,13 +186,17 @@ def create_route(user, hours, meta=None):
             "user": str(user),
             "port": port,
             "expires": None if hours is None else int(time.time() + float(hours) * 3600),
-            "session_key": secrets.token_hex(24),
+            "session_key": session_key or secrets.token_hex(24),
             "relay_password": secrets.token_hex(24),
             "meta": meta or {},
         }
+        if link:
+            routes[job]["link"] = link
         _save(ROUTES, routes)
         _sync_authfile(routes)
         r = routes[job]
+    if link:
+        _start_link(job, r)
     return {
         "route": job,
         "expires": r["expires"],
@@ -215,10 +254,25 @@ def _listening(port):
         return False
 
 
+def _answers(port):
+    """Whether the machine behind a linked route answers. Its tunnel client keeps listening
+    here while the machine is down, so a listening port alone proves nothing."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
+            conn.settimeout(3)
+            conn.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+            return conn.recv(1).startswith(b"H")
+    except OSError:
+        return False
+
+
 def connected(job, user=None):
-    """Whether the job's tunnel is up (its port listens on the VM); None if no such route."""
+    """Whether the job's tunnel is up (its port listens on the VM; for a linked machine, the
+    machine answers through it); None if no such route."""
     r = _owned(_load(ROUTES, {}), job, user)
-    return None if r is None else _listening(r["port"])
+    if r is None:
+        return None
+    return _answers(r["port"]) if r.get("link") else _listening(r["port"])
 
 
 def _prune(routes):
@@ -288,6 +342,59 @@ def claim_pairing(code, name):
     return {**route, "user": pairing["user"]}
 
 
+# Tunnel clients to linked machines, by route.
+LINKS = {}
+
+
+def parse_pairing(text):
+    """The machine's pairing string, or None when it is not one."""
+    text = str(text or "").strip()
+    if not text.startswith(MACHINE_PREFIX):
+        return None
+    try:
+        body = text[len(MACHINE_PREFIX):]
+        data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        link = {k: data[k] for k in ("address", "port", "fingerprint", "auth", "sessionKey", "target")}
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not (isinstance(link["port"], int) and isinstance(link["target"], int)
+            and all(isinstance(link[k], str) and link[k] for k in ("address", "fingerprint", "auth", "sessionKey"))
+            and all(c.isalnum() or c in ".-:[]" for c in link["address"])):
+        return None
+    return link
+
+
+def _start_link(job, r):
+    """Dial out to a linked machine: its agent appears on this route's port."""
+    import subprocess
+    link = r["link"]
+    host = link["address"] if ":" not in link["address"] or link["address"].startswith("[") else f"[{link['address']}]"
+    LINKS[job] = subprocess.Popen(
+        ["chisel", "client", "--fingerprint", link["fingerprint"], f"http://{host}:{link['port']}",
+         f"0.0.0.0:{r['port']}:127.0.0.1:{link['target']}"],
+        env={"PATH": os.environ.get("PATH", ""), "AUTH": link["auth"]},
+    )
+
+
+def _stop_link(job):
+    client = LINKS.pop(job, None)
+    if client is not None:
+        client.terminate()
+
+
+def link_machine(user, pairing):
+    """A route to the user's machine from its pairing string. None for a string that is not
+    one; "busy" when the user already has a session."""
+    link = parse_pairing(pairing)
+    if link is None:
+        return None
+    if user_routes(user):
+        return "busy"
+    route = create_route(user, None, {"kind": "linked", "name": link["address"]},
+                         session_key=link.pop("sessionKey"), link=link)
+    return {"route": route["route"], "expires": None}
+
+
 def _prune_loop():
     while True:
         time.sleep(300)
@@ -306,6 +413,7 @@ def remove(job, user=None):
             routes.pop(job)
             _save(ROUTES, routes)
             _sync_authfile(routes)
+            _stop_link(job)
             return True
     return False
 
@@ -320,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
             route = verify(cookie[COOKIE].value) if COOKIE in cookie else None
             if route is None:
-                self.send_response(401)
+                self.send_response(204 if CHECK_FALLBACK else 401)
                 self.end_headers()
                 return
             self.send_response(200)
@@ -343,10 +451,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif url.path == "/roihu/close":
-            self.send_response(302)
+            body = CLOSE_PAGE.encode()
+            self.send_response(200)
             self.send_header("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
-            self.send_header("Location", APP_URL + "/")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -358,6 +470,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     POST   /routes              {"user", "hours", "meta"} -> route, relay settings, session key
     POST   /pairings            {"user"}          -> {"code", "expires"}: one-time pairing code
     POST   /pairings/claim      {"code", "name"}  -> route, relay settings, session key, user
+    POST   /links               {"user", "pairing"} -> route: dial out to the user's machine
     GET    /routes?user=                          -> {"routes": [...]}: live routes with meta
     PUT    /routes/<id>/meta    {"user", "meta"}
     POST   /routes/<id>/link    {"user"}          -> {"url"}: one-time open link
@@ -379,7 +492,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def _authorised(self):
         given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        if given and hmac.compare_digest(given, ADMIN_SECRET.read_text().strip()):
+        if given and hmac.compare_digest(given, _admin_secret()):
             return True
         self._reply(401)
         return False
@@ -412,6 +525,16 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not body.get("user"):
                 return self._reply(400, {"error": "user required"})
             return self._reply(201, create_pairing(body["user"]))
+        if parts == ["links"]:
+            if not body.get("user"):
+                return self._reply(400, {"error": "user required"})
+            try:
+                route = link_machine(body["user"], body.get("pairing"))
+            except RuntimeError as e:
+                return self._reply(503, {"error": str(e)})
+            if route == "busy":
+                return self._reply(409, {"error": "a Reports session is already running"})
+            return self._reply(201, route) if route else self._reply(400, {"error": "not a pairing string"})
         if parts == ["pairings", "claim"]:
             try:
                 route = claim_pairing(body.get("code", ""), body.get("name"))
@@ -464,7 +587,10 @@ def _serve(address, handler):
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "serve":
-        if not ADMIN_SECRET.exists():
+        for job, r in _load(ROUTES, {}).items():
+            if r.get("link") and _live(r):
+                _start_link(job, r)
+        if not os.environ.get("ROIHU_ROUTER_ADMIN_SECRET") and not ADMIN_SECRET.exists():
             ADMIN_SECRET.write_text(secrets.token_hex(32))
             ADMIN_SECRET.chmod(0o600)
         _serve(ADMIN_LISTEN, AdminHandler)

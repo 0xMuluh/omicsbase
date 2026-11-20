@@ -1,12 +1,35 @@
-# Reports' login check: every request except a CORS pre-flight must carry a valid
-# OmicsBase launch ticket or the gateway's signed cookie (the gateway's /api/omicsbase/auth).
+# Reports' login check. A user who attached a machine of their own carries a route cookie:
+# reports-link answers with that machine's tunnel port and session key, and the request goes
+# there. Every other request (except a CORS pre-flight) must carry a valid OmicsBase launch
+# ticket or the gateway's signed cookie (the gateway's /api/omicsbase/auth) and goes on to
+# the Reports container on this machine.
 :3001 {
-	@needs_login not method OPTIONS
-	forward_auth @needs_login reports:8000 {
-		uri /api/omicsbase/auth
-		# Send the check as a plain request even when the original is a WebSocket.
-		header_up -Upgrade
-		header_up -Connection
+	# One route block keeps these rules in the order written (Caddy sorts bare directives).
+	route {
+		@link_router path /roihu/open /roihu/close
+		reverse_proxy @link_router reports-link:18095
+
+		# Only reports-link may name a port. The session key is replaced by reports-link's for
+		# a request going to a machine and left alone for the Reports page on this machine,
+		# which sends its own.
+		request_header -X-Roihu-Port
+		@routed header_regexp Cookie (^|;\s*)roihu_route=
+		forward_auth @routed reports-link:18095 {
+			uri /check
+			copy_headers X-Roihu-Port X-Session-API-Key
+			header_up -Upgrade
+			header_up -Connection
+		}
+		@machine header X-Roihu-Port *
+		reverse_proxy @machine reports-link:{http.request.header.X-Roihu-Port}
+
+		@needs_login not method OPTIONS
+		forward_auth @needs_login reports:8000 {
+			uri /api/omicsbase/auth
+			# Send the check as a plain request even when the original is a WebSocket.
+			header_up -Upgrade
+			header_up -Connection
+		}
+		reverse_proxy reports:8000
 	}
-	reverse_proxy reports:8000
 }

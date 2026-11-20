@@ -41,22 +41,27 @@ for f in docker-compose.yml librechat.yaml reports-gate.Caddyfile import_example
   curl -fsSL "$RAW/$f" -o "$f" || fail "could not download $f from $RAW."
 done
 
-# 3. Settings: generated once, kept on later runs.
+# 3. Settings: generated once and kept on later runs; secrets that a newer version needs
+#    are added to an existing .env.
 secret() { openssl rand -hex 32 2>/dev/null || od -An -tx1 -N32 /dev/urandom | tr -d ' \n'; }
 if [ ! -f .env ]; then
-  sed -e "s/^OMICSBASE_AUTH_SECRET=\$/OMICSBASE_AUTH_SECRET=$(secret)/" \
-      -e "s/^OMICSBASE_ENGINE_SECRET=\$/OMICSBASE_ENGINE_SECRET=$(secret)/" \
-      -e "s/^MEILI_MASTER_KEY=\$/MEILI_MASTER_KEY=$(secret)/" \
-      -e "s/^OMICSBASE_VERSION=.*/OMICSBASE_VERSION=$VERSION/" \
+  sed -e "s/^OMICSBASE_VERSION=.*/OMICSBASE_VERSION=$VERSION/" \
       -e "s/^UID=.*/UID=$(id -u)/" \
       -e "s/^GID=.*/GID=$(id -g)/" \
       .env.example > .env
   chmod 600 .env
 fi
+for name in OMICSBASE_AUTH_SECRET OMICSBASE_ENGINE_SECRET OMICSBASE_LINK_SECRET MEILI_MASTER_KEY; do
+  if grep -q "^$name=\$" .env; then
+    sed -i.bak "s/^$name=\$/$name=$(secret)/" .env && rm -f .env.bak
+  elif ! grep -q "^$name=" .env; then
+    printf '%s=%s\n' "$name" "$(secret)" >> .env
+  fi
+done
 
 # 4. Data folders, created as this user. Reports runs as another user in your group, so the
 #    folders it shares are group-writable.
-for d in app uploads images logs projects mongodb meilisearch engine-cache reports; do
+for d in app uploads images logs projects mongodb meilisearch engine-cache reports reports-link; do
   mkdir -p "data/$d"
 done
 chmod 2775 data/projects data/reports
