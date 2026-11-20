@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/example-note.png" alt="An OmicsBase note: the question, the R code that ran, and the figure it produced" width="100%">
+  <img src="docs/images/omicsbase-film.webp" alt="OmicsBase in 45 seconds: from the landing page into a microbiome note, where the agent asks the question, fixes its own failing R code and plots the result" width="100%">
 </p>
 
 <hr>
@@ -56,8 +56,6 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 | 🗺️ **Spatial** | [BANKSY domains](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX) · [Hypothalamus slices](https://omicsbase.utu.fi/share/hJYFU7EbAvFR2pINPOefN) |
 | 🔬 **Single-cell** | [Spike-in QC in 416B cells](https://omicsbase.utu.fi/share/INn_qf2cAft-0pzA2ujGy) |
 | ⚖️ **Proteomics** | [TMT11 reporter ions](https://omicsbase.utu.fi/share/EO_LG89UzF_5c-nPTXI8J) |
-
-<!-- GIF to be recorded: a note from question to figure in 30 seconds (the false-positives note). -->
 
 ## What you can analyse
 
