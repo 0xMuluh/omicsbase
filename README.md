@@ -22,7 +22,7 @@
   <a href="#examples">Examples</a> ·
   <a href="#what-you-can-analyse">What you can analyse</a> ·
   <a href="#reports-on-roihu">Reports on Roihu</a> ·
-  <a href="docs/SETUP.md">Self-hosting</a>
+  <a href="#on-your-own-machine">Run it yourself</a>
 </p>
 
 <p align="center">
@@ -92,7 +92,17 @@ Needs a CSC account and a project with Roihu access.
 
 Open **[omicsbase.utu.fi](https://omicsbase.utu.fi)** and sign in with your University of Turku account or Google.
 
-Self-hosting is a developer setup: see [docs/SETUP.md](docs/SETUP.md).
+### On your own machine
+
+With Docker installed, one command sets it up in `~/omicsbase` and opens it on http://localhost:3080, reachable only from that machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | sh
+```
+
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine; what leaves it is what you send to the model provider you chose. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes.
+
+To work on OmicsBase itself, see [docs/SETUP.md](docs/SETUP.md).
 
 ```bash
 git clone --recurse-submodules https://github.com/0xMuluh/omicsbase.git
