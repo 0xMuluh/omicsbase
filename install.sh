@@ -30,9 +30,14 @@ docker info >/dev/null 2>&1 || fail "Docker is installed but not running, or thi
 mkdir -p "$DIR"
 free_gb=$(df -Pk "$DIR" | awk 'NR == 2 { print int($4 / 1048576) }')
 [ "${free_gb:-0}" -ge 30 ] || warn "only ${free_gb} GB free where OmicsBase goes ($DIR); it needs about 30 GB."
-mem_gb=$(awk '/MemTotal/ { print int($2 / 1048576) }' /proc/meminfo 2>/dev/null || true)
-[ -n "$mem_gb" ] || mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
-[ "$mem_gb" -ge 8 ] || warn "this machine has ${mem_gb} GB of memory; 8 GB or more is recommended."
+# The memory Docker may use: on Mac and Windows, Docker Desktop's own limit, not the machine's.
+# Rounded, since an 8 GB machine reports a little less.
+mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
+mem_gb=$(( (${mem_bytes:-0} + 536870912) / 1073741824 ))
+[ "$mem_gb" -ge 8 ] || warn "Docker may use ${mem_gb} GB of memory; 8 GB or more is recommended. With Docker Desktop, raise it under Settings > Resources > Memory."
+case "$(docker info --format '{{.Architecture}}' 2>/dev/null)" in
+  aarch64|arm64) warn "this is an ARM machine (such as an Apple-silicon Mac). The OmicsBase images are built for Intel/AMD, so Docker runs them emulated: expect them to be slow. With Docker Desktop, turn on Settings > General > Use Rosetta." ;;
+esac
 
 # 2. The compose files, fetched fresh each time.
 cd "$DIR"
@@ -91,8 +96,8 @@ mkdir -p examples
 other=$(docker ps -a --filter label=com.docker.compose.project=omicsbase \
   --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | grep -vxF -e "$PWD" -e "$(pwd -P)" || true)
 [ -z "$other" ] || fail "Docker already has a project called \"omicsbase\", from $other. Nothing was changed. Remove it first (cd $other && docker compose down), then run this again."
-say "Downloading the images (about 8 GB the first time)..."
-docker compose pull --quiet || fail "the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped."
+say "Downloading the images (about 8 GB the first time; this can take a while)..."
+docker compose pull || fail "the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped."
 docker compose up -d || fail "the services did not start. See: cd $DIR && docker compose logs"
 
 say "Starting (about a minute)..."
