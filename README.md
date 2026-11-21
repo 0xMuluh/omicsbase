@@ -100,6 +100,8 @@ With Docker installed, one command sets it up in `~/omicsbase` and opens it on h
 curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | sh
 ```
 
+On Linux or a Mac, paste it into a terminal; on Windows, into an Ubuntu (WSL) terminal, with Docker Desktop's WSL integration turned on. The images are built for Intel/AMD, so Apple-silicon Macs run them emulated, which is slow.
+
 The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine; what leaves it is what you send to the model provider you chose. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
 
 Either half can run on a bigger machine while the install stays on your laptop:

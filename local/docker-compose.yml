@@ -9,6 +9,8 @@ name: omicsbase
 services:
   api:
     image: ghcr.io/0xmuluh/omicsbase-librechat:${OMICSBASE_VERSION:-latest}
+    # Built for Intel/AMD only; ARM machines (Apple-silicon Macs) run it emulated.
+    platform: linux/amd64
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:
@@ -63,6 +65,8 @@ services:
   #   mkdir -p examples && curl -fsSL https://github.com/0xMuluh/omicsbase/releases/download/examples-2026-11-20/omicsbase-examples.tgz | tar xz -C examples --strip-components=1
   examples:
     image: ghcr.io/0xmuluh/omicsbase-librechat:${OMICSBASE_VERSION:-latest}
+    # Built for Intel/AMD only; ARM machines (Apple-silicon Macs) run it emulated.
+    platform: linux/amd64
     user: "${UID:-1000}:${GID:-1000}"
     restart: "no"
     depends_on:
@@ -98,6 +102,8 @@ services:
   # R and Bioconductor for notes. The browser loads plots from it on localhost:8001.
   engine:
     image: ghcr.io/0xmuluh/omicsbase-engine:${OMICSBASE_VERSION:-latest}
+    # Built for Intel/AMD only; ARM machines (Apple-silicon Macs) run it emulated.
+    platform: linux/amd64
     restart: unless-stopped
     ports:
       - "127.0.0.1:8001:8001"
@@ -119,6 +125,8 @@ services:
   # session key, so it is reached only through reports-gate.
   reports:
     image: ghcr.io/0xmuluh/omicsbase-reports:${OMICSBASE_VERSION:-latest}
+    # Built for Intel/AMD only; ARM machines (Apple-silicon Macs) run it emulated.
+    platform: linux/amd64
     restart: unless-stopped
     group_add:
       - "${GID:-1000}"
@@ -140,6 +148,8 @@ services:
   # machine a request belongs to. The same image as Reports, so nothing extra to download.
   reports-link:
     image: ghcr.io/0xmuluh/omicsbase-reports:${OMICSBASE_VERSION:-latest}
+    # Built for Intel/AMD only; ARM machines (Apple-silicon Macs) run it emulated.
+    platform: linux/amd64
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     entrypoint: ["python3", "/opt/omicsbase/roihu_router.py", "serve"]
