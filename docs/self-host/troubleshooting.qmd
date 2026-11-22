@@ -160,26 +160,38 @@ cd ~/omicsbase && docker compose logs
 
 The most common cause is a port already in use. See [A port is already in use](#port-in-use).
 
-### it did not answer on http://localhost:3080 after 5 minutes {#no-answer}
+## Still starting after the install {#after-install}
+
+### OmicsBase is installed and still starting. {#still-starting}
 
 ```text
-OmicsBase was not installed: it did not answer on http://localhost:3080 after 5 minutes. See: cd ~/omicsbase && docker compose logs api
+OmicsBase is installed and still starting.
+
+  It has not answered after 5 minutes, which can happen on the first start or on an ARM
+  machine. It keeps starting in the background: open http://localhost:3080 in a minute or two.
+  To see how it is doing:
+    cd ~/omicsbase && docker compose ps
+    cd ~/omicsbase && docker compose logs api
 ```
 
-The containers started, but the app did not answer within 5 minutes.
+The install worked. The app took longer than 5 minutes to answer, so the installer stopped waiting, but the app keeps starting on its own. You do not need to run the install command again.
 
-- **On an ARM machine** (such as an Apple-silicon Mac), the images run emulated and can take longer than that to start. They keep starting after the installer gives up. Wait a few minutes and open <http://localhost:3080> again.
-- **Otherwise**, read the app's log:
+1. Wait a minute or two, then open <http://localhost:3080>.
+2. If it does not open yet, check that every service is up:
 
-  ```bash
-  cd ~/omicsbase && docker compose logs api
-  ```
+   ```bash
+   cd ~/omicsbase && docker compose ps
+   ```
 
-  Check that every service is up:
+   Each service should say `Up`. The `examples` service loads the example notes and then stops; that is expected.
 
-  ```bash
-  cd ~/omicsbase && docker compose ps
-  ```
+3. Read the app's log to see what it is doing:
+
+   ```bash
+   cd ~/omicsbase && docker compose logs api
+   ```
+
+On an ARM machine, such as an Apple-silicon Mac, the first start can take several more minutes. See [Very slow on an Apple-silicon Mac](#emulation).
 
 ## Warnings during the install {#warnings}
 

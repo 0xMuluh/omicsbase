@@ -137,3 +137,28 @@ def test_local_check_falls_through_to_local_reports_without_a_route(router, monk
         conn.request("GET", "/check", headers={"Cookie": "roihu_route=forged.token"})
         assert conn.getresponse().status == expected
         server.shutdown()
+
+
+def test_a_route_can_be_moved_to_its_jobs_real_end(router, monkeypatch):
+    import http.client
+    import json
+    import threading
+    from http.server import ThreadingHTTPServer
+    monkeypatch.setenv("ROIHU_ROUTER_ADMIN_SECRET", "s")
+    job = router.create_route("u1", 36)["route"]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), router.AdminHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def put(user, expires):
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("PUT", f"/routes/{job}/expires", json.dumps({"user": user, "expires": expires}),
+                     {"Authorization": "Bearer s"})
+        return conn.getresponse().status
+
+    end = int(router.time.time()) + 4 * 3600
+    assert put("u2", end) == 404
+    assert put("u1", end + 37 * 3600) == 400
+    assert put("u1", end) == 204
+    [live] = router.user_routes("u1")
+    assert live["expires"] == end
+    server.shutdown()

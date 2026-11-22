@@ -28,12 +28,20 @@ export APPTAINER_CACHEDIR=$shm/cache
 export APPTAINER_TMPDIR=$shm/tmp
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
-start=$(date +%s)
 # Fast path: the finished image, published with each release (publish_sif.sh). Otherwise
 # convert the Docker image (about 7 minutes and 64 GB of memory).
-if ! apptainer pull --force "$work/image.sif" "oras://ghcr.io/0xmuluh/omicsbase-reports:$tag-sif"; then
+pull() {
+  apptainer pull --force "$work/image.sif" "oras://ghcr.io/0xmuluh/omicsbase-reports:$tag-sif" && return
   echo "No published image for $tag; converting the Docker image."
   apptainer pull --force "$work/image.sif" "docker://ghcr.io/0xmuluh/omicsbase-reports:$tag"
+}
+
+start=$(date +%s)
+# ghcr.io sometimes drops a download; one more try covers a short network problem.
+if ! pull; then
+  echo "Downloading the image failed; trying once more in 60 s."
+  sleep 60
+  pull
 fi
 mv "$work/image.sif" "$sif"
 echo "$sif built in $(( $(date +%s) - start )) s"
