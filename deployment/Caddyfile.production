@@ -7,6 +7,13 @@
         file_server
     }
 
+    # The docs (scripts/publish_docs.sh), copied to /srv/omicsbase/docs.
+    redir /docs /docs/ 308
+    handle_path /docs/* {
+        root * /srv/omicsbase/docs
+        file_server
+    }
+
     handle /omics-engine/* {
         @engine_status {
             method GET

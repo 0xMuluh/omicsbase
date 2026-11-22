@@ -1,0 +1,74 @@
+---
+title: "Functional annotation"
+---
+
+Functional analysis asks what genes or microbes do, not just which ones are there. In a note you can test pathways and gene families in microbiome data, and check whether a list of genes points to a known pathway.
+
+## Prompts to try
+
+Copy a prompt into a new note and send it. When the result is back, send the follow-up.
+
+1. Do pathways change along with species? Send:
+
+   ```text
+   Load the species and pathway abundances of ThomasAM_2018a from curatedMetagenomicData. It is an Italian cohort with colorectal cancer, adenomas and controls.
+   ```
+
+   Then:
+
+   ```text
+   Run MaAsLin 3 on species for cancer versus control, adjusting for age, sex and BMI.
+   ```
+
+   Then:
+
+   ```text
+   Run the same model on the unstratified pathways. Do the significant pathways match the significant species?
+   ```
+
+2. Work with gene families. Send:
+
+   ```text
+   Load the gene family profiles of PehrssonE_2016 from curatedMetagenomicData. It is households in a Peruvian shantytown and a rural village in El Salvador.
+   ```
+
+   Then:
+
+   ```text
+   Why are UniRef gene families usually summarised before testing?
+   ```
+
+3. Test groups of microbes instead of one at a time. Send:
+
+   ```text
+   Load the species relative abundances of HMP_2019_ibdmdb from curatedMetagenomicData, with age, disease and current antibiotic use.
+   ```
+
+   Then:
+
+   ```text
+   What is microbe set enrichment analysis, and how does it differ from testing one species at a time?
+   ```
+
+## What a note can do
+
+- **Community function.** Load pathway, enzyme and gene family profiles (made with HUMAnN) from curatedMetagenomicData or a Zenodo record, or read your own. Test them between groups just like species. See [Microbiome and metagenomics](microbiome.qmd).
+- **Gene sets.** A gene set is a list of genes that work together, such as a GO term (a named biological role) or a Reactome or KEGG pathway. msigdbr provides these lists for human, mouse and other species.
+- **Enrichment.** fgsea checks whether the genes at the top of your results belong to the same gene set more often than by chance. This is called GSEA.
+- **Gene names.** org.Hs.eg.db and org.Mm.eg.db translate between gene IDs and symbols for human and mouse.
+- **Single cells.** AUCell gives each cell a score for a gene set.
+
+To make HUMAnN profiles or gene annotations from your own reads or genomes, use [Reports on Roihu](../start/reports-roihu.qmd#bio-tools), with CSC tools such as HUMAnN, eggNOG-mapper, InterProScan, DIAMOND and HMMER. The tables can then go into a note.
+
+## Example notes
+
+<!-- screenshot: functional-species-pathways — species and pathway associations side by side in the "What pathways change in colorectal cancer?" note -->
+![](../images/screens/functional-species-pathways.webp){.screenshot fig-alt="Species and pathway associations side by side in the 'What pathways change in colorectal cancer?' note."}
+
+- [What pathways change in colorectal cancer?](https://omicsbase.utu.fi/share/0XYFhfmIKUsPWDMlQsO7k): MaAsLin3 on species and on pathways, side by side.
+- [Functional pathways in two Indian cities](https://omicsbase.utu.fi/share/_GLwDknmBx3VGOya5z23O): pathway abundances instead of species.
+- [Gene families in households in Peru and El Salvador](https://omicsbase.utu.fi/share/9iVbSmKcq9dEfiXXIEYcl): filtering, naming and comparing gene families.
+- [Microbe set enrichment analysis in IBD](https://omicsbase.utu.fi/share/siR6nEGjmPnOfpHMI9oS0): groups of microbes and of pathways tested against disease.
+- [Zenodo: stroke, gut species and enzymes](https://omicsbase.utu.fi/share/vhCDIb-33VUDYyD2hRfFS): species and enzyme profiles tested together.
+- [Pathways in malnourished children with diarrhoea](https://omicsbase.utu.fi/share/oUcAF0MImxBKMfPGzRBEH): a very small study, and how little survives correction.
+- [Species and their transcribed enzymes in IBD](https://omicsbase.utu.fi/share/Mk3_AcgjybZrVGQrVhnXx): which species go with which active enzymes.

@@ -1,0 +1,393 @@
+---
+title: "Troubleshooting"
+description: "What each message from the OmicsBase installer means, and how to fix common problems on a local install."
+---
+
+Find the message you see on this page: press Ctrl+F (Cmd+F on a Mac) and paste part of it. Each message the installer can print has its own section, headed with the message text.
+
+- A line starting with `OmicsBase was not installed:` means the installer stopped. Fix the cause, then run the install command again. It is safe to run again; it keeps what is already there.
+- A line starting with `Note:` is a warning. The installer carries on.
+
+In the messages below, `~/omicsbase` stands for the folder you installed into.
+
+## The installer stopped {#stopped}
+
+### curl is not installed. {#curl-missing}
+
+```text
+OmicsBase was not installed: curl is not installed.
+```
+
+The installer uses `curl` to download its files. Install `curl` with your system's package manager, then run the install command again.
+
+### Docker is not installed. Get it from https://docs.docker.com/get-docker/ and run this again. {#docker-missing}
+
+```text
+OmicsBase was not installed: Docker is not installed. Get it from https://docs.docker.com/get-docker/ and run this again.
+```
+
+The `docker` command was not found.
+
+::: {.panel-tabset}
+
+## Linux
+
+Install Docker Engine with the `docker-compose-plugin` package, or Docker Desktop, from <https://docs.docker.com/get-docker/>.
+
+## Mac
+
+Install Docker Desktop from <https://docs.docker.com/get-docker/>.
+
+## Windows (WSL)
+
+Docker Desktop must be installed in Windows, and its WSL integration must be turned on for the Ubuntu distribution you are using. Without the integration, the `docker` command does not exist inside Ubuntu.
+
+Make sure you are in the Ubuntu (WSL) terminal, not PowerShell.
+
+:::
+
+### Docker Compose v2 is missing (the 'docker compose' command). {#compose-missing}
+
+```text
+OmicsBase was not installed: Docker Compose v2 is missing (the 'docker compose' command). It comes with Docker Desktop and the docker-compose-plugin package.
+```
+
+OmicsBase needs the `docker compose` command (with a space). The older `docker-compose` program is not enough.
+
+- **Docker Desktop** (Mac, Windows, Linux): Compose v2 is included.
+- **Docker Engine on Linux**: install the `docker-compose-plugin` package.
+
+Check it with:
+
+```bash
+docker compose version
+```
+
+### Docker is installed but not running, or this user may not use it {#docker-not-running}
+
+```text
+OmicsBase was not installed: Docker is installed but not running, or this user may not use it (on Linux: add yourself to the docker group, then log in again).
+```
+
+The installer could not talk to Docker.
+
+::: {.panel-tabset}
+
+## Linux
+
+- Start Docker, or Docker Desktop if you use it.
+- If Docker is running, your user may not be allowed to use it. Add yourself to the `docker` group, then log out and in again.
+- If you have both Docker Desktop and Docker Engine installed, the `docker` command may be pointing at Docker Desktop while it is stopped. You then see `Cannot connect to the Docker daemon at unix:///home/<you>/.docker/desktop/docker.sock` from other `docker` commands. To use Docker Engine, switch back:
+
+  ```bash
+  docker context use default
+  ```
+
+## Mac
+
+Start Docker Desktop and wait until it says it is running, then run the install command again.
+
+## Windows (WSL)
+
+Start Docker Desktop in Windows and wait until it is running. Check that its WSL integration is turned on for your Ubuntu distribution.
+
+:::
+
+Check that Docker answers with:
+
+```bash
+docker info
+```
+
+### could not download … from https://raw.githubusercontent.com/0xMuluh/omicsbase/main/local. {#download-failed}
+
+```text
+OmicsBase was not installed: could not download docker-compose.yml from https://raw.githubusercontent.com/0xMuluh/omicsbase/main/local.
+```
+
+The file name in the message can also be `librechat.yaml`, `reports-gate.Caddyfile`, `import_examples.js` or `.env.example`. If you asked for a version, the address has that version in place of `main`.
+
+The installer could not reach GitHub. Check your internet connection, and any proxy or firewall that blocks `raw.githubusercontent.com`, then run the install command again.
+
+If you set `OMICSBASE_REF` or `OMICSBASE_REPO`, check that the branch, tag or repository exists. See [Install-time settings](settings.qmd#install-time).
+
+### Docker already has a project called "omicsbase" {#project-exists}
+
+```text
+OmicsBase was not installed: Docker already has a project called "omicsbase", from <folder>. Nothing was changed. Remove it first (cd <folder> && docker compose down), then run this again.
+```
+
+Docker knows each install by its project name, `omicsbase`. Another OmicsBase is already set up in a different folder, for example an earlier install with a different `OMICSBASE_DIR`, or a copy of the repository started from its `local/` folder. The installer stops instead of taking it over.
+
+Choose one of these:
+
+- **Keep the other install.** Install into that folder instead, by setting `OMICSBASE_DIR` to the folder shown in the message. See [Install-time settings](settings.qmd#install-time).
+- **Replace it.** Stop the other one with the command in the message, then run the install command again:
+
+  ```bash
+  cd <folder> && docker compose down
+  ```
+
+  This removes its containers. Its accounts and notes stay in that folder's `data/`.
+
+### the images could not be downloaded (see the message above) {#pull-failed}
+
+```text
+OmicsBase was not installed: the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped.
+```
+
+Docker's own message just above says why. Common causes:
+
+- Docker stopped during the download. Start it again.
+- The internet connection dropped.
+- The disk is full. The images need about 25 GB. See [Not enough disk space](#disk-full).
+
+Run the install command again. The download continues where it stopped.
+
+On an ARM machine, such as an Apple-silicon Mac, see [Very slow on an Apple-silicon Mac](#emulation).
+
+### the services did not start. {#up-failed}
+
+```text
+OmicsBase was not installed: the services did not start. See: cd ~/omicsbase && docker compose logs
+```
+
+Docker could not start one of the containers. Read Docker's message above it, and the logs:
+
+```bash
+cd ~/omicsbase && docker compose logs
+```
+
+The most common cause is a port already in use. See [A port is already in use](#port-in-use).
+
+### it did not answer on http://localhost:3080 after 5 minutes {#no-answer}
+
+```text
+OmicsBase was not installed: it did not answer on http://localhost:3080 after 5 minutes. See: cd ~/omicsbase && docker compose logs api
+```
+
+The containers started, but the app did not answer within 5 minutes.
+
+- **On an ARM machine** (such as an Apple-silicon Mac), the images run emulated and can take longer than that to start. They keep starting after the installer gives up. Wait a few minutes and open <http://localhost:3080> again.
+- **Otherwise**, read the app's log:
+
+  ```bash
+  cd ~/omicsbase && docker compose logs api
+  ```
+
+  Check that every service is up:
+
+  ```bash
+  cd ~/omicsbase && docker compose ps
+  ```
+
+## Warnings during the install {#warnings}
+
+### only … GB free where OmicsBase goes; it needs about 30 GB. {#disk}
+
+```text
+Note: only 12 GB free where OmicsBase goes (/home/you/omicsbase); it needs about 30 GB.
+```
+
+OmicsBase and its images need about 30 GB together. The installer carries on, but the download or your notes may fail when the disk fills up.
+
+Free some space, or install on a larger disk with `OMICSBASE_DIR`. See [Install-time settings](settings.qmd#install-time).
+
+With Docker Desktop, the images are kept inside Docker Desktop's own disk, which the installer cannot measure. This message then counts only the install folder.
+
+### only … GB free where Docker keeps its images; the images need about 25 GB. {#disk-images}
+
+```text
+Note: only 10 GB free where Docker keeps its images (/var/lib/docker); the images need about 25 GB.
+```
+
+Docker keeps its images on a different disk from your install folder, and that disk is too full. Free some space there, for example by removing Docker images you no longer use, then run the install command again.
+
+### only … GB free where OmicsBase keeps your notes; give it at least 5 GB. {#disk-notes}
+
+```text
+Note: only 2 GB free where OmicsBase keeps your notes (/home/you/omicsbase); give it at least 5 GB.
+```
+
+The disk with your install folder is nearly full. Your accounts, notes and their files are kept there, and they grow as you work. Free some space, or install on a larger disk with `OMICSBASE_DIR`. See [Install-time settings](settings.qmd#install-time).
+
+### Docker may use … GB of memory; 8 GB or more is recommended. {#memory}
+
+```text
+Note: Docker may use 4 GB of memory; 8 GB or more is recommended. With Docker Desktop, raise it under Settings > Resources > Memory.
+```
+
+This is the memory Docker may use, not the memory of your computer. OmicsBase uses about 3 GB when idle, and each R note that runs adds its own process.
+
+::: {.panel-tabset}
+
+## Linux
+
+With Docker Engine, Docker can use the machine's memory. On a machine with less than 8 GB, large analyses may fail. With Docker Desktop, raise its limit under **Settings > Resources > Memory**.
+
+## Mac
+
+In Docker Desktop, raise the limit under **Settings > Resources > Memory** to 8 GB or more.
+
+## Windows (WSL)
+
+In Docker Desktop, raise the limit under **Settings > Resources > Memory** to 8 GB or more.
+
+:::
+
+### this is an ARM machine (such as an Apple-silicon Mac) {#arm}
+
+```text
+Note: this is an ARM machine (such as an Apple-silicon Mac). The OmicsBase images are built for Intel/AMD, so Docker runs them emulated: expect them to be slow. With Docker Desktop, turn on Settings > General > Use Rosetta.
+```
+
+OmicsBase works, but slowly. In Docker Desktop, turn on **Settings > General > Use Rosetta**. See [Very slow on an Apple-silicon Mac](#emulation).
+
+### Ollama is running but only for this machine's own programs, so OmicsBase cannot use it. {#ollama-local-only}
+
+```text
+Note: Ollama is running but only for this machine's own programs, so OmicsBase cannot use it. To allow it, run 'sudo systemctl edit ollama', add the two lines [Service] and Environment="OLLAMA_HOST=0.0.0.0", then 'sudo systemctl restart ollama'. This also lets other computers on your network reach Ollama unless a firewall blocks port 11434.
+```
+
+This appears on Linux only. Ollama accepts connections only from programs on this computer, and OmicsBase runs inside Docker, which counts as another computer.
+
+1. Open Ollama's settings:
+
+   ```bash
+   sudo systemctl edit ollama
+   ```
+
+2. In the editor that opens, add these two lines, then save and close:
+
+   ```text
+   [Service]
+   Environment="OLLAMA_HOST=0.0.0.0"
+   ```
+
+3. Restart Ollama:
+
+   ```bash
+   sudo systemctl restart ollama
+   ```
+
+After this, other computers on your network can also reach Ollama, unless a firewall blocks port 11434.
+
+If you do not use Ollama with OmicsBase, you can ignore this note.
+
+### no files are released under …, so the current ones are used with the … images. {#no-release-files}
+
+```text
+Note: no files are released under 2026.11.20, so the current ones are used with the 2026.11.20 images.
+```
+
+You asked for a version with `OMICSBASE_VERSION`. The installer looks for the setup files released with that version and found none, so it uses the newest setup files with the images of your version. The install carries on. Check that you typed the version correctly.
+
+### the example notes did not match their checksum and were skipped. {#examples-checksum}
+
+```text
+Note: the example notes did not match their checksum and were skipped.
+```
+
+The download of the example notes was incomplete or changed on the way. OmicsBase works without them. To try again, run the install command again; it downloads the examples while they are missing.
+
+### the example notes could not be downloaded; OmicsBase works without them. {#examples-download}
+
+```text
+Note: the example notes could not be downloaded; OmicsBase works without them.
+```
+
+The examples come from the GitHub release named in `OMICSBASE_EXAMPLES`. Check your connection to GitHub and run the install command again; it downloads the examples while they are missing.
+
+## Problems while running {#runtime}
+
+### Read the logs {#logs}
+
+All commands run in the install folder.
+
+```bash
+cd ~/omicsbase
+docker compose ps              # which services run
+docker compose logs            # all logs
+docker compose logs -f         # follow the logs as they come
+docker compose logs api        # the app
+docker compose logs engine     # R for notes
+docker compose logs reports    # Reports
+docker compose logs examples   # loading the example notes
+```
+
+The services are `api` (the app), `engine` (R for notes), `reports` and `reports-gate` (Reports and its login check), `reports-link` (**Use my own computer**), `mongodb` (database), `meilisearch` (search) and `examples` (loads the example notes, then stops).
+
+### The page does not open {#page-does-not-open}
+
+1. Check that OmicsBase is running:
+
+   ```bash
+   cd ~/omicsbase && docker compose ps
+   ```
+
+2. If nothing is listed, start it:
+
+   ```bash
+   cd ~/omicsbase && docker compose up -d
+   ```
+
+3. Open <http://localhost:3080> on the same machine.
+
+OmicsBase is reachable only from the machine it runs on. Other computers on your network cannot open it.
+
+### Sign-in or copying does not work {#use-localhost}
+
+Open the app as <http://localhost:3080>. Opening it as `http://127.0.0.1:3080`, or through another address, breaks sign-in cookies and the clipboard.
+
+### A port is already in use {#port-in-use}
+
+OmicsBase uses these ports on this machine:
+
+| Port | Used by |
+| --- | --- |
+| 3080 | The app |
+| 3001 | Reports |
+| 8001 | R for notes; your browser loads plots from it |
+| 3000 | The admin panel, only with `--profile admin` |
+
+If another program already uses one of them, `docker compose up -d` fails and the installer prints [the services did not start](#up-failed). The ports are fixed in `docker-compose.yml`, which is replaced on every update, so free the port instead: stop the other program and run `docker compose up -d` again.
+
+To see whether another container holds the port, for example an older OmicsBase or LibreChat, list the running containers:
+
+```bash
+docker ps
+```
+
+### Notes stop or fail on larger data {#out-of-memory}
+
+R runs inside Docker, so it can only use the memory Docker may use. Each running note adds its own R process. Raise Docker Desktop's limit under **Settings > Resources > Memory**, or run notes on a bigger machine; see [Notes engine on a server](engine-server.qmd).
+
+### Very slow on an Apple-silicon Mac {#emulation}
+
+The images are built for Intel/AMD, so on an Apple-silicon Mac (and other ARM machines) Docker emulates them. Everything works, but starting and running R are slow.
+
+- In Docker Desktop, turn on **Settings > General > Use Rosetta**.
+- Run notes on an Intel/AMD server instead. See [Notes engine on a server](engine-server.qmd).
+- Run Reports on another computer with **Use my own computer**. See [Reports on your own computer](../start/reports-own-computer.qmd).
+
+### No Ollama models in the model picker {#ollama}
+
+- Check that Ollama is running on the same machine and listening on its usual port, 11434.
+- On Linux, Ollama must accept connections from Docker. See [Ollama is running but only for this machine's own programs](#ollama-local-only).
+- Pull a model in Ollama first. Only models already pulled appear.
+- Notes need a model that supports tool calls. A model without them cannot run R in a note.
+
+### No example notes on the landing page {#no-examples}
+
+The examples are loaded each time OmicsBase starts. See what happened:
+
+```bash
+cd ~/omicsbase && docker compose logs examples
+```
+
+- `No examples in /examples; nothing to load.` means the examples were not downloaded. Run the install command again.
+- `Examples not loaded:` followed by a reason means loading failed. Start OmicsBase again with `docker compose up -d` and check the log once more.
+
+### Not enough disk space {#disk-full}
+
+The images take about 25 GB where Docker keeps them. Your data, notes and downloaded datasets grow in `~/omicsbase/data/`; downloaded ExperimentHub and AnnotationHub data is kept in `data/engine-cache/`.

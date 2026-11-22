@@ -1,0 +1,167 @@
+---
+title: "Reports on your own computer"
+description: "Run your Reports agent on any computer with Docker: pair it with OmicsBase, work in the workspace, keep your files on it, and disconnect."
+---
+
+Reports can run on a computer of your own instead of on Roihu: a laptop, a lab workstation or a cloud server. It gets R, Bioconductor and your choice of agent. The computer connects out to OmicsBase, so you open no ports, and your files stay on it. You do not need a CSC account.
+
+::: {.callout-important}
+## R and Bioconductor only
+
+Reports on your own computer runs the R stack only: R, Bioconductor and their packages. It has no command-line bioinformatics tools, such as fastp, Kraken 2, read aligners or assemblers. For those, use [Reports on Roihu](../start/reports-roihu.qmd#bio-tools).
+:::
+
+## What you need {#requirements}
+
+- [ ] **Docker**, the program that runs the Reports software in a container. On Linux use Docker Engine; on a Mac or Windows, Docker Desktop. On Windows, type the commands in an Ubuntu (WSL) terminal with Docker Desktop's WSL integration turned on.
+- [ ] **Room on the disk**: about 6 GB to download and about 20 GB once installed.
+- [ ] **Internet access out** to omicsbase.utu.fi, openhands.omicsbase.utu.fi and your model provider.
+- [ ] **Your own model key**, from the provider of the AI model the agent uses. See [Models](models.qmd).
+
+The software is built for Intel and AMD processors. Apple-silicon Macs and other ARM computers run it slowly, through emulation. The computer must be switched on while you work.
+
+## Pair your computer {#pair}
+
+Pairing links your computer to your OmicsBase account. You do it once.
+
+1. **Sign in at [omicsbase.utu.fi](https://omicsbase.utu.fi), choose Reports in the sidebar and open a report.**
+   The report opens, with a **Notes** tab and a **Workspace** tab at the top.
+
+2. **Choose the Workspace tab.**
+   You see the Roihu form, and below it **Or use your own computer**.
+
+3. [**Choose Use my own computer.**]{#start}
+   A panel shows **Run this on that computer. The code works once, within 10 minutes.** and a `docker run` command.
+
+   <!-- screenshot: use-own-computer-panel — the panel with the docker run command; highlight the Copy command button and the line "The code works once, within 10 minutes." -->
+
+4. [**Choose Copy command.**]{#run-command}
+   The button changes to **Copied**. Next to it you see **Waiting for your computer to connect…**
+
+5. [**Paste the command into a terminal on your computer and press Enter.**]{#pairing-code}
+   The first time, Docker downloads the software, which takes a while. Keep the OmicsBase page open.
+
+   <!-- screenshot: pairing-waiting — the pairing card with the command, Copied, Cancel and the spinner "Waiting for your computer to connect…" -->
+
+6. [**Wait until the bar appears.**]{#workspace}
+   A bar at the top says **Running on** and your computer's name. Below it is your workspace: the agent, your files and the report preview.
+
+   <!-- screenshot: own-computer-bar — the green "Running on <computer name>" bar above the workspace; highlight the Disconnect button -->
+
+7. **Choose an agent and add your model key.** [How](#agent-and-model).
+   The agent is ready for your first request.
+
+Your computer stays paired. After a restart it reconnects by itself as soon as Docker is running, until you [disconnect](#disconnect) it.
+
+The command looks like this, with your own code and version. Always copy it from OmicsBase, not from here:
+
+```bash
+docker run -d --restart unless-stopped --name omicsbase-reports \
+  -v omicsbase-reports:/home/openhands -v omicsbase-projects:/projects \
+  ghcr.io/0xmuluh/omicsbase-reports:<version> \
+  https://omicsbase.utu.fi --pair <your-code> --name "$(hostname)"
+```
+
+If the 10 minutes run out, choose **Cancel**, then **Use my own computer** again for a new code.
+
+## Choose an agent and add your key {#agent-and-model}
+
+1. In the workspace header, open the agent menu and choose an agent under **Switch Agent Engine**.
+2. **Model keys go in the agent's own settings.** Paste your key there.
+
+The agent sends its requests from your computer straight to your model provider, with your key. [Getting a key](models.qmd).
+
+## Disconnect {#disconnect}
+
+1. Choose **Disconnect** in the bar.
+2. Confirm the question **Disconnect this computer? Its files stay on it, but it can no longer reach OmicsBase until you pair it again.**
+3. On your computer, remove the container:
+
+   ```bash
+   docker rm -f omicsbase-reports
+   ```
+
+<!-- screenshot: disconnect-confirm — the Disconnect button in the bar and the browser's confirmation question -->
+
+Your files and agent settings stay on the computer. To use it again later, [pair it](#pair) again with a new command.
+
+## More detail {#more}
+
+::: {#files .callout-note collapse="true"}
+## Where your files are
+
+Your files stay on your computer, in two Docker volumes (storage areas that Docker keeps even when the container is removed):
+
+| Volume | Holds |
+| --- | --- |
+| `omicsbase-projects` | Your reports, one folder per report (`/projects` in the container) |
+| `omicsbase-reports` | The agent's settings and conversations, and the computer's pairing details (`/home/openhands` in the container) |
+
+You see and edit the files in the workspace. To copy a report out of the container:
+
+```bash
+docker cp omicsbase-reports:/projects/<report-folder> .
+```
+
+Your browser reaches the agent through OmicsBase, so what the workspace shows passes through the OmicsBase server. The files are stored only on your computer.
+
+To delete the files for good, remove the volumes after removing the container. This cannot be undone:
+
+```bash
+docker volume rm omicsbase-reports omicsbase-projects
+```
+:::
+
+::: {#local-install .callout-note collapse="true"}
+## With OmicsBase installed on your laptop
+
+If you run OmicsBase on your laptop with the [installer](../self-host/install.qmd), Reports already runs on the laptop: the bar above the workspace says **Reports runs on this computer.** You can move Reports to a bigger computer, such as a lab server or a cloud machine.
+
+Here it works the other way round: the laptop connects to the other computer on port 8443. The laptop must be able to reach that computer by name or IP address (same network, a VPN or the internet), with port 8443 open to it. Two computers that are both behind home or office routers cannot reach each other this way.
+
+### Pair with a pairing string {#pairing-string}
+
+1. In the laptop's Reports workspace, choose **Use my own computer** in the bar.
+   You see a `docker run` command ending in `serve --address <name or IP of that computer>`.
+2. Choose **Copy command**.
+3. On the other computer, paste the command, replace `<name or IP of that computer>` with the name or IP address at which the laptop reaches it, and press Enter.
+4. On that computer, run `docker logs omicsbase-reports` and copy the line that starts with `omicsbase-machine:`. Keep it private: it opens that computer's agent.
+5. On the laptop, paste the line into **Pairing string** and choose **Connect**.
+   The bar says **Running on** and the computer's address.
+
+**Disconnect** returns Reports to the laptop. The container keeps running on the other computer until you remove it with `docker rm -f omicsbase-reports`. To connect again, paste the same pairing string.
+
+Pairing strings are only for installs on your own laptop. On omicsbase.utu.fi you pair with the command and its code.
+:::
+
+::: {#troubleshooting .callout-note collapse="true"}
+## Troubleshooting
+
+### On the Reports page {#page-errors}
+
+| Message | What to do |
+| --- | --- |
+| **… is not connected** and **Start it again on that computer: docker start omicsbase-reports** | Your computer is off, Docker is not running, or the container stopped. Run `docker start omicsbase-reports`; it reconnects by itself. |
+| **You already have a Reports session. Stop it first.** | You have a session on Roihu or on another computer. Stop or disconnect it first. |
+| **This browser could not connect to your session.** | Choose **Try again**. If it keeps failing, check that the container runs: `docker ps`. |
+| **Pairing strings are for local installs. Use the pairing code instead.** | On omicsbase.utu.fi, run the command with the code instead. |
+| **That is not a pairing string. Copy the whole line that starts with omicsbase-machine:** | Copy the whole line from `docker logs omicsbase-reports`, including `omicsbase-machine:`. |
+| **Paste the pairing string your computer printed.** | The **Pairing string** field is empty. |
+| **Using your own computer is not set up on this server.** or **Pairing a computer is not set up on this server.** | This OmicsBase does not offer it. Ask whoever runs it. |
+| **Something went wrong. Try again in a moment.** | Try again. If it keeps happening, report it with the time. |
+
+### In the container's log {#log-errors}
+
+See the log with `docker logs omicsbase-reports`. When pairing works it shows `OmicsBase Reports: this machine is paired with https://omicsbase.utu.fi; open Reports there.`
+
+| Message | What to do |
+| --- | --- |
+| **OmicsBase Reports: this pairing code is unknown, used or expired. Get a new one in Reports.** | Codes work once, within 10 minutes. Run `docker rm -f omicsbase-reports`, get a new command in Reports and run it. |
+| **OmicsBase Reports: you already have a Reports session running. Stop it in Reports, then get a new code.** | Stop your Roihu session or disconnect your other computer, remove this container and run a new command. |
+| **OmicsBase Reports: could not reach https://omicsbase.utu.fi: …** | Your computer cannot reach OmicsBase. Check its internet connection, proxy or firewall. |
+| **OmicsBase Reports: this machine is not paired yet. Start it with the command shown in Reports.** | The container started without a code. Remove it and run the command from Reports. |
+
+If `docker run` says the name `omicsbase-reports` is already in use, an old container is still there. Run `docker rm -f omicsbase-reports` and the command again; your files stay.
+:::
+
+More questions: [FAQ](faq.qmd).

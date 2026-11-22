@@ -90,7 +90,7 @@ Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my o
 
 ## Getting started
 
-Open **[omicsbase.utu.fi](https://omicsbase.utu.fi)** and sign in with your University of Turku account or Google.
+Open **[omicsbase.utu.fi](https://omicsbase.utu.fi)** and sign in with your University of Turku account or Google. The [guides](https://omicsbase.utu.fi/docs/) walk you through your first note, adding data, sharing and Reports.
 
 ### On your own machine
 
@@ -109,7 +109,7 @@ Either half can run on a bigger machine while the install stays on your laptop:
 - **Notes:** start the engine on a server and set `ENGINE_URL` in `~/omicsbase/.env`; see [local/engine-server](local/engine-server/README.md).
 - **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine. On your own install the connection runs the other way than on omicsbase.utu.fi: the install connects to that machine, so it must accept connections from the install on port 8443. Paste the pairing string it prints, and Reports runs there.
 
-To work on OmicsBase itself, see [docs/SETUP.md](docs/SETUP.md).
+Guides for using, running and developing OmicsBase: [omicsbase.utu.fi/docs](https://omicsbase.utu.fi/docs/). To work on OmicsBase itself, start with [How OmicsBase fits together](https://omicsbase.utu.fi/docs/develop/architecture.html).
 
 ```bash
 git clone --recurse-submodules https://github.com/0xMuluh/omicsbase.git
@@ -145,7 +145,7 @@ OmicsBase builds on open-source AI and bioinformatics projects. See [UPSTREAM.md
 
 If OmicsBase helps your work, give it a ⭐
 
-[Documentation](docs/) • [Issue Feedback](https://github.com/0xMuluh/omicsbase/issues)
+[Documentation](https://omicsbase.utu.fi/docs/) • [Issue Feedback](https://github.com/0xMuluh/omicsbase/issues)
 
 Developed by [Turku Data Science](https://datascience.utu.fi), University of Turku
 

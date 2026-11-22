@@ -1,0 +1,87 @@
+---
+title: "Questions and limits"
+description: "Short answers about what OmicsBase is, where your code runs, what is sent to the model, R versions, packages and how to report a problem."
+---
+
+## How do I get help or report a problem? {#report-a-problem}
+
+Open an issue on GitHub: [github.com/0xMuluh/omicsbase/issues](https://github.com/0xMuluh/omicsbase/issues). An issue is a short public report that the OmicsBase team reads.
+
+Say what you did, what you expected and what happened instead. If it happened in a note, [share the note](share.qmd) and paste the link, but only if the note holds nothing private.
+
+On a page of these docs, you can also use **Report an issue** in the page margin.
+
+## What is OmicsBase? {#what-is-it}
+
+OmicsBase is a free, open-source website for analysing biology data with R and Bioconductor. Omics means data such as microbiome, gene expression, single-cell, spatial, protein and metabolite measurements. Bioconductor is a large collection of R tools for that kind of data.
+
+You ask a question in a **note**. An AI helper, the agent, writes R code, runs it and shows you the code, the output and the figures. For bigger projects, **Reports** gives you your own agent on the CSC Roihu supercomputer or on your own computer; see [Reports on Roihu](reports-roihu.qmd).
+
+## What is OmicsBase not? {#what-it-is-not}
+
+- **Not a general AI assistant.** The agent is set up for data analysis in R and Bioconductor.
+- **Not a source of made-up results.** The agent is told never to invent data or results. Every number comes from code that ran. If data or a package is missing, it says so.
+- **Not a replacement for your judgement.** Read the code and check the results, as you would with any analysis.
+
+## Where does my code run? {#where-code-runs}
+
+On the OmicsBase servers, not on your computer. Each note has its own R session and its own folder for files.
+
+You can also [run OmicsBase on your own computer](../self-host/install.qmd). Then notes run there.
+
+## What is sent to the model provider? {#what-leaves-the-server}
+
+The model is the AI that writes the code. It runs at the company that provides it. That company receives:
+
+- the messages you type,
+- the code the agent writes,
+- what R prints back, such as the first rows of a table,
+- what the agent looks up in the Bioconductor books and the R help,
+- pictures and short documents you attach.
+
+Data files you upload stay on the OmicsBase server. The model gets only their names, plus whatever R prints about them. See [What the model sees of your files](your-data.qmd#what-the-model-sees).
+
+Which company receives it depends on the model you pick. See [Choose a model](models.qmd).
+
+## Which R and Bioconductor versions does it use? {#versions}
+
+Bioconductor 3.23, with the R version that goes with it. To see the exact versions in a note, ask the agent: `Run sessionInfo()`. It lists R and every loaded package with its version.
+
+## Which packages are installed? {#packages}
+
+Over 200 R packages for omics analysis, plus the packages they depend on. They include mia, miaViz and miaTime for microbiome data, DESeq2, edgeR and limma for gene expression, scater for single-cell data, SpatialExperiment for spatial data, LimROTS, MaAsLin3 and ANCOM-BC for comparing groups, and data packages such as curatedMetagenomicData, MGnifyR, scRNAseq and STexampleData.
+
+To check one package, ask the agent: `Is the package <name> installed?`
+
+## Which tools can OmicsBase run? {#tools}
+
+| Where | What it has |
+| --- | --- |
+| Notes | R and Bioconductor. Notes read the results of command-line tools, such as MetaPhlAn and Bracken profiles, BIOM files, count tables and Salmon output, but do not run those tools. |
+| Reports on Roihu | R and Bioconductor, plus about 300 command-line tools from CSC, such as fastp, Kraken 2, MetaPhlAn, bowtie2, SPAdes and GATK, and CSC's reference databases. |
+| Reports on your own computer | R and Bioconductor only. |
+| Local install | R and Bioconductor only, in notes and in Reports. |
+
+To start from raw sequencing reads (FASTQ files), use Reports on Roihu, then bring the results to a note. [Bioinformatics tools on Roihu](reports-roihu.qmd#bio-tools) lists the tools.
+
+## Can I install a package? {#install-packages}
+
+Notes use the packages that are already installed. The agent is told not to install packages. If a package is missing, it tells you and suggests an installed one that does the same job.
+
+If you need a package that is missing, [open an issue](#report-a-problem) and name it.
+
+## How long can a step run? {#time-limits}
+
+A cell the agent runs can take up to 10 minutes. A cell you run yourself can take up to 3 minutes. After that it stops and shows **Timed out**. Ask the agent to work on a smaller part of the data, or to split the step. For long jobs, use [Reports on Roihu](reports-roihu.qmd).
+
+## How do I mention OmicsBase in a paper? {#cite}
+
+Name OmicsBase and link to its code: [github.com/0xMuluh/omicsbase](https://github.com/0xMuluh/omicsbase). Also cite the R packages your analysis used. `sessionInfo()` lists them with their versions, and `citation("<package>")` in R gives the reference for each one.
+
+## Is it free? {#cost}
+
+Yes, to use at omicsbase.utu.fi. Models that OmicsBase pays for use a daily allowance of credits. If you use your own OpenRouter key, OpenRouter charges your account. See [Credits](models.qmd#credits).
+
+## Can I use it without a University of Turku account? {#accounts}
+
+Yes. You can sign in with a Google account. See [Sign in](first-note.qmd#sign-in).

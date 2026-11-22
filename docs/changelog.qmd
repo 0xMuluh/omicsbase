@@ -1,0 +1,6 @@
+---
+title: "Changelog"
+---
+
+Each version below is a [release on GitHub](https://github.com/0xMuluh/omicsbase/releases); its docs stay at `/docs/<version>/`.
+

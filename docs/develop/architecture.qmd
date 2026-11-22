@@ -1,0 +1,143 @@
+---
+title: "How OmicsBase fits together"
+description: "The parts of OmicsBase, how a note and a Reports session flow through them, and which secret guards each connection."
+---
+
+OmicsBase has three parts:
+
+- **The notes app**: a fork of LibreChat in the `librechat/` folder. It serves the web pages, signs users in, stores notes in MongoDB and sends questions to the model providers. A *fork* is our own copy of another project's code, with our changes on top.
+- **The notes engine**: the `engine/` folder. It is a Python server that keeps one R session per note and gives the model its tools.
+- **Reports**: a fork of the OpenHands interface (called Agent Canvas) in the `openhands/` folder, plus our gateway in `docker/openhands/gateway/`. Each user's Reports agent runs in their own session: a job on CSC's Roihu supercomputer, or a computer of their own.
+
+In front of everything sits **Caddy**, a web server that handles HTTPS and passes each request to the right part.
+
+```{mermaid}
+flowchart LR
+  B["Browser"] -->|HTTPS| C["Caddy"]
+  C --> L["Notes app<br/>LibreChat fork"]
+  L --> D[("MongoDB<br/>Meilisearch")]
+  L -->|model calls| P["Model providers"]
+  L -->|"tools and cells<br/>engine secret"| E["Notes engine"]
+  E --> K["R session per note"]
+  C -->|"plots<br/>project cookie"| E
+  L -->|"FirecREST<br/>user's CSC token"| J["Roihu job<br/>Reports agent"]
+  L -->|"router secret"| R["Router"]
+  C -->|"/check"| R
+  J -->|"tunnel, dials out"| T["Relay"]
+  M["User's own computer<br/>Reports agent"] -->|"tunnel, dials out"| T
+  C -->|"session cookie"| T
+```
+
+## A note, step by step {#note-flow}
+
+The model reaches the engine through **MCP** (Model Context Protocol), a standard way to give a model a set of tools it can call. The engine's MCP server is called `notethreads` and is configured in `librechat.yaml`.
+
+1. The user asks a question in a note.
+2. LibreChat sends the question to the chosen model, together with the `notethreads` tools.
+3. The model calls a tool. LibreChat passes the call to the engine. Every call carries the engine secret in the `X-Internal-Secret` header. Without it, the engine refuses.
+4. The engine answers with one of these tools:
+
+   | Tool | What it does |
+   | --- | --- |
+   | `execute_r_cell` | Runs R code in the note's R session. Captures output, plots and tables. |
+   | `search_bioc_books` | Searches the curated Bioconductor books. |
+   | `r_help` | Returns the help page of a function, for the installed package version. |
+   | `list_datasets` | Lists the example datasets of an installed package. |
+   | `list_thread_files` | Lists the files in the note's folder. |
+   | `render_quarto_report` | Turns a report's Quarto files into a website. |
+
+5. For `execute_r_cell`, LibreChat does the work itself: it saves the cell, sends the code to the engine's `/api/execute` endpoint, and saves the result.
+6. The engine writes plots and tables into the note's folder, under `runs/`.
+7. The browser loads them from `/omics-engine/projects/<note>/runs/…`. A cookie that LibreChat signed for that note lets it in.
+
+Because of step 5, the engine never calls LibreChat back. The engine can therefore run on a machine that cannot reach LibreChat.
+
+Uploads into a note, and copies of a note when someone continues a shared one, also go from LibreChat to the engine over HTTP. The engine needs no disk shared with LibreChat.
+
+### Where notes run {#notes-placement}
+
+On **omicsbase.utu.fi**, notes run on CSC's LUMI-K, a Kubernetes platform. Kubernetes runs containers in units called *pods*.
+
+- The engine on LUMI-K is a gateway (`NOTE_RUNNER=pods`, see `engine/note_pods.py`).
+- A note's first cell starts a pod for that note. Later cells go to the same pod.
+- Each pod may use 2 cores and 4 GiB of memory by default.
+- When a note is idle, its pod saves the R session to a shared volume and is deleted. The next cell starts a new pod, which restores the session.
+- The VM keeps its own engine container as a fallback.
+
+In a **local install**, notes run in the `engine` container on the same machine, one R process per note (`NOTE_RUNNER=local`, the default). With `ENGINE_URL` set, they run on a server of the user's choice; see [Notes engine on a server](../self-host/engine-server.qmd).
+
+### The knowledge index {#knowledge}
+
+`search_bioc_books` and `r_help` read one file: `engine/knowledge/knowledge.db`. It is an SQLite database with a full-text index.
+
+- `scripts/setup_knowledge.py` downloads the books listed in `knowledge/sources.json`, each at a fixed commit, and indexes their chapters. It never runs the code in the books.
+- `scripts/build_package_knowledge.py` adds the help pages and vignettes of installed R packages.
+
+The database is not stored in Git. The engine image includes it if it exists when the image is built.
+
+## A Reports session, step by step {#reports-flow}
+
+Each user has at most one Reports session at a time. The session serves all of that user's reports, each in its own folder under `/projects/`.
+
+Three tools make this work:
+
+- **FirecREST** is CSC's web API for Roihu. It submits jobs and creates folders on the user's behalf, using the user's own CSC access token.
+- **The router** (`deployment/roihu/roihu_router.py`) keeps a list of *routes*. A route belongs to one session. It has a tunnel port on the VM, a credential that opens only that port, and a *session key* that the Reports agent asks for on every request.
+- **The relay** is a chisel server on the VM. Chisel makes a tunnel over HTTPS. The session dials out to the relay, so nothing needs to reach the session from outside.
+
+### On Roihu {#reports-roihu}
+
+1. On the Reports page, the user enters a CSC project, cores (1–8), memory (2–64 GiB), hours (1–36) and a CSC access token.
+2. LibreChat asks FirecREST whether the user belongs to that project.
+3. LibreChat creates `/scratch/<project>/omicsbase-reports/` on Roihu, with an `images/` folder and a private folder for the user.
+4. LibreChat asks the router for a new route.
+5. If the project has no image for the current release yet, LibreChat submits `deployment/roihu/pull_image.sbatch`. This job turns the published image into an Apptainer image. Apptainer runs containers on supercomputers.
+6. LibreChat submits `deployment/roihu/reports.sbatch`. The job runs under the user's own Roihu account.
+7. In the job, the agent and the gateway listen only on the compute node's loopback address. A chisel client dials out to the relay.
+8. To open Reports, LibreChat gets a one-time link from the router. The router swaps it for a signed `roihu_route` cookie on the Reports host.
+9. On every request, Caddy asks the router's `/check` endpoint. For a valid cookie, the router returns the tunnel port and the session key. Caddy adds the key and sends the request through the tunnel.
+
+The session key never reaches the browser. Inside the job, the gateway runs with `OMICSBASE_GATEWAY_MODE=roihu`. It serves our editor, report viewer and render endpoint, and checks the session key on every request.
+
+The LibreChat side of this flow is in `packages/api/src/projects/roihu.ts` and the route `api/server/routes/roihu.js` (`/api/roihu/…`).
+
+### On the user's own computer {#reports-attach}
+
+On omicsbase.utu.fi, **Use my own computer** replaces the Roihu start:
+
+1. LibreChat asks the router for a one-time pairing code and shows a `docker run` command that contains it.
+2. The user runs the command. The container's entrypoint (`deployment/roihu/connect.py`) sends the code to LibreChat at `/api/roihu/attach/claim`. The code is the only credential this endpoint accepts.
+3. The router creates a route that does not expire.
+4. The container saves its relay credential and session key in its home volume. It reconnects by itself after a restart.
+5. From here on, the tunnel and the cookie check work as for a Roihu job.
+
+**Disconnect** removes the route and its credential.
+
+A local install cannot be reached from outside, so the direction is reversed:
+
+1. The user's computer runs the same image with `serve`. It prints a pairing string.
+2. The user pastes the string on the Reports page.
+3. The install's `reports-link` service (the same router) keeps a tunnel open to that computer.
+
+A local install also has its own Reports container. It sits behind `reports-gate`, a small Caddy that lets a request through only with a valid OmicsBase ticket or the gateway's signed cookie.
+
+## Secrets between the parts {#auth}
+
+| Secret | Shared by | What it protects |
+| --- | --- | --- |
+| `OMICSBASE_ENGINE_SECRET` | LibreChat and the notes engine | All of LibreChat's calls to the engine. LibreChat also signs the browser's cookie for the engine with it. When it is empty, both sides use `OMICSBASE_AUTH_SECRET`. |
+| `OMICSBASE_AUTH_SECRET` | LibreChat and a Reports container that serves several users | Short-lived launch tickets that LibreChat gives the browser for Reports. Compose does not start without it. |
+| Router secret | LibreChat and the router | LibreChat's calls to the router: new routes, pairing codes, open links, sign-out. LibreChat reads it from `ROIHU_ROUTER_SECRET`. In a local install it is `OMICSBASE_LINK_SECRET`. |
+| Session key | One Reports session | The agent and the gateway in that session. Caddy adds it to each request. |
+| Relay credential | One route | That route's tunnel port on the relay, and nothing else. |
+
+If the engine runs on another machine, give it its own `OMICSBASE_ENGINE_SECRET`. That machine then never holds the Reports secret.
+
+## Where things run in production {#production}
+
+- **A CSC cPouta VM** serves `omicsbase.utu.fi`. Docker Compose runs LibreChat, MongoDB, Meilisearch, the file-search services, the admin panel and the fallback engine. Caddy, the router and the relay run outside Compose.
+- **LUMI-K** runs the notes engine gateway and one pod per live note.
+- **Roihu** runs each user's Reports job, in their own CSC project.
+- **Users' own computers** run attached Reports sessions. Their traffic passes through the relay on the VM.
+
+Details for maintainers are on [Production deployment](production.qmd).

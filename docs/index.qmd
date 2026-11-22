@@ -1,0 +1,55 @@
+---
+title: "OmicsBase docs"
+toc: false
+---
+
+OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. Ask a question in a **note** and get back R code that has already run, with its output and figures. For larger projects, **Reports** gives you your own analysis agent on the CSC Roihu supercomputer or on your own computer, from your data to a finished report.
+
+Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi), or [run it on your own machine](self-host/install.qmd).
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-6}
+### New to OmicsBase
+
+- [Run your first note](start/first-note.qmd)
+- [Pick a model](start/models.qmd)
+- [Add your own data](start/your-data.qmd)
+- [Share and continue a note](start/share.qmd)
+- [Questions and limits](start/faq.qmd)
+:::
+
+::: {.g-col-12 .g-col-md-6}
+### Reports
+
+- [Reports on Roihu](start/reports-roihu.qmd)
+- [Reports on your own computer](start/reports-own-computer.qmd)
+- [Writing reports](analyses/reports.qmd)
+:::
+
+::: {.g-col-12 .g-col-md-6}
+### Analyses
+
+Prompts to try and recorded example notes for [microbiome](analyses/microbiome.qmd), [transcriptomics](analyses/transcriptomics.qmd), [single-cell](analyses/single-cell.qmd), [spatial](analyses/spatial.qmd), [proteomics and metabolomics](analyses/proteomics-metabolomics.qmd), [functional annotation](analyses/functional.qmd), [genomes](analyses/genomes.qmd) and [multi-omics](analyses/multi-omics.qmd).
+:::
+
+::: {.g-col-12 .g-col-md-6}
+### Run it yourself
+
+- [Install on your own machine](self-host/install.qmd)
+- [Troubleshooting](self-host/troubleshooting.qmd)
+- [Settings](self-host/settings.qmd)
+- [Updating and backups](self-host/updating.qmd)
+:::
+
+::: {.g-col-12 .g-col-md-6}
+### Develop
+
+- [How OmicsBase fits together](develop/architecture.qmd)
+- [Development loop](develop/dev-loop.qmd)
+- [Contributing and releases](develop/contributing.qmd)
+:::
+
+:::
+
+Something wrong or missing on a page? Use **Report an issue** in the page's margin, or open an [issue on GitHub](https://github.com/0xMuluh/omicsbase/issues).
