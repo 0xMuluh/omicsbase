@@ -44,7 +44,7 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 | [**📚 Grounded in the books**](knowledge/README.md) | Searches the Bioconductor books and R help before it writes code |
 | [**🦠 Every omics**](#what-you-can-analyse) | Microbiome, single-cell, spatial, bulk RNA-seq, proteomics, metabolomics |
 | [**🗂️ Public data built in**](#examples) | curatedMetagenomicData, MGnify, Zenodo, Bioconductor data packages |
-| [**🖥️ Raw data to report**](#reports-on-roihu) | Your own agent on the CSC Roihu supercomputer |
+| [**🖥️ Raw data to report**](#reports-on-roihu) | QC, alignment and assembly with fastp, bowtie2, SPAdes and more, run by your own agent on the CSC Roihu supercomputer |
 | [**✅ Checks your design first**](#what-you-can-analyse) | Matches samples to files and metadata, flags small groups and confounding before testing |
 | [**🔗 Share and continue**](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX) | Anyone can open a note and continue it in their own workspace |
 | [**🤖 Any model, any agent**](#reports-on-roihu) | Pick the model per note; OpenHands, Claude Code, Codex, Gemini, Pi or OpenCode in Reports |
@@ -64,13 +64,13 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 
 | | |
 | --- | --- |
-| 🦠 **Microbiome and metagenomics** | Import any format · short and long reads · QC and host removal · Kraken2, Bracken, MetaPhlAn · assembly and gene prediction · diversity · ordination · differential abundance with MaAsLin3, ANCOM-BC2, ALDEx2 · networks · pathways |
-| 🧬 **Transcriptomics** | Alignment, de novo assembly and quantification · short and long reads · DESeq2, edgeR, limma · time courses |
+| 🦠 **Microbiome and metagenomics** | Import any format · diversity · ordination · differential abundance with MaAsLin3, ANCOM-BC2, ALDEx2 · networks · pathways · QC, host removal, profiling and assembly with fastp, bowtie2, Kraken 2, Bracken, MetaPhlAn and MEGAHIT in Reports on Roihu |
+| 🧬 **Transcriptomics** | DESeq2, edgeR, limma · time courses · alignment, de novo assembly and quantification with STAR, HISAT2, minimap2, Trinity and Salmon in Reports on Roihu |
 | 🔬 **Single-cell** | QC · integration · clustering · annotation · trajectories · velocity |
 | 🗺️ **Spatial** | Visium, Slide-seq, seqFISH, CosMx · neighbourhoods · domains |
 | ⚖️ **Proteomics and metabolomics** | Spectra · quantification · TMT · PCA, heatmaps, volcano plots · over-representation and GSEA |
-| 🧪 **Functional annotation** | GO, KEGG and Reactome · InterProScan and eggNOG annotation · enrichment and GSEA · community function |
-| 🧩 **Genomes and variants** | Assembly · mapping · gene finding · MLST · variant calling and VEP annotation · GWAS |
+| 🧪 **Functional annotation** | GO, KEGG and Reactome · enrichment and GSEA · community function · InterProScan and eggNOG-mapper in Reports on Roihu |
+| 🧩 **Genomes and variants** | Multiple sequence alignment and phylogenetic trees with MAFFT and IQ-TREE 2 · assembly, mapping, gene finding, variant calling and GWAS with SPAdes, bwa, Prokka, GATK and PLINK in Reports on Roihu |
 | 🔗 **Multi-omics** | Taxa with their enzymes · cross-omics networks · survival by subtype |
 | 📄 **Reports** | Multi-page Quarto sites, PDF or Word · methods with references · findings and interpretation · every figure with its source table · `sessionInfo()` |
 
@@ -82,11 +82,11 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 | --- | --- |
 | **🔒 Runs as you** | Your own job, in your own CSC project; nobody else sees your files |
 | **⚡ Real compute** | Pick cores, memory and time, up to 36 hours |
-| **🧰 Full toolbox** | R, Bioconductor and command-line tools such as fastp, Kraken2, MetaPhlAn, minimap2, SPAdes and MEGAHIT |
+| **🧰 Full toolbox** | R 4.6, Bioconductor 3.23 and Quarto, plus CSC's bio-apps collection (about 300 tools) and CSC's reference databases |
 | **📦 Reproducible runs** | Every session runs in the same pinned container image |
 | **🤖 Your agent** | OpenHands, Claude Code, Codex, Gemini CLI, Pi or OpenCode, with your own key |
 
-Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent. It connects out to OmicsBase, so it needs no open ports, and your files stay on it.
+Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent, with R, Bioconductor and Quarto but without the command-line tools of Roihu. It connects out to OmicsBase, so it needs no open ports, and your files stay on it.
 
 ## Getting started
 
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh |
 
 On Linux or a Mac, paste it into a terminal; on Windows, into an Ubuntu (WSL) terminal, with Docker Desktop's WSL integration turned on. The images are built for Intel/AMD, so Apple-silicon Macs run them emulated, which is slow.
 
-The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and results go only to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and results go only to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. Neither has the command-line tools of Reports on Roihu: they run R, Bioconductor and Quarto, plus MAFFT and IQ-TREE 2 in notes. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
 
 Either half can run on a bigger machine while the install stays on your laptop:
 

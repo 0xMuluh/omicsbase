@@ -35,6 +35,13 @@ RUN curl -fsSL -o /tmp/chisel.gz \
     && chmod 755 /usr/local/bin/chisel \
     && rm /tmp/chisel.gz
 
+# CSC's `module` command in every bash the agent opens, when a Roihu job passes the host's
+# Lmod (reports.sbatch): login shells read /etc/profile.d, interactive ones /etc/bash.bashrc,
+# and non-interactive ones BASH_ENV, which the job points here. Elsewhere it defines nothing.
+RUN echo 'if [ -n "${LMOD_CMD:-}" ]; then module() { eval "$($LMOD_CMD bash "$@")"; }; fi' \
+        > /etc/profile.d/omicsbase-csc-modules.sh \
+    && echo '. /etc/profile.d/omicsbase-csc-modules.sh' >> /etc/bash.bashrc
+
 # "Use my own computer": `docker run <image> https://omicsbase.utu.fi --pair <code>` pairs the
 # machine and starts the agent (connect.py). Roihu jobs start entrypoint.roihu.sh themselves
 # (apptainer exec), so this entrypoint does not apply to them. /projects is created here so a

@@ -64,3 +64,14 @@ def test_editor_opens_the_most_recent_report(client, tmp_path):
     tree = client.get("/api/omicsbase/editor/default/tree", headers=KEY)
     assert tree.status_code == 200
     assert "analysis.R" in tree.text
+
+
+def test_agent_hears_of_csc_modules_only_when_the_job_binds_them(client, monkeypatch):
+    from gateway.sessions import build_omicsbase_system_prompt as prompt
+
+    monkeypatch.delenv("OMICSBASE_CSC_MODULES", raising=False)
+    assert "module load" not in prompt(REPORT, "/projects", "openhands")
+    assert "No command-line tools" in prompt(REPORT, "/projects", "openhands")
+    monkeypatch.setenv("OMICSBASE_CSC_MODULES", "1")
+    assert "module load bio-apps/v202603" in prompt(REPORT, "/projects", "openhands")
+    assert "/dataset/project_2020345" in prompt(REPORT, "/projects", "openhands")
