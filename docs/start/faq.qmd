@@ -72,7 +72,7 @@ If you need a package that is missing, [open an issue](#report-a-problem) and na
 
 ## How long can a step run? {#time-limits}
 
-A cell the agent runs can take up to 10 minutes. A cell you run yourself can take up to 3 minutes. After that it stops and shows **Timed out**. Ask the agent to work on a smaller part of the data, or to split the step. For long jobs, use [Reports on Roihu](reports-roihu.qmd).
+A cell can use 10 minutes of R time. The clock starts when R starts running the code, so waiting for R to start does not count. The limit is the same for cells you run and cells the agent runs. After that the cell stops and R is restarted; see [The time limit](cells.qmd#time-limit). Ask the agent to work on a smaller part of the data, or to split the step. For long jobs, use [Reports on Roihu](reports-roihu.qmd).
 
 ## How do I mention OmicsBase in a paper? {#cite}
 

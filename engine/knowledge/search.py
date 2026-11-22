@@ -108,6 +108,16 @@ def search_bioc_knowledge(
     source_metadata = {}
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_sources'").fetchone():
         source_metadata = {slug: json.loads(data) for slug, data in conn.execute('SELECT book_slug, metadata_json FROM knowledge_sources')}
+    # Web address and heading id per section; absent in an index built before they were kept.
+    section_links = {}
+    if rows and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sections'").fetchone():
+        for row in rows:
+            key = (row[0], row[8], row[3])
+            if key not in section_links:
+                section_links[key] = conn.execute(
+                    "SELECT anchor, url FROM sections WHERE book_slug = ? AND source_file = ? AND heading_path = ?",
+                    key,
+                ).fetchone()
     conn.close()
 
     matches = []
@@ -126,9 +136,17 @@ def search_bioc_knowledge(
             "source_file": source_file,
             "score": round(abs(rank), 3),
         }
+        link = section_links.get((book_slug, source_file, heading_path))
+        if link:
+            match['anchor'], match['url'] = link
         provenance = source_metadata.get(book_slug)
         if provenance:
-            match['source_url'] = f"{provenance['repository']}/blob/{provenance['commit']}/{quote(source_file)}"
+            if book_slug.startswith('pkg:'):
+                # Help pages and vignettes come from the installed package, not from a repository
+                # tree; link the package's own page (its DESCRIPTION URL, else Bioconductor's).
+                match['source_url'] = provenance.get('repository') or ''
+            else:
+                match['source_url'] = f"{provenance['repository']}/blob/{provenance['commit']}/{quote(source_file)}"
             match['source_commit'] = provenance['commit']
             match['attribution'] = provenance['attribution']
             match['license_statements'] = provenance['license_statements']
@@ -137,7 +155,12 @@ def search_bioc_knowledge(
         # Build clean markdown excerpt for the LLM
         sec = f"### [{book_title}] {chapter_title} - {heading_path}\n"
         if provenance:
-            sec += f"*Source: [{book_slug}/{source_file}]({match['source_url']})*\n"
+            if match['source_url']:
+                sec += f"*Source: [{book_slug}/{source_file}]({match['source_url']})*\n"
+            else:
+                sec += f"*Source: `{book_slug}/{source_file}`*\n"
+            if match.get('url') and match['url'] != match['source_url']:
+                sec += f"*Book page: {match['url']}*\n"
             sec += f"*Attribution: {provenance['attribution']}*\n"
             terms = '; '.join(item['statement'] for item in provenance['license_statements'])
             sec += f"*Source license statements: {terms}*\n\n"

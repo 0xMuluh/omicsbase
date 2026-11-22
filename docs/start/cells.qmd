@@ -1,0 +1,131 @@
+---
+title: "What a cell shows"
+description: "Read the status line and timer of an R cell, know the time limit, cancel a cell, and understand the 'From the book' line."
+---
+
+An **R cell** is a box in a note with R code in it. This page explains what the cell tells you while the code runs and after it has finished.
+
+## While a cell runs {#status-line}
+
+The top of the cell has one status line. It says what is happening right now. Most lines also show a timer, in minutes and seconds.
+
+<!-- screenshot: cell-status-line — an R cell while it runs, with the status line "Running · 0:42 of 10:00" and the Cancel button; highlight the status line -->
+
+| The cell says | What it means | What to do |
+|---|---|---|
+| **Copying your files to the note…** | The files you added are being put where R can read them. | Wait. |
+| **Waiting for a free R server (all are busy)… 0:12** | Other people are using all the R servers. Your cell is in the queue. | Wait. It starts by itself when a server is free. |
+| **Starting R for this note (a first start can take 2 minutes)… 0:18** | The note is getting its own R. This happens the first time you run something in a note, and when you come back after a break. | Wait. Later cells in the same note start much faster. |
+| **Waiting for the previous cell to finish…** | A note runs one cell at a time. An earlier cell is still running. | Wait, or cancel the earlier cell. |
+| **Starting R…** | R is starting. | Wait. |
+| **Restoring your saved session…** | R is loading the tables and results that the note saved earlier. | Wait. |
+| **Running · 0:42 of 10:00** | R is running your code. The first time is how long it has run. The second is the [time limit](#time-limit). | Wait, or [cancel](#cancel) if you do not want the result. |
+| **Cancelling…** | You asked the cell to stop. It is stopping. | Wait a moment. |
+| **Interrupted by a server restart. Run the cell again.** | OmicsBase was restarted while your cell was waiting or running. The cell did not finish. | Run the cell again, or ask the agent to. |
+
+### Output appears while the cell runs {#live-output}
+
+You do not have to wait until the end. The text that R prints shows up under the code while the cell runs. You see the last lines, and the box scrolls as new lines come.
+
+Sometimes one long step prints nothing until it is done. Then its text appears when that step ends.
+
+## The time limit {#time-limit}
+
+A cell can use **10 minutes of R time**.
+
+- The clock starts when R starts running the code. That is when the cell says **Running**.
+- Waiting does not count. Waiting for a free R server, starting R and restoring your session use none of the 10 minutes.
+- The limit is the same for cells you run and cells the agent runs.
+
+When the 10 minutes are over, the cell stops and says:
+
+> Stopped after 10:00. R was restarted, so objects made since the session was last saved are gone. Run the earlier cells again to recreate them.
+
+See [After a timeout or a cancel](#after-stop) for what that means.
+
+If a step needs more than 10 minutes, ask the agent to split it into smaller steps or to use a smaller part of the data. For long jobs, use [Reports on Roihu](reports-roihu.qmd).
+
+## Cancel a cell {#cancel}
+
+1. Click the square button on the cell (**Cancel execution**).
+   You can do this as soon as the cell has started, also while it waits, and also for cells the agent runs.
+2. The cell says **Cancelling…**
+3. The cell stops and says:
+
+   > Cancelled. R was restarted, so objects made since the session was last saved are gone. Run the earlier cells again to recreate them.
+
+## After a timeout or a cancel {#after-stop}
+
+To stop a cell, OmicsBase has to restart the note's R. This has one effect you should know about.
+
+R keeps the tables and results from earlier cells in its memory. These are called objects. OmicsBase saves them from time to time. After a restart, R loads the saved objects again. Objects made after the last save are gone.
+
+What to do:
+
+1. Run the earlier cells again, from the top, with the green play button on each cell. Or ask the agent: `Run the earlier steps again.`
+2. Then run the cell that was stopped, if you still want its result.
+
+Your note, its code, its old output and your files are not lost. Only R's memory is.
+
+## The "From the book" line {#book-badge}
+
+When a cell has finished without an error, it can show one small grey line at the bottom of its output.
+
+<!-- screenshot: cell-book-badge — a finished R cell with the line "From the book · OMA › Alpha diversity" under its output; highlight the line and its arrow -->
+
+### From the book · OMA › Alpha diversity {#from-the-book}
+
+This line means: the analysis functions in this cell are also used in that section of a book. Here the book is OMA and the section is "Alpha diversity".
+
+- Click the line to open that section on the book's web page.
+- Click the arrow to see the other sections that use the same functions, one group per function, and the version of the book.
+
+Use it to read how the book's authors use the method, and to check the cell against it.
+
+::: {.callout-important}
+## What the line does not mean
+
+The line is not a mark of approval. It only says that the same functions appear in the book. It does **not** check:
+
+- that the analysis is right for your data,
+- that the arguments are right,
+- that the steps are in the right order.
+
+You still need to read the section and judge the result yourself.
+:::
+
+### Not in the books: LimROTS() {#not-in-the-books}
+
+This line names analysis functions in the cell that none of the indexed books uses. In this example it is `LimROTS()`.
+
+This is not an error. The cell ran, and the method may be a good one. It means the books cannot back it up, so check that method yourself: read its help page or its paper, or ask the agent why it chose it.
+
+### No line at all {#no-badge}
+
+A cell shows no line when there is nothing to say about it:
+
+- it uses only base R, such as reading a file, making a table or drawing a plot,
+- it uses only accessors, the functions that take data out of an object or put it in, such as `assay()` or `colData()`,
+- it uses a function that the cell itself defined. OmicsBase cannot see inside such a function, so it says nothing.
+
+A cell that failed shows no line either.
+
+### Which books are indexed {#indexed-books}
+
+- **OMA**: Orchestrating Microbiome Analysis
+- **OSCA**, **OSCA basic** and **OSCA advanced**: Orchestrating Single-Cell Analysis
+- **OSTA**: Orchestrating Spatial Transcriptomics Analysis
+- **scrapbook**: single-cell analysis with scrapper
+- **R for Mass Spectrometry**
+- **Metabonaut**: metabolomics
+- **rnaseqGene**: the RNA-seq workflow, from reads to genes
+- **MOFA2**: multi-omics factor analysis
+- **tidyomics** and **tidy spatial**: tidy-style analysis of omics and spatial data
+
+The Bioconductor books (OMA, OSCA, OSTA, the two OSCA parts, scrapbook, rnaseqGene, MOFA2) are their Bioconductor 3.23 release editions; the others are the versions on their own websites. Package help pages and vignettes do not count as "the book".
+
+## Next steps
+
+- [Your first note](first-note.qmd)
+- [Energy use of a note](energy.qmd)
+- [Frequently asked questions](faq.qmd)

@@ -104,9 +104,41 @@ extract_package <- function(pkg) {
   )
 }
 
+# Exported names of an installed package, read from its files so the package is not loaded
+# (loading several hundred namespaces in one session is slow and memory-hungry).
+package_exports <- function(pkg) {
+  tryCatch({
+    path <- find.package(pkg, quiet = TRUE)[1]
+    ns <- parseNamespaceFile(basename(path), dirname(path), mustExist = FALSE)
+    exported <- c(ns$exports, ns$exportMethods)
+    if (length(ns$exportPatterns) > 0) {
+      index <- file.path(path, "R", paste0(pkg, ".rdx"))
+      objects <- if (file.exists(index)) names(readRDS(index)$variables) else character()
+      for (pattern in ns$exportPatterns) exported <- c(exported, grep(pattern, objects, value = TRUE))
+    }
+    sort(unique(as.character(exported)))
+  }, error = function(e) {
+    tryCatch(sort(getNamespaceExports(pkg)), error = function(e2) character())
+  })
+}
+
+# Writes {"packages": {<package>: [<exported names>]}} for every installed package. The book
+# indexer keeps only these names in its function-to-sections map.
+write_package_exports <- function(exports_file) {
+  installed <- sort(unique(rownames(installed.packages())))
+  cat(sprintf("Listing exported names of %d installed packages...\n", length(installed)))
+  exports <- lapply(installed, package_exports)
+  names(exports) <- installed
+  exports <- exports[lengths(exports) > 0]
+  jsonlite::write_json(list(packages = exports), path = exports_file, auto_unbox = FALSE)
+  cat(sprintf("Wrote exports of %d packages to %s.\n", length(exports), exports_file))
+}
+
 main <- function() {
   args <- commandArgs(trailingOnly = TRUE)
   output_file <- "extracted_package_docs.json"
+  exports_file <- NULL
+  exports_only <- FALSE
   pkgs <- c()
 
   i <- 1
@@ -114,10 +146,22 @@ main <- function() {
     if (args[i] == "--output" || args[i] == "-o") {
       output_file <- args[i + 1]
       i <- i + 2
+    } else if (args[i] == "--exports-output") {
+      exports_file <- args[i + 1]
+      i <- i + 2
+    } else if (args[i] == "--exports-only") {
+      exports_only <- TRUE
+      i <- i + 1
     } else {
       pkgs <- c(pkgs, args[i])
       i <- i + 1
     }
+  }
+
+  if (exports_only) {
+    if (is.null(exports_file)) stop("--exports-only needs --exports-output <file>")
+    write_package_exports(exports_file)
+    return(invisible(NULL))
   }
 
   if (length(pkgs) == 0) {
@@ -170,6 +214,7 @@ main <- function() {
   cat(sprintf("Writing extracted documentation to %s...\n", output_file))
   jsonlite::write_json(results, path = output_file, auto_unbox = TRUE, pretty = TRUE)
   cat("Extraction complete.\n")
+  if (!is.null(exports_file)) write_package_exports(exports_file)
 }
 
 if (!interactive()) {

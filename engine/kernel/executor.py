@@ -15,6 +15,9 @@ from engine.kernel.note_kernel import (
     EVENTS_FILE_NAME,
 )
 
+from engine.knowledge import book_refs
+from engine.knowledge.search import DEFAULT_DB_PATH as KNOWLEDGE_DB_PATH
+
 import re
 
 logger = logging.getLogger(__name__)
@@ -253,7 +256,7 @@ def execute_note_cell(
         for event in events
         if event.get("type") == "error"
     ][:20]
-    return {
+    result = {
         "success": not errors,
         "error": "\n".join(errors) if errors else None,
         "cell_id": cell_id,
@@ -265,3 +268,12 @@ def execute_note_cell(
         "run_dir": run_dir_rel,
         "done": done_payload,
     }
+    # Book badge: only for a cell that ran without error and called analysis functions.
+    if not errors:
+        try:
+            refs = book_refs.book_refs_for_run(run_dir_full, thread_dir, KNOWLEDGE_DB_PATH)
+            if refs:
+                result["book_refs"] = refs
+        except Exception as ex:
+            logger.warning("Book references failed for cell %s: %s", cell_id, ex)
+    return result

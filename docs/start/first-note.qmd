@@ -101,7 +101,7 @@ The agent works in small steps. In each reply it usually:
 Each R cell shows:
 
 - **The code** that ran. Click the copy button (**Copy R code**) to copy it.
-- **A status**: **Queued** (waiting), **Running**, **Completed**, **Failed**, **Timed out** (it took too long) or **Cancelled**.
+- **A status**: **Queued** (waiting), **Running**, **Completed**, **Failed**, **Timed out** (it took too long) or **Cancelled**. While the cell runs, a status line and a timer say what is happening; see [What a cell shows](cells.qmd).
 - **Execution Output**: the text that R printed.
 - **Table Preview**: the first rows of a table, with its size, such as "(120 rows × 8 cols)". The download button saves the table.
 - **Plot #1**, **Plot #2** and so on: the figures. Click the download button (**Download plot**) to save one.
@@ -139,17 +139,18 @@ You can fix or change code that the agent wrote and run it yourself.
 To see earlier runs of the same cell, click the clock button (**Execution history**) and pick a run from the list.
 
 ::: {.callout-note}
-A cell you run yourself stops after 3 minutes. A cell the agent runs stops after 10 minutes. When time runs out, the status shows **Timed out**. Ask the agent to split the work into smaller steps or to use a smaller part of the data.
+A cell stops after 10 minutes of R time, whether you or the agent runs it. The clock starts when R starts running the code. When time runs out, R is restarted and you may need to run the earlier cells again; see [The time limit](cells.qmd#time-limit). Ask the agent to split the work into smaller steps or to use a smaller part of the data.
 :::
 
 ## Stop the agent {#stop}
 
 - **To stop the agent's reply:** while it works, the send button turns into a stop button (**Stop generating**). Click it.
-- **To stop one R cell:** while the cell is **Queued** or **Running**, click the square button on the cell (**Cancel execution**). The status changes to **Cancelled**.
+- **To stop one R cell:** while the cell is **Queued** or **Running**, click the square button on the cell (**Cancel execution**). The cell says **Cancelling…**, then **Cancelled**. R is restarted; see [After a timeout or a cancel](cells.qmd#after-stop).
 
 ## Next steps
 
 - [Choose a model](models.qmd)
 - [Add your own data](your-data.qmd)
 - [Share a note](share.qmd)
+- [What a cell shows](cells.qmd)
 - [Prompts to try for each kind of data](../analyses/index.qmd)

@@ -96,5 +96,5 @@ Open one to see every question, the code and the figures.
 
 ## Tips
 
-- If you ask to compare groups and do not name a method, the note uses LimROTS when your design fits it. It sets a seed, so the result is the same next time, and reports adjusted q-values. If LimROTS does not fit, for example when the thing you compare is a number such as age, the note says why and picks another method. A method you name always comes first.
+- If you ask to compare groups and do not name a method, the note follows the differential abundance chapter of the OMA book. It uses MaAsLin2 to compare two groups, also when you add covariates or interactions. It uses MaAsLin3 to look at two things apart: how often a microbe is present (prevalence), and how much there is of it where it is present (non-zero abundance). It shows the results with `plotBoxplot` and reports adjusted q-values. A method you name always comes first.
 - Notes plot with miaViz. Ask for ggplot2 if you want to style a figure yourself.

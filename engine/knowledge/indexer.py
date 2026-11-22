@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, Optional
 
-from engine.knowledge.qmd_parser import iter_qmd_files, parse_qmd
+import yaml
+
+from engine.knowledge.book_refs import extract_library_packages, extract_r_calls, is_map_candidate
+from engine.knowledge.book_urls import section_url
+from engine.knowledge.qmd_parser import QmdDocument, iter_qmd_files, parse_qmd
+
+DEFAULT_EXPORTS_PATH = Path(__file__).resolve().parent / "package_exports.json"
+SOURCE_SUFFIXES = (".qmd", ".rmd", ".md")
 
 BOOKS = [
     {"slug": "osca", "title": "Orchestrating Single-Cell Analysis with Bioconductor"},
@@ -160,7 +168,122 @@ def index_package_docs(
     print(f"Successfully indexed {total_added} package documentation chunks into {db_file}.")
     return stats
 
-def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = False, books: list[dict] = None) -> Dict[str, int]:
+def load_package_exports(path: str | Path | None = None) -> Optional[dict[str, set[str]]]:
+    """Exported names per installed package, as written by extract_package_docs.R; None if absent."""
+    exports_file = Path(path) if path else DEFAULT_EXPORTS_PATH
+    if not exports_file.exists():
+        return None
+    with open(exports_file, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    packages = data.get("packages", data) if isinstance(data, dict) else {}
+    return {name: set(names) for name, names in packages.items() if isinstance(names, list)}
+
+
+def rendered_files(book: dict, book_repo: Path, files: Iterable[Path]) -> list[Path]:
+    """The source files the book's web pages are rendered from.
+
+    `exclude` lists glob patterns of files to leave out. `chapters_file` names a Quarto book
+    configuration; only the files in its chapter and appendix lists (relative to
+    `chapters_root`) are kept.
+    """
+    kept = list(files)
+    patterns = book.get("exclude") or []
+    if patterns:
+        kept = [f for f in kept
+                if not any(fnmatch.fnmatch(f.relative_to(book_repo).as_posix(), p) for p in patterns)]
+    chapters_file = book.get("chapters_file")
+    if chapters_file:
+        listed = _quarto_chapters(book_repo / chapters_file)
+        if listed is None:
+            print(f"  Warning: chapter list {chapters_file} not found or unreadable; keeping all files.")
+        else:
+            root = book.get("chapters_root", "")
+            wanted = {(Path(root) / chapter).as_posix() for chapter in listed}
+            kept = [f for f in kept if f.relative_to(book_repo).as_posix() in wanted]
+    return kept
+
+
+def _quarto_chapters(config_path: Path) -> Optional[set[str]]:
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8", errors="ignore")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    book = config.get("book") if isinstance(config, dict) else None
+    if not isinstance(book, dict):
+        return None
+    found: set[str] = set()
+
+    def collect(node) -> None:
+        if isinstance(node, str):
+            if node.lower().endswith(SOURCE_SUFFIXES):
+                found.add(node)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item)
+        elif isinstance(node, dict):
+            for key in ("part", "file", "chapters"):
+                collect(node.get(key))
+
+    collect(book.get("chapters"))
+    collect(book.get("appendices"))
+    return found
+
+
+def function_section_rows(
+    doc: QmdDocument,
+    exports: Optional[dict[str, set[str]]] = None,
+    exporters: Optional[dict[str, set[str]]] = None,
+) -> list[tuple[str, str, str]]:
+    """(function, package hint, heading path) for the R calls in a book file's code.
+
+    The hint lists the packages the file attaches that export the function (or the package of an
+    explicit `pkg::fn`), comma-separated; empty when the file does not say where it comes from.
+    With `exports`, names no installed package exports are dropped. `exporters` is the reverse
+    map (function → packages), built from `exports` when not given.
+    """
+    r_blocks = [b for b in doc.blocks if b.code and (b.code_language or "r").lower() == "r"]
+    attached: list[str] = []
+    for block in r_blocks:
+        attached.extend(p for p in extract_library_packages(block.code) if p not in attached)
+    if exports is not None and exporters is None:
+        exporters = reverse_exports(exports)
+    rows: dict[tuple[str, str, str], None] = {}
+    for block in r_blocks:
+        heading = " > ".join(block.heading_path) if block.heading_path else doc.title
+        for package, name in extract_r_calls(block.code):
+            if package:
+                owners = [package]
+            elif exports is None:
+                owners = attached
+            else:
+                owners = [p for p in attached if name in exports.get(p, ())]
+                if not owners and name not in exporters:
+                    continue  # defined in the book itself, or from a package that is not installed
+            candidates = owners or (sorted(exporters.get(name, ())) if exporters else [])
+            if not is_map_candidate(name, candidates):
+                continue
+            rows[(name, ",".join(owners), heading)] = None
+    return list(rows)
+
+
+def reverse_exports(exports: dict[str, set[str]]) -> dict[str, set[str]]:
+    exporters: dict[str, set[str]] = {}
+    for package, names in exports.items():
+        for name in names:
+            exporters.setdefault(name, set()).add(package)
+    return exporters
+
+
+def build_index(
+    repos_dir: str | Path,
+    db_path: str | Path,
+    *,
+    strict: bool = False,
+    books: list[dict] = None,
+    exports: Optional[dict[str, set[str]]] = None,
+) -> Dict[str, int]:
+    """Index the books. `exports` (default: package_exports.json beside this file, when present)
+    limits the function→sections map to names exported by installed packages."""
     repos_path = Path(repos_dir).resolve()
     db_file = Path(db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +309,35 @@ def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = Fa
     );
     """)
 
+    # Side tables rather than new FTS5 columns, so search works on an index built before them.
+    cur.execute("""
+    CREATE TABLE sections (
+        book_slug TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        heading_path TEXT NOT NULL,
+        anchor TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (book_slug, source_file, heading_path)
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE function_sections (
+        fn TEXT NOT NULL,
+        pkg_hint TEXT NOT NULL DEFAULT '',
+        book_slug TEXT NOT NULL,
+        heading_path TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        anchor TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (fn, pkg_hint, book_slug, source_file, heading_path)
+    );
+    """)
+    if exports is None:
+        exports = load_package_exports()
+    if exports is None:
+        print("Note: no package_exports.json; the function map is not limited to installed packages.")
+    exporters = reverse_exports(exports) if exports is not None else None
+
     stats = {}
     total_chunks = 0
     book_list = books if books is not None else BOOKS
@@ -204,7 +356,7 @@ def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = Fa
             continue
 
         book_repo = book_repo.resolve()
-        qmd_files = list(iter_qmd_files(book_repo))
+        qmd_files = rendered_files(book, book_repo, iter_qmd_files(book_repo))
         print(f"Indexing {slug} ({len(qmd_files)} files)...")
 
         book_chunk_count = 0
@@ -244,12 +396,34 @@ def build_index(repos_dir: str | Path, db_path: str | Path, *, strict: bool = Fa
                         doc.relative_path,
                     )
                 )
+                cur.execute(
+                    "INSERT OR IGNORE INTO sections VALUES (?, ?, ?, ?, ?)",
+                    (
+                        slug,
+                        doc.relative_path,
+                        heading_str,
+                        block.anchor,
+                        section_url(book, doc.relative_path, block.anchor, block.page_anchor,
+                                    doc.first_heading_anchor),
+                    ),
+                )
                 book_chunk_count += 1
                 total_chunks += 1
+
+            for name, hint, heading_str in function_section_rows(doc, exports, exporters):
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO function_sections
+                    SELECT ?, ?, book_slug, heading_path, source_file, anchor, url FROM sections
+                    WHERE book_slug = ? AND source_file = ? AND heading_path = ?
+                    """,
+                    (name, hint, slug, doc.relative_path, heading_str),
+                )
 
         stats[slug] = book_chunk_count
         print(f"  Indexed {book_chunk_count} chunks for {slug}.")
 
+    cur.execute("CREATE INDEX function_sections_fn ON function_sections (fn)")
     conn.commit()
     conn.close()
     print(f"Successfully built {db_file} with {total_chunks} total knowledge chunks.")
