@@ -102,12 +102,12 @@ curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh |
 
 On Linux or a Mac, paste it into a terminal; on Windows, into an Ubuntu (WSL) terminal, with Docker Desktop's WSL integration turned on. The images are built for Intel/AMD, so Apple-silicon Macs run them emulated, which is slow.
 
-The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine; what leaves it is what you send to the model provider you chose. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and results go only to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
 
 Either half can run on a bigger machine while the install stays on your laptop:
 
 - **Notes:** start the engine on a server and set `ENGINE_URL` in `~/omicsbase/.env`; see [local/engine-server](local/engine-server/README.md).
-- **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine, which must be reachable from the install on port 8443; paste the pairing string it prints, and Reports runs there.
+- **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine. On your own install the connection runs the other way than on omicsbase.utu.fi: the install connects to that machine, so it must accept connections from the install on port 8443. Paste the pairing string it prints, and Reports runs there.
 
 To work on OmicsBase itself, see [docs/SETUP.md](docs/SETUP.md).
 
