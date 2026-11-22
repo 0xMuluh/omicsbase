@@ -9,7 +9,8 @@ tags=$(gh release list -R "$repo" --limit 200 --json tagName --jq '.[].tagName |
   printf 'Each version below is a [release on GitHub](https://github.com/%s/releases); its docs stay at `/docs/<version>/`.\n\n' "$repo"
   for tag in $tags; do
     gh release view "$tag" -R "$repo" --json tagName,publishedAt,body \
-      --jq '"## \(.tagName) {#v\(.tagName | gsub("\\."; "-"))}\n\nReleased \(.publishedAt[:10]) · [docs for this version](https://omicsbase.utu.fi/docs/\(.tagName)/)\n\n\(.body)\n"'
+      --jq '"## \(.tagName) {#v\(.tagName | gsub("\\."; "-"))}\n\nReleased \(.publishedAt[:10]) · [docs for this version](https://omicsbase.utu.fi/docs/\(.tagName)/)\n\n\(.body)\n"' \
+      | sed 's/^\(##*\) \(.*\)$/\1# \2/; s/^### \(20[0-9][0-9]\.\)/## \1/'  # release headings one level down
   done
 } > "$out"
 echo "$(printf '%s\n' $tags | grep -c . || true) releases written to $out"

@@ -23,6 +23,7 @@ No CSC account? Use [your own computer](reports-own-computer.qmd) instead.
    You see your reports and a **New report** button.
 
    <!-- screenshot: reports-page — the Reports list in the sidebar and main area; highlight the Reports item and the New report button -->
+   ![](../images/screens/reports-page.webp){.screenshot fig-alt="The Reports list in the sidebar and main area."}
 
 3. **Open a report.** To make one, choose **New report**, type a **Report name** and choose **Create report**.
    The report opens, with a **Notes** tab and a **Workspace** tab at the top.
@@ -34,6 +35,7 @@ No CSC account? Use [your own computer](reports-own-computer.qmd) instead.
    All fields show values and no red messages.
 
    <!-- screenshot: launch-form-filled — the Roihu form with project_1234567, 2 cores, 8 GiB, 4 hours and a masked token; highlight the Get a token from MyCSC link and the Launch button -->
+   ![](../images/screens/launch-form-filled.webp){.screenshot fig-alt="The Roihu form with project_1234567, 2 cores, 8 GiB, 4 hours and a masked token."}
 
 6. **Choose Launch.**
    A card shows what Roihu is doing. The first time in a project it says **Preparing Reports for project_1234567** for about 5 minutes. Then **Waiting for a Roihu node** and **Starting your agent**. Keep the page open.
