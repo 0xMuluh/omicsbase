@@ -2,3 +2,5 @@
 /.quarto/
 /screenshots/node_modules/
 *.llms.md
+
+**/*.quarto_ipynb

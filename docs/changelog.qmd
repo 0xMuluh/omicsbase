@@ -4,3 +4,26 @@ title: "Changelog"
 
 Each version below is a [release on GitHub](https://github.com/0xMuluh/omicsbase/releases); its docs stay at `/docs/<version>/`.
 
+## 2026.11.22 {#v2026-11-22}
+
+Released 2026-11-22 · [docs for this version](https://omicsbase.utu.fi/docs/2026.11.22/)
+
+Images: ghcr.io/0xmuluh/omicsbase-{librechat,engine,reports}:2026.11.22 (also latest); Reports for Roihu and own computers: ghcr.io/0xmuluh/omicsbase-reports:v1.41.0-roihu5. Update a local install by running the install command again.
+
+### What's Changed
+* Local install: compose, config, local Reports by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/54
+* Add install.sh for running OmicsBase on your own machine by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/55
+* Run notes on an engine on another machine (ENGINE_URL) by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/56
+* Reports on the user's own computer (attach) by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/57
+* Do not probe the notes engine for OAuth by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/58
+* Reports on the user's own computer in a local install by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/59
+* README: run notes or Reports on another machine by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/60
+* Installer: download progress, Docker memory, ARM; README per OS by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/61
+* Installer: Docker image disk, pinned versions, Ollama on Linux by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/62
+* Share switch decides whether a continued note gets the data by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/63
+* Reports on Roihu can use CSC's bio-apps tools and reference databases by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/64
+* Docs site at omicsbase.utu.fi/docs, with scripted screenshots by @0xMuluh in https://github.com/0xMuluh/omicsbase/pull/65
+
+
+**Full Changelog**: https://github.com/0xMuluh/omicsbase/compare/examples-2026-11-20...2026.11.22
+

@@ -34,6 +34,7 @@ Pairing links your computer to your OmicsBase account. You do it once.
    A panel shows **Run this on that computer. The code works once, within 10 minutes.** and a `docker run` command.
 
    <!-- screenshot: use-own-computer-panel — the panel with the docker run command; highlight the Copy command button and the line "The code works once, within 10 minutes." -->
+   ![](../images/screens/use-own-computer-panel.webp){.screenshot fig-alt="The panel with the docker run command."}
 
 4. [**Choose Copy command.**]{#run-command}
    The button changes to **Copied**. Next to it you see **Waiting for your computer to connect…**
@@ -42,6 +43,7 @@ Pairing links your computer to your OmicsBase account. You do it once.
    The first time, Docker downloads the software, which takes a while. Keep the OmicsBase page open.
 
    <!-- screenshot: pairing-waiting — the pairing card with the command, Copied, Cancel and the spinner "Waiting for your computer to connect…" -->
+   ![](../images/screens/pairing-waiting.webp){.screenshot fig-alt="The pairing card with the command, Copied, Cancel and the spinner 'Waiting for your computer to connect…'."}
 
 6. [**Wait until the bar appears.**]{#workspace}
    A bar at the top says **Running on** and your computer's name. Below it is your workspace: the agent, your files and the report preview.
