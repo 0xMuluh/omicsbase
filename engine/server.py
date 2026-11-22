@@ -568,12 +568,29 @@ async def handle_put_data_file(request: Request):
     return JSONResponse({"success": True, "workspacePath": f"data/{filename}", "bytes": target.stat().st_size})
 
 
+def _without_data(source: Path):
+    """Also leave out the uploaded files (data/) and the saved R session, which holds the
+    objects made from them; code, results and figures are still copied."""
+    def ignore(directory, names):
+        skipped = set(_SESSION_RUNTIME_FILES(directory, names))
+        here = Path(directory)
+        if here == source:
+            skipped |= {"data"} & set(names)
+        elif here == source / ".omicsbase":
+            skipped |= {"note-kernel"} & set(names)
+        return skipped
+    return ignore
+
+
 async def handle_copy_note(request: Request):
-    """Copy another note's files into this one, as when a conversation is forked."""
+    """Copy another note's files into this one, as when a conversation is forked.
+    With {"include_data": false}, the copy has no uploaded files and no saved R session."""
     if not _internal_caller(request):
         return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
     try:
-        source_id = (await request.json()).get("source", "")
+        body = await request.json()
+        source_id = body.get("source", "")
+        include_data = body.get("include_data", True) is not False
     except Exception:
         return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
     target_id = request.path_params["project_id"]
@@ -584,7 +601,8 @@ async def handle_copy_note(request: Request):
         return JSONResponse({"success": True, "copied": False})
     await asyncio.to_thread(
         shutil.copytree, source, Path(PROJECTS_DIR) / target_id,
-        ignore=_SESSION_RUNTIME_FILES, symlinks=True, dirs_exist_ok=True,
+        ignore=_SESSION_RUNTIME_FILES if include_data else _without_data(source),
+        symlinks=True, dirs_exist_ok=True,
     )
     return JSONResponse({"success": True, "copied": True})
 

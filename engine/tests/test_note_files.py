@@ -80,6 +80,23 @@ class NoteFileTests(unittest.TestCase):
         self.assertFalse((copied / "execute.lock").exists())
         self.assertTrue((self.root / "dst" / "data" / "counts.tsv").exists())
 
+    def test_copy_without_data_keeps_results_but_not_uploads_or_saved_session(self):
+        (self.root / "src" / ".omicsbase" / "note-kernel").mkdir(parents=True)
+        (self.root / "src" / ".omicsbase" / "note-kernel" / "workspace.RData").write_bytes(b"saved")
+        (self.root / "src" / "data").mkdir()
+        (self.root / "src" / "data" / "counts.tsv").write_text("x")
+        (self.root / "src" / "runs" / "r1" / "plots").mkdir(parents=True)
+        (self.root / "src" / "runs" / "r1" / "plots" / "plot1.png").write_bytes(b"png")
+        (self.root / "src" / "runs" / "r1" / "data").mkdir()
+        (self.root / "src" / "runs" / "r1" / "data" / "table.csv").write_text("y")
+        response = self.client.post("/api/projects/dst/copy", json={"source": "src", "include_data": False},
+                                    headers={"X-Internal-Secret": SECRET})
+        self.assertEqual(response.json(), {"success": True, "copied": True})
+        self.assertFalse((self.root / "dst" / "data").exists())
+        self.assertFalse((self.root / "dst" / ".omicsbase" / "note-kernel").exists())
+        self.assertTrue((self.root / "dst" / "runs" / "r1" / "plots" / "plot1.png").exists())
+        self.assertTrue((self.root / "dst" / "runs" / "r1" / "data" / "table.csv").exists())
+
     def test_copy_of_a_note_without_files_is_a_no_op(self):
         response = self.client.post("/api/projects/dst/copy", json={"source": "missing"},
                                     headers={"X-Internal-Secret": SECRET})
