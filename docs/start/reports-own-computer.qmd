@@ -31,19 +31,19 @@ Pairing links your computer to your OmicsBase account. You do it once.
    You see the Roihu form, and below it **Or use your own computer**.
 
 3. [**Choose Use my own computer.**]{#start}
-   A panel shows **Run this on that computer. The code works once, within 10 minutes.** and a `docker run` command.
+   A panel shows two commands: **1. Download the software on that computer (about 6 GB, once):** with a `docker pull` command, and **2. When that has finished, run this there. The code works once, within 10 minutes.** with a `docker run` command. Under them, **Code valid for** counts down the time the code has left.
 
-   <!-- screenshot: use-own-computer-panel — the panel with the docker run command; highlight the Copy command button and the line "The code works once, within 10 minutes." -->
-   ![](../images/screens/use-own-computer-panel.webp){.screenshot fig-alt="The panel with the docker run command."}
+   <!-- screenshot: use-own-computer-panel — the panel with the docker pull and docker run commands; highlight the two Copy command buttons and "Code valid for 9:58." -->
+   ![](../images/screens/use-own-computer-panel.webp){.screenshot fig-alt="The panel with the docker pull command and the docker run command."}
 
-4. [**Choose Copy command.**]{#run-command}
-   The button changes to **Copied**. Next to it you see **Waiting for your computer to connect…**
+4. [**Choose Copy command under the first command, paste it into a terminal on your computer and press Enter.**]{#download}
+   Docker downloads the software, about 6 GB. This is needed once and can take longer than the code lasts. Keep the OmicsBase page open.
 
-5. [**Paste the command into a terminal on your computer and press Enter.**]{#pairing-code}
-   The first time, Docker downloads the software, which takes a while. Keep the OmicsBase page open.
+5. [**When the download has finished, copy the second command and run it in the same terminal.**]{#pairing-code}
+   If the panel says **This code has expired.** by then, choose **Get a new code** first: the panel shows a new command and the countdown starts again. While the code is valid you see **Waiting for your computer to connect…**
 
-   <!-- screenshot: pairing-waiting — the pairing card with the command, Copied, Cancel and the spinner "Waiting for your computer to connect…" -->
-   ![](../images/screens/pairing-waiting.webp){.screenshot fig-alt="The pairing card with the command, Copied, Cancel and the spinner 'Waiting for your computer to connect…'."}
+   <!-- screenshot: pairing-waiting — the pairing card with both commands, Copied, Cancel, the spinner "Waiting for your computer to connect…" and "Code valid for 7:42." -->
+   ![](../images/screens/pairing-waiting.webp){.screenshot fig-alt="The pairing card with both commands, Cancel, the spinner 'Waiting for your computer to connect…' and the time the code is still valid."}
 
 6. [**Wait until the bar appears.**]{#workspace}
    A bar at the top says **Running on** and your computer's name. Below it is your workspace: the agent, your files and the report preview.
@@ -55,16 +55,22 @@ Pairing links your computer to your OmicsBase account. You do it once.
 
 Your computer stays paired. After a restart it reconnects by itself as soon as Docker is running, until you [disconnect](#disconnect) it.
 
-The command looks like this, with your own code and version. Always copy it from OmicsBase, not from here:
+The commands look like this, with your own code and version. Always copy them from OmicsBase, not from here:
 
 ```bash
+docker pull ghcr.io/0xmuluh/omicsbase-reports:<version>
+
 docker run -d --restart unless-stopped --name omicsbase-reports \
   -v omicsbase-reports:/home/openhands -v omicsbase-projects:/projects \
   ghcr.io/0xmuluh/omicsbase-reports:<version> \
   https://omicsbase.utu.fi --pair <your-code> --name "$(hostname)"
 ```
 
-If the 10 minutes run out, choose **Cancel**, then **Use my own computer** again for a new code.
+### If the code has expired {#expired-code}
+
+A code works once, within 10 minutes. When the countdown reaches zero the panel says **This code has expired.** Choose **Get a new code** and run the new command. The download is kept, so you do not repeat the first command.
+
+If you ran a command whose code had already expired, the container says so in its log (`docker logs omicsbase-reports`) and waits. Remove it with `docker rm -f omicsbase-reports`, then run the new command.
 
 ## Choose an agent and add your key {#agent-and-model}
 
@@ -127,9 +133,9 @@ Here it works the other way round: the laptop connects to the other computer on 
    You see a `docker run` command ending in `serve --address <name or IP of that computer>`.
 2. Choose **Copy command**.
 3. On the other computer, paste the command, replace `<name or IP of that computer>` with the name or IP address at which the laptop reaches it, and press Enter.
-4. On that computer, run `docker logs omicsbase-reports` and copy the line that starts with `omicsbase-machine:`. Keep it private: it opens that computer's agent.
+4. On that computer, run `docker logs omicsbase-reports` and copy the line that starts with `omicsbase-machine:`. The first start downloads about 6 GB; the line appears when the download has finished. Keep it private: it opens that computer's agent.
 5. On the laptop, paste the line into **Pairing string** and choose **Connect**.
-   The bar says **Running on** and the computer's address.
+   You see **Connecting to** and the computer's address, usually for a few seconds. Then the bar says **Running on** and the address.
 
 **Disconnect** returns Reports to the laptop. The container keeps running on the other computer until you remove it with `docker rm -f omicsbase-reports`. To connect again, paste the same pairing string.
 
@@ -144,6 +150,7 @@ Pairing strings are only for installs on your own laptop. On omicsbase.utu.fi yo
 | Message | What to do |
 | --- | --- |
 | **… is not connected** and **Start it again on that computer: docker start omicsbase-reports** | Your computer is off, Docker is not running, or the container stopped. Run `docker start omicsbase-reports`; it reconnects by itself. |
+| **OmicsBase cannot reach … on port 8443. Check that this computer can reach it, or Disconnect.** | With OmicsBase on your laptop: the other computer did not answer within a minute of **Connect**. Check the address you gave after `--address`, that the container runs there (`docker ps`), and that the laptop can reach its port 8443. OmicsBase keeps trying; or choose **Disconnect** and pair again. |
 | **You already have a Reports session. Stop it first.** | You have a session on Roihu or on another computer. Stop or disconnect it first. |
 | **This browser could not connect to your session.** | Choose **Try again**. If it keeps failing, check that the container runs: `docker ps`. |
 | **Pairing strings are for local installs. Use the pairing code instead.** | On omicsbase.utu.fi, run the command with the code instead. |
@@ -158,8 +165,8 @@ See the log with `docker logs omicsbase-reports`. When pairing works it shows `O
 
 | Message | What to do |
 | --- | --- |
-| **OmicsBase Reports: this pairing code is unknown, used or expired. Get a new one in Reports.** | Codes work once, within 10 minutes. Run `docker rm -f omicsbase-reports`, get a new command in Reports and run it. |
-| **OmicsBase Reports: you already have a Reports session running. Stop it in Reports, then get a new code.** | Stop your Roihu session or disconnect your other computer, remove this container and run a new command. |
+| **OmicsBase Reports: this pairing code is unknown, used or expired. Run docker rm -f omicsbase-reports, then get a new command in Reports.** | Codes work once, within 10 minutes. The container waits without doing anything. Run `docker rm -f omicsbase-reports`, choose **Get a new code** in Reports and run the new command. |
+| **OmicsBase Reports: you already have a Reports session running. Stop it in Reports, run docker rm -f omicsbase-reports, then get a new command there.** | Stop your Roihu session or disconnect your other computer, remove this container and run a new command. |
 | **OmicsBase Reports: could not reach https://omicsbase.utu.fi: …** | Your computer cannot reach OmicsBase. Check its internet connection, proxy or firewall. |
 | **OmicsBase Reports: this machine is not paired yet. Start it with the command shown in Reports.** | The container started without a code. Remove it and run the command from Reports. |
 

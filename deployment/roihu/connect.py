@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -47,6 +48,16 @@ SERVE_PORT = 8443
 
 def fail(message):
     sys.exit(f"OmicsBase Reports: {message}")
+
+
+def halt(message):
+    """Say what is wrong and stay up, for an error that starting again cannot fix. Exiting,
+    with any status, would make `--restart unless-stopped` start the container into the same
+    error again and again, burying the message in `docker logs`."""
+    print(f"OmicsBase Reports: {message}", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # `docker stop` ends it at once
+    while True:
+        time.sleep(3600)
 
 
 def private_file(path, text):
@@ -74,9 +85,12 @@ def claim(app, code, name):
             return json.load(response)
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            fail("this pairing code is unknown, used or expired. Get a new one in Reports.")
+            halt("this pairing code is unknown, used or expired. "
+                 "Run docker rm -f omicsbase-reports, then get a new command in Reports.")
         if e.code == 409:
-            fail("you already have a Reports session running. Stop it in Reports, then get a new code.")
+            # The refused claim used the code up.
+            halt("you already have a Reports session running. Stop it in Reports, "
+                 "run docker rm -f omicsbase-reports, then get a new command there.")
         fail(f"{app} answered {e.code} to the pairing code.")
     except (urllib.error.URLError, OSError) as e:
         fail(f"could not reach {app}: {e}")
