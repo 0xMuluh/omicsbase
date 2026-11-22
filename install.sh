@@ -9,11 +9,11 @@
 set -eu
 
 REPO=${OMICSBASE_REPO:-0xMuluh/omicsbase}
-REF=${OMICSBASE_REF:-main}
 DIR=${OMICSBASE_DIR:-$HOME/omicsbase}
-VERSION=${OMICSBASE_VERSION:-latest}
+# A version asked for here (OMICSBASE_VERSION=2026.11.22) is also written into an existing .env.
+PIN=${OMICSBASE_VERSION:-}
+VERSION=${PIN:-latest}
 EXAMPLES=${OMICSBASE_EXAMPLES:-examples-2026-11-20}
-RAW="https://raw.githubusercontent.com/$REPO/$REF/local"
 APP=http://localhost:3080
 
 say() { printf '%s\n' "$*"; }
@@ -26,10 +26,20 @@ command -v docker >/dev/null 2>&1 || fail "Docker is not installed. Get it from 
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is missing (the 'docker compose' command). It comes with Docker Desktop and the docker-compose-plugin package."
 docker info >/dev/null 2>&1 || fail "Docker is installed but not running, or this user may not use it (on Linux: add yourself to the docker group, then log in again)."
 
-# About 8 GB to download and 30 GB on disk; notes run R on this machine.
+# About 8 GB to download: the images take about 25 GB where Docker keeps them, and your
+# notes and data live in $DIR.
 mkdir -p "$DIR"
-free_gb=$(df -Pk "$DIR" | awk 'NR == 2 { print int($4 / 1048576) }')
-[ "${free_gb:-0}" -ge 30 ] || warn "only ${free_gb} GB free where OmicsBase goes ($DIR); it needs about 30 GB."
+free_gb() { gb=$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }'); echo "${gb:-0}"; }
+device() { df -P "$1" 2>/dev/null | awk 'NR == 2 { print $1 }'; }
+docker_dir=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+if [ -n "$docker_dir" ] && [ -d "$docker_dir" ] && [ "$(device "$docker_dir")" != "$(device "$DIR")" ]; then
+  [ "$(free_gb "$docker_dir")" -ge 25 ] || warn "only $(free_gb "$docker_dir") GB free where Docker keeps its images ($docker_dir); the images need about 25 GB."
+  [ "$(free_gb "$DIR")" -ge 5 ] || warn "only $(free_gb "$DIR") GB free where OmicsBase keeps your notes ($DIR); give it at least 5 GB."
+else
+  # Same disk, or Docker keeps its images inside its own virtual machine (Docker Desktop),
+  # where this script cannot see the free space.
+  [ "$(free_gb "$DIR")" -ge 30 ] || warn "only $(free_gb "$DIR") GB free where OmicsBase goes ($DIR); it needs about 30 GB."
+fi
 # The memory Docker may use: on Mac and Windows, Docker Desktop's own limit, not the machine's.
 # Rounded, since an 8 GB machine reports a little less.
 mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
@@ -38,8 +48,26 @@ mem_gb=$(( (${mem_bytes:-0} + 536870912) / 1073741824 ))
 case "$(docker info --format '{{.Architecture}}' 2>/dev/null)" in
   aarch64|arm64) warn "this is an ARM machine (such as an Apple-silicon Mac). The OmicsBase images are built for Intel/AMD, so Docker runs them emulated: expect them to be slow. With Docker Desktop, turn on Settings > General > Use Rosetta." ;;
 esac
+# Ollama on Linux listens only on 127.0.0.1 unless told otherwise, and the containers cannot reach that.
+if [ "$(uname -s)" = Linux ] && command -v ollama >/dev/null 2>&1 &&
+   curl -fs -o /dev/null http://127.0.0.1:11434/ 2>/dev/null &&
+   ! curl -fs -o /dev/null --max-time 2 "http://$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo 172.17.0.1):11434/" 2>/dev/null; then
+  warn "Ollama is running but only for this machine's own programs, so OmicsBase cannot use it. To allow it, run 'sudo systemctl edit ollama', add the two lines [Service] and Environment=\"OLLAMA_HOST=0.0.0.0\", then 'sudo systemctl restart ollama'. This also lets other computers on your network reach Ollama unless a firewall blocks port 11434."
+fi
 
-# 2. The compose files, fetched fresh each time.
+# 2. The compose files, fetched fresh each time: from the release of the pinned version (asked
+#    for now, or kept in .env from an earlier run), or main.
+REF=${OMICSBASE_REF:-}
+pinned=$PIN
+[ -n "$pinned" ] || pinned=$(sed -n 's/^OMICSBASE_VERSION=//p' "$DIR/.env" 2>/dev/null || true)
+if [ -z "$REF" ] && [ -n "$pinned" ] && [ "$pinned" != latest ]; then
+  if curl -fsI "https://raw.githubusercontent.com/$REPO/$pinned/local/docker-compose.yml" >/dev/null 2>&1; then
+    REF=$pinned
+  else
+    warn "no files are released under $pinned, so the current ones are used with the $pinned images."
+  fi
+fi
+RAW="https://raw.githubusercontent.com/$REPO/${REF:-main}/local"
 cd "$DIR"
 say "Installing OmicsBase in $DIR"
 for f in docker-compose.yml librechat.yaml reports-gate.Caddyfile import_examples.js .env.example; do
@@ -55,6 +83,8 @@ if [ ! -f .env ]; then
       -e "s/^GID=.*/GID=$(id -g)/" \
       .env.example > .env
   chmod 600 .env
+elif [ -n "$PIN" ]; then
+  sed -i.bak "s/^OMICSBASE_VERSION=.*/OMICSBASE_VERSION=$PIN/" .env && rm -f .env.bak
 fi
 for name in OMICSBASE_AUTH_SECRET OMICSBASE_ENGINE_SECRET OMICSBASE_LINK_SECRET MEILI_MASTER_KEY; do
   if grep -q "^$name=\$" .env; then
