@@ -38,6 +38,9 @@ QUEUE_SECONDS = int(os.environ.get("NOTE_QUEUE_SECONDS", "120"))
 # Time a stopping session gets to save its workspace before it is killed.
 SAVE_WAIT_SECONDS = float(os.environ.get("NOTE_SAVE_WAIT_SECONDS", "120"))
 REAP_INTERVAL_SECONDS = 60
+# A new R session gets this long to start and restore its saved objects; the cell's own
+# time limit counts from when R begins to run it.
+R_START_SECONDS = int(os.environ.get("NOTE_R_START_SECONDS", "300"))
 # Console text one cell may write to disk.
 CONSOLE_MAX_BYTES = int(os.environ.get("NOTE_CONSOLE_MAX_BYTES", str(5_000_000)))
 
@@ -98,6 +101,8 @@ tryCatch({{
   }}
   .note_state$bytes <- .note_state$bytes + nchar(x, type = 'bytes')
   cat(x, file = .note_state$con, sep = '')
+  # Flushed after each write, so the output can be read while the cell runs.
+  flush(.note_state$con)
   x
 }}
 .note_text <- function(x) {{
@@ -112,6 +117,7 @@ tryCatch({{
   if (!is.null(.rows)) rec$rows <- .rows
   if (!is.null(.cols)) rec$cols <- .cols
   writeLines(jsonlite::toJSON(rec, auto_unbox = TRUE, null = 'null'), .note_state$ev_con)
+  flush(.note_state$ev_con)
   invisible(NULL)
 }}
 .note_display <- function(x, ...) {{
@@ -379,7 +385,11 @@ def start_kernel(project_dir: str) -> KernelHandle:
     return handle
 
 
-def ensure_kernel(project_dir: str, ttl_seconds: int = IDLE_SECONDS) -> KernelHandle:
+def ensure_kernel(
+    project_dir: str,
+    ttl_seconds: int = IDLE_SECONDS,
+    on_phase: Callable[[str], None] | None = None,
+) -> KernelHandle:
     """Return a live kernel for the scope, starting or reusing one."""
     root = _kernel_root(project_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -410,7 +420,10 @@ def ensure_kernel(project_dir: str, ttl_seconds: int = IDLE_SECONDS) -> KernelHa
                 except (ValueError, OSError):
                     pass
 
-            _make_room(project_dir)
+            _make_room(project_dir, on_phase)
+            if on_phase:
+                restoring = (Path(project_dir) / WORKSPACE_RELATIVE_PATH).exists()
+                on_phase("restoring_session" if restoring else "starting_r")
             handle = start_kernel(project_dir)
             with _registry_lock:
                 _kernels[project_dir] = handle
@@ -427,6 +440,7 @@ def request_cell(
     source: str,
     timeout_seconds: int = 180,
     cancel_check: Callable[[], bool] | None = None,
+    on_phase: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Send one cell to the kernel and wait for its done marker."""
     root = _kernel_root(handle.project_dir)
@@ -435,12 +449,21 @@ def request_cell(
         json.dumps({"id": request_id, "run_dir": run_dir_rel, "source": source}),
     )
     handle.last_used = time.time()
-    deadline = time.monotonic() + max(1, int(timeout_seconds)) + 5
+    # R creates the cell's console file as it begins to run the cell. Until then it is
+    # starting or restoring, which has a limit of its own.
+    console = Path(handle.project_dir) / run_dir_rel / CONSOLE_FILE_NAME
+    running = False
+    deadline = time.monotonic() + R_START_SECONDS
 
     while time.monotonic() < deadline:
         if cancel_check and cancel_check():
             kill_kernel(handle)
             raise KernelCancelled("Cell execution cancelled")
+        if not running and console.exists():
+            running = True
+            deadline = time.monotonic() + max(1, int(timeout_seconds)) + 5
+            if on_phase:
+                on_phase("running")
         done = _read_done(root, request_id)
         if done is not None:
             handle.last_used = time.time()
@@ -452,6 +475,8 @@ def request_cell(
         time.sleep(POLL_INTERVAL)
 
     kill_kernel(handle)
+    if not running:
+        raise KernelTimeout(f"R did not start within {R_START_SECONDS} seconds")
     raise KernelTimeout("Cell execution exceeded its timeout")
 
 
@@ -540,7 +565,7 @@ def _live_kernels(exclude: str | None = None) -> list[KernelHandle]:
     return live
 
 
-def _make_room(project_dir: str) -> None:
+def _make_room(project_dir: str, on_phase: Callable[[str], None] | None = None) -> None:
     """Keep live sessions under MAX_SESSIONS, stopping the least recently used idle one."""
     deadline = time.monotonic() + QUEUE_SECONDS
     waited = False
@@ -560,6 +585,8 @@ def _make_room(project_dir: str) -> None:
         if not waited:
             logger.warning("note kernel limit reached (%d busy); queueing scope=%s", len(live), project_dir)
             waited = True
+            if on_phase:
+                on_phase("waiting_for_slot")
         time.sleep(1.0)
 
 

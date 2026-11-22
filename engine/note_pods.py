@@ -15,6 +15,7 @@ import http.client
 import json
 import logging
 import os
+import socket
 import ssl
 import threading
 import time
@@ -47,6 +48,10 @@ ENGINE_PORT = 8001
 
 class PodsBusy(Exception):
     pass
+
+
+class Cancelled(Exception):
+    """The cell was cancelled while it waited for its pod."""
 
 
 def pod_name(thread_id: str) -> str:
@@ -106,12 +111,27 @@ class Kube:
 
 
 def forward_cell(ip, payload, timeout_seconds, secret):
-    request = urllib.request.Request(
-        f"http://{ip}:{ENGINE_PORT}/api/execute", data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "X-Internal-Secret": secret}, method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout_seconds + 60) as response:
-        return json.loads(response.read())
+    """Run the cell in the note's pod. Without a timeout it waits as long as the pod takes,
+    for example behind the note's earlier cells; keepalive probes end the wait if the pod
+    is gone without closing the connection."""
+    connection = http.client.HTTPConnection(ip, ENGINE_PORT, timeout=30)
+    try:
+        connection.connect()
+        sock = connection.sock
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)
+        sock.settimeout(timeout_seconds)
+        connection.request("POST", "/api/execute", body=json.dumps(payload).encode(),
+                           headers={"Content-Type": "application/json", "X-Internal-Secret": secret})
+        response = connection.getresponse()
+        body = response.read()
+        if response.status >= 400:
+            raise http.client.HTTPException(f"note pod answered {response.status}")
+        return json.loads(body)
+    finally:
+        connection.close()
 
 
 def _ready_ip(pod):
@@ -125,34 +145,66 @@ class _Note:
     name: str
     last_used: float
     busy: int = 0
+    # Cells that were running when this gateway took the pod over; part of `busy`.
+    adopted: int = 0
 
 
 class NotePods:
     def __init__(self, kube, template, secret, forward=forward_cell, clock=time.time, sleep=time.sleep,
                  max_pods=MAX_SESSIONS, idle_seconds=IDLE_SECONDS, queue_seconds=QUEUE_SECONDS,
-                 start_seconds=START_SECONDS):
+                 start_seconds=START_SECONDS, active_runs=lambda thread_id: 0):
         self.kube, self.template, self.secret = kube, template, secret
         self.forward, self.clock, self.sleep = forward, clock, sleep
         self.max_pods, self.idle_seconds = max_pods, idle_seconds
         self.queue_seconds, self.start_seconds = queue_seconds, start_seconds
+        # How many cells a note's pod has not finished, from their status files.
+        self.active_runs = active_runs
         self.notes: dict[str, _Note] = {}
         self.lock = threading.Lock()
         self.starting: dict[str, threading.Lock] = {}
 
     def adopt_running(self):
-        """Take over the note pods a previous gateway left running."""
+        """Take over the note pods a previous gateway left running. A pod in the middle of
+        a cell stays busy, so it is not stopped to make room or for being idle."""
         now = self.clock()
         for pod in self.kube.list_notes():
             meta = pod.get("metadata", {})
             thread_id = meta.get("annotations", {}).get(THREAD_ANNOTATION)
             if thread_id and not meta.get("deletionTimestamp"):
-                self.notes[thread_id] = _Note(meta["name"], now)
+                running = self.active_runs(thread_id)
+                self.notes[thread_id] = _Note(meta["name"], now, busy=running, adopted=running)
         if self.notes:
             logger.info("adopted %d running note pods", len(self.notes))
 
-    def run_cell(self, thread_id, payload, timeout_seconds):
+    def _release_adopted(self):
+        with self.lock:
+            adopted = [(t, n) for t, n in self.notes.items() if n.adopted]
+        for thread_id, note in adopted:
+            running = self.active_runs(thread_id)
+            with self.lock:
+                finished = max(0, note.adopted - running)
+                if finished:
+                    note.adopted -= finished
+                    note.busy -= finished
+                    note.last_used = self.clock()
+
+    def serving(self, thread_id):
+        """Whether the note has a pod that can still be running its cells."""
+        with self.lock:
+            note = self.notes.get(thread_id)
+            if note and note.busy:
+                return True
+        pod = self.kube.get(pod_name(thread_id))
+        return bool(pod) and not pod["metadata"].get("deletionTimestamp")
+
+    def run_cell(self, thread_id, payload, timeout_seconds, on_phase=lambda phase: None,
+                 cancelled=lambda: False):
+        """timeout_seconds is how long to wait for the pod's answer; None for as long as it takes."""
         try:
-            ip = self._acquire(thread_id)
+            ip = self._acquire(thread_id, on_phase, cancelled)
+        except Cancelled:
+            return {"success": False, "cancelled": True, "error": "Cancelled",
+                    "markdown": "Execution cancelled before starting."}
         except PodsBusy as err:
             message = f"{err} Try again in a few minutes."
             return {"success": False, "error": message, "stdout": f"[Engine Busy]: {message}",
@@ -163,8 +215,12 @@ class NotePods:
             return {"success": False, "error": message, "markdown": f"**{message}** R was not run."}
         try:
             return self.forward(ip, payload, timeout_seconds, self.secret)
-        except (OSError, http.client.HTTPException):
-            # urllib's errors are OSErrors: the pod went away mid-cell or answered with an error.
+        except (OSError, http.client.HTTPException) as err:
+            # A socket timeout (no errno) means the pod is there and has not answered yet,
+            # for example a cell waiting behind a long one. Anything else: the pod went
+            # away mid-cell or answered with an error.
+            if isinstance(err, TimeoutError) and err.errno is None:
+                return self._no_answer(thread_id)
             return self._session_lost(thread_id)
         finally:
             with self.lock:
@@ -172,6 +228,12 @@ class NotePods:
                 if note:
                     note.busy -= 1
                     note.last_used = self.clock()
+
+    def _no_answer(self, thread_id):
+        message = ("The note's R session did not answer in time. It was not restarted; the cell "
+                   "may still be running or waiting for an earlier cell to finish.")
+        logger.warning("note %s did not answer in time", thread_id)
+        return {"success": False, "error": message, "markdown": f"**{message}**"}
 
     def _session_lost(self, thread_id):
         pod = self.kube.get(pod_name(thread_id)) or {}
@@ -187,7 +249,7 @@ class NotePods:
         logger.warning("note %s lost its R session (%s)", thread_id, reason or "unknown")
         return {"success": False, "error": message, "markdown": f"**{message}**"}
 
-    def _acquire(self, thread_id):
+    def _acquire(self, thread_id, on_phase, cancelled):
         with self.lock:
             start_lock = self.starting.setdefault(thread_id, threading.Lock())
         with start_lock:
@@ -202,19 +264,25 @@ class NotePods:
                 # Gone (evicted, deleted by hand) or not ready: start it again.
                 with self.lock:
                     self.notes.pop(thread_id, None)
-            self._make_room(thread_id)
+            self._make_room(thread_id, on_phase, cancelled)
             with self.lock:
-                self.notes[thread_id] = _Note(pod_name(thread_id), self.clock(), busy=1)
+                note = self.notes[thread_id] = _Note(pod_name(thread_id), self.clock(), busy=1)
             try:
-                return self._start(thread_id)
+                return self._start(thread_id, on_phase, cancelled)
+            except Cancelled:
+                # The pod may be starting already: keep it for the note's next cell.
+                with self.lock:
+                    note.busy -= 1
+                raise
             except BaseException:
                 with self.lock:
                     self.notes.pop(thread_id, None)
                 raise
 
-    def _make_room(self, thread_id):
+    def _make_room(self, thread_id, on_phase, cancelled):
         deadline = self.clock() + self.queue_seconds
         while True:
+            self._release_adopted()
             with self.lock:
                 live = {t: n for t, n in self.notes.items() if t != thread_id}
                 if len(live) < self.max_pods:
@@ -229,9 +297,12 @@ class NotePods:
                 continue
             if self.clock() >= deadline:
                 raise PodsBusy(f"All {self.max_pods} R sessions are busy running other notes' cells.")
+            if cancelled():
+                raise Cancelled()
+            on_phase("waiting_for_slot")
             self.sleep(1)
 
-    def _start(self, thread_id):
+    def _start(self, thread_id, on_phase, cancelled):
         name = pod_name(thread_id)
         manifest = self._manifest(name, thread_id)
         # Pods being deleted still hold quota while they save their sessions.
@@ -250,12 +321,18 @@ class NotePods:
                         raise
             elif self.clock() >= create_deadline:
                 raise PodsBusy("The note's previous R session is still being saved.")
+            if cancelled():
+                raise Cancelled()
+            on_phase("waiting_for_slot")
             self.sleep(1)
+        on_phase("starting_pod")
         deadline = self.clock() + self.start_seconds
         while self.clock() < deadline:
             ip = _ready_ip(self.kube.get(name))
             if ip:
                 return ip
+            if cancelled():
+                raise Cancelled()
             self.sleep(2)
         self.kube.delete(name)
         raise PodsBusy("A new R session did not start in time.")
@@ -273,6 +350,7 @@ class NotePods:
         return pod
 
     def reap_idle(self):
+        self._release_adopted()
         now = self.clock()
         with self.lock:
             stale = [(t, n) for t, n in self.notes.items()
@@ -313,11 +391,11 @@ def template_from_own_pod(kube):
 _pods = None
 
 
-def start(secret):
+def start(secret, active_runs):
     """Set up the gateway and its idle reaper."""
     global _pods
     kube = Kube()
-    _pods = NotePods(kube, template_from_own_pod(kube), secret)
+    _pods = NotePods(kube, template_from_own_pod(kube), secret, active_runs=active_runs)
     _pods.adopt_running()
 
     def loop():
@@ -332,5 +410,9 @@ def start(secret):
     logger.info("note pods: max=%d idle=%ds", _pods.max_pods, _pods.idle_seconds)
 
 
-def run_cell(thread_id, payload, timeout_seconds):
-    return _pods.run_cell(thread_id, payload, timeout_seconds)
+def run_cell(thread_id, payload, timeout_seconds, on_phase, cancelled):
+    return _pods.run_cell(thread_id, payload, timeout_seconds, on_phase, cancelled)
+
+
+def serving(thread_id):
+    return _pods.serving(thread_id)

@@ -1,9 +1,13 @@
 """The note-pod gateway's decisions, against a fake Kubernetes API and a fake clock."""
+import http.server
+import json
+import threading
+import time
 import unittest
 import unittest.mock
 
 from engine import note_pods
-from engine.note_pods import NotePods, PodsBusy, pod_name
+from engine.note_pods import NotePods, PodsBusy, forward_cell, pod_name
 
 TEMPLATE = {
     "apiVersion": "v1",
@@ -229,12 +233,96 @@ class NotePodTests(unittest.TestCase):
         self.cell("a")
 
         def dropped(ip, payload, timeout, secret):
-            raise TimeoutError("timed out")
+            raise ConnectionResetError("connection reset by peer")
 
         self.pods.forward = dropped
         with self.assertLogs("note_pods", level="WARNING"):
             result = self.cell("a")
         self.assertIn("stopped while running this cell", result["markdown"])
+
+    def test_pod_that_has_not_answered_in_time_is_not_called_a_lost_session(self):
+        self.cell("a")
+
+        def slow(ip, payload, timeout, secret):
+            raise TimeoutError("timed out")
+
+        self.pods.forward = slow
+        with self.assertLogs("note_pods", level="WARNING"):
+            result = self.cell("a")
+        self.assertFalse(result["success"])
+        self.assertIn("did not answer in time", result["markdown"])
+        self.assertNotIn("stopped", result["markdown"])
+        self.assertEqual(self.pods.notes["a"].busy, 0)
+
+    def followed(self, thread_id, cancelled=lambda: False):
+        phases = []
+        result = self.pods.run_cell(thread_id, {"code": "1", "thread_id": thread_id}, None,
+                                    on_phase=phases.append, cancelled=cancelled)
+        # A wait loop reports its phase on every turn; the status record keeps the changes.
+        return result, [p for i, p in enumerate(phases) if i == 0 or p != phases[i - 1]]
+
+    def test_cell_with_a_ready_pod_reports_no_waiting(self):
+        self.cell("a")
+        self.assertEqual(self.followed("a"), ({"success": True, "markdown": "ok"}, []))
+
+    def test_waiting_for_a_free_pod_and_for_the_old_pod_are_reported(self):
+        self.assertEqual(self.followed("a")[1], ["starting_pod"])
+        self.cell("b")
+        self.pods.notes["a"].busy = self.pods.notes["b"].busy = 1
+        self.assertEqual(self.followed("c")[1], ["waiting_for_slot"])
+        self.pods.notes["a"].busy = self.pods.notes["b"].busy = 0
+        self.kube.save_seconds = 40
+        self.now += 2000
+        self.pods.reap_idle()
+        self.assertEqual(self.followed("a")[1], ["waiting_for_slot", "starting_pod"])
+
+    def test_cancel_ends_the_wait_for_a_free_pod(self):
+        self.cell("a")
+        self.cell("b")
+        self.pods.notes["a"].busy = self.pods.notes["b"].busy = 1
+        started = self.now
+        result, _ = self.followed("c", cancelled=lambda: self.now >= started + 5)
+        self.assertTrue(result["cancelled"])
+        self.assertLess(self.now, started + 10)
+        self.assertNotIn("c", self.pods.notes)
+        self.assertEqual(self.forwarded[2:], [])
+
+    def test_cancel_while_the_pod_starts_keeps_the_pod_for_the_next_cell(self):
+        ready = self.kube.get
+        self.kube.get = lambda name: {"metadata": pod["metadata"], "status": {}} if (pod := ready(name)) else None
+        result, _ = self.followed("a", cancelled=lambda: self.now >= 1006)
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(self.kube.deleted, [])
+        self.assertEqual(self.pods.notes["a"].busy, 0)
+        self.kube.get = ready
+        self.assertTrue(self.cell("a")["success"])
+        self.assertEqual(self.kube.created, [pod_name("a")])
+
+    def test_restarted_gateway_keeps_a_pod_in_the_middle_of_a_cell(self):
+        self.cell("a")
+        self.cell("b")
+        running = {"a": 1, "b": 0}
+        fresh = self.make(active_runs=lambda thread_id: running[thread_id])
+        fresh.adopt_running()
+        self.assertEqual(fresh.notes["a"].busy, 1)
+        self.now += 2000
+        self.assertEqual(fresh.reap_idle(), 1)
+        self.assertEqual(self.kube.deleted, [pod_name("b")])
+        self.assertTrue(fresh.serving("a"))
+        # Once the cell has finished the pod is an idle one again.
+        running["a"] = 0
+        self.assertEqual(fresh.reap_idle(), 0)
+        self.assertEqual(fresh.notes["a"].busy, 0)
+        self.now += 2000
+        self.assertEqual(fresh.reap_idle(), 1)
+
+    def test_note_is_served_while_its_pod_exists(self):
+        self.assertFalse(self.pods.serving("a"))
+        self.cell("a")
+        self.assertTrue(self.pods.serving("a"))
+        self.kube.save_seconds = 40
+        self.kube.delete(pod_name("a"))
+        self.assertFalse(self.pods.serving("a"))
 
     def test_pod_names_are_valid_and_stable(self):
         name = pod_name("6f1c2b0e-3d4a-4b5c-9e8f-0a1b2c3d4e5f")
@@ -242,6 +330,49 @@ class NotePodTests(unittest.TestCase):
         self.assertRegex(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
         self.assertLessEqual(len(name), 63)
         self.assertNotEqual(name, pod_name("other"))
+
+
+class SlowPod(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        time.sleep(body.get("sleep", 0))
+        answer = json.dumps({"code": body["code"], "secret": self.headers["X-Internal-Secret"]}).encode()
+        self.send_response(500 if body["code"] == "fail" else 200)
+        self.send_header("Content-Length", str(len(answer)))
+        self.end_headers()
+        self.wfile.write(answer)
+
+    def log_message(self, *args):
+        pass
+
+
+class ForwardTests(unittest.TestCase):
+    def setUp(self):
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SlowPod)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        port = unittest.mock.patch.object(note_pods, "ENGINE_PORT", self.server.server_address[1])
+        port.start()
+        self.addCleanup(port.stop)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def test_cell_is_sent_with_the_secret_and_the_answer_returned(self):
+        self.assertEqual(forward_cell("127.0.0.1", {"code": "1"}, 5, "s"), {"code": "1", "secret": "s"})
+
+    def test_without_a_timeout_the_answer_is_waited_for(self):
+        self.assertEqual(forward_cell("127.0.0.1", {"code": "1", "sleep": 0.3}, None, "s")["code"], "1")
+
+    def test_timeout_is_told_apart_from_a_pod_that_is_gone_or_failed(self):
+        with self.assertRaises(TimeoutError) as slow:
+            forward_cell("127.0.0.1", {"code": "1", "sleep": 0.5}, 0.1, "s")
+        self.assertIsNone(slow.exception.errno)
+        with self.assertRaises(http.client.HTTPException):
+            forward_cell("127.0.0.1", {"code": "fail"}, 5, "s")
+        self.server.shutdown()
+        self.server.server_close()
+        with self.assertRaises(ConnectionRefusedError) as gone:
+            forward_cell("127.0.0.1", {"code": "1"}, 5, "s")
+        self.assertIsNotNone(gone.exception.errno)
 
 
 if __name__ == "__main__":
