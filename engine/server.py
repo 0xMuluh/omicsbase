@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import fcntl
 import hmac
+import logging
 import re
 import shutil
 import subprocess
@@ -16,9 +17,10 @@ from starlette.requests import Request
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
+from engine.kernel import cell_status
 from engine.kernel.executor import execute_note_cell
 from engine.kernel.note_kernel import (
-    DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, START_LOCK_NAME,
+    DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, R_START_SECONDS, START_LOCK_NAME,
     save_all_kernels, start_reaper,
 )
 from engine.knowledge.search import search_bioc_knowledge
@@ -29,6 +31,8 @@ BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
 # Shared with LibreChat only; falls back to the Reports secret when not set separately.
 INTERNAL_SECRET = os.environ.get("OMICSBASE_ENGINE_SECRET") or os.environ.get("OMICSBASE_AUTH_SECRET", "")
 CELL_TIMEOUT_SECONDS = 600
+
+logger = logging.getLogger("engine")
 
 # New project files remain writable by the shared project group.
 # prepare_runtime_dirs.sh assigns that group and setgid to existing directories.
@@ -118,29 +122,89 @@ def _cancel_path(thread_id, execution_id=None):
     return os.path.join(PROJECTS_DIR, thread_id, ".omicsbase", "note-kernel", name)
 
 
-def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
+def _note_dir(thread_id):
+    return os.path.join(PROJECTS_DIR, thread_id)
+
+
+def _run_cell(code, thread_id, timeout_seconds, execution_id=None, wait=True):
+    """Run one cell and return its result. A cell with an execution id also leaves a status
+    record, read by /api/executions. `wait` false: the caller follows that record, so the
+    cell may wait for the note's pod as long as it takes."""
+    cancel_path = _cancel_path(thread_id, execution_id)
+    report = cell_status.reporter(_note_dir(thread_id), execution_id)
     if note_pods.ENABLED:
         # The note's own pod runs the cell, takes the note's lock and sees cancel flags.
         payload = {"code": code, "thread_id": thread_id, "execution_id": execution_id,
                    "timeout_seconds": timeout_seconds}
-        return note_pods.run_cell(thread_id, payload, timeout_seconds)
-    cancel_path = _cancel_path(thread_id, execution_id)
+        report("starting_pod")
+        result = note_pods.run_cell(
+            thread_id, payload, timeout_seconds + R_START_SECONDS + 60 if wait else None,
+            on_phase=report, cancelled=lambda: bool(execution_id) and os.path.exists(cancel_path),
+        )
+        if result.get("cancelled"):
+            Path(cancel_path).unlink(missing_ok=True)
+        report("done", done=True, result=result)
+        return result
     if not execution_id:
         Path(cancel_path).unlink(missing_ok=True)
     lock_path = Path(cancel_path).parent / "execute.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    report("waiting_for_cell")
     try:
         with lock_path.open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            cell_status.remove_old(_note_dir(thread_id))
             if os.path.exists(cancel_path):
-                return {"success": False, "cancelled": True, "error": "Cancelled",
-                        "markdown": "Execution cancelled before starting."}
-            return execute_note_cell(
-                projects_dir=PROJECTS_DIR, thread_id=thread_id, code=code, base_url=BASE_URL,
-                timeout_seconds=timeout_seconds, cancel_check=lambda: os.path.exists(cancel_path),
-            )
+                result = {"success": False, "cancelled": True, "error": "Cancelled",
+                          "markdown": "Execution cancelled before starting."}
+            else:
+                result = execute_note_cell(
+                    projects_dir=PROJECTS_DIR, thread_id=thread_id, code=code, base_url=BASE_URL,
+                    timeout_seconds=timeout_seconds, cancel_check=lambda: os.path.exists(cancel_path),
+                    on_status=report,
+                )
     finally:
         Path(cancel_path).unlink(missing_ok=True)
+    report("done", done=True, result=result)
+    return result
+
+
+def _run_cell_in_background(code, thread_id, timeout_seconds, execution_id):
+    try:
+        _run_cell(code, thread_id, timeout_seconds, execution_id, wait=False)
+    except Exception as exc:
+        logger.exception("cell %s of note %s failed", execution_id, thread_id)
+        message = f"Execution failed: {exc}"
+        cell_status.update(_note_dir(thread_id), execution_id, "done", done=True,
+                           result={"success": False, "error": message, "markdown": f"**{message}**"})
+
+
+def _interrupted(thread_id, record):
+    """Whether an unfinished run has no one working on it any more."""
+    if note_pods.ENABLED and record.get("phase") in cell_status.POD_PHASES:
+        return not note_pods.serving(thread_id)
+    return record.get("boot_id") != cell_status.BOOT_ID
+
+
+def _execution_status(thread_id, execution_id, offset):
+    note_dir = _note_dir(thread_id)
+    record = cell_status.read(note_dir, execution_id)
+    if record is None:
+        return None
+    if not record.get("done") and _interrupted(thread_id, record):
+        record = cell_status.update(note_dir, execution_id, "interrupted", done=True,
+                                    result=cell_status.INTERRUPTED)
+    output, next_offset = cell_status.read_output(note_dir, record, offset)
+    return {
+        "phase": record.get("phase"),
+        "phase_started_at": record.get("phase_started_at"),
+        "started_at": record.get("started_at"),
+        "cancel_requested": os.path.exists(_cancel_path(thread_id, execution_id)),
+        "output": output,
+        "next_offset": next_offset,
+        "done": bool(record.get("done")),
+        "result": record.get("result"),
+    }
 
 
 @mcp.tool(
@@ -496,12 +560,44 @@ async def handle_execute(request: Request):
     if not code.strip():
         return JSONResponse({"success": False, "error": "Code cannot be empty"}, status_code=400)
 
-    result = await asyncio.to_thread(
-        _run_cell, code, thread_id, timeout_seconds, data.get("execution_id"),
-    )
+    execution_id = data.get("execution_id")
+    if data.get("wait") is False:
+        # The cell runs on; the caller follows it through /api/executions.
+        try:
+            if not execution_id:
+                raise ValueError("wait: false needs an execution_id")
+            _cancel_path(thread_id, execution_id)
+        except ValueError as err:
+            return JSONResponse({"success": False, "error": str(err)}, status_code=400)
+        phase = "starting_pod" if note_pods.ENABLED else "waiting_for_cell"
+        cell_status.start(_note_dir(thread_id), execution_id, phase)
+        threading.Thread(
+            target=_run_cell_in_background, args=(code, thread_id, timeout_seconds, execution_id),
+            name=f"cell-{execution_id}", daemon=True,
+        ).start()
+        return JSONResponse({"execution_id": execution_id, "phase": phase}, status_code=202)
+
+    result = await asyncio.to_thread(_run_cell, code, thread_id, timeout_seconds, execution_id)
     if result.get("cancelled"):
         result["success"] = False
     return JSONResponse(result)
+
+
+async def handle_execution_status(request: Request):
+    """A run's phase, its console text from `offset`, and its result once done."""
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    thread_id = request.query_params.get("thread_id", "default")
+    execution_id = request.path_params["execution_id"]
+    try:
+        offset = max(0, int(request.query_params.get("offset") or 0))
+        _cancel_path(thread_id, execution_id)
+    except ValueError:
+        return JSONResponse({"success": False, "error": "Invalid execution ID or offset"}, status_code=400)
+    status = await asyncio.to_thread(_execution_status, thread_id, execution_id, offset)
+    if status is None:
+        return JSONResponse({"success": False, "error": "Unknown execution"}, status_code=404)
+    return JSONResponse(status)
 
 
 async def handle_cancel(request: Request):
@@ -520,6 +616,7 @@ async def handle_cancel(request: Request):
 
 app.add_route("/api/execute", handle_execute, methods=["POST"])
 app.add_route("/api/cancel", handle_cancel, methods=["POST"])
+app.add_route("/api/executions/{execution_id}", handle_execution_status, methods=["GET"])
 
 
 # Note files arrive and are copied through the engine, so LibreChat needs no access to
@@ -527,7 +624,8 @@ app.add_route("/api/cancel", handle_cancel, methods=["POST"])
 _NOTE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 # A live session's process and lock files; a copied note starts a session of its own.
 _SESSION_RUNTIME_FILES = shutil.ignore_patterns(
-    PID_FILE_NAME, START_LOCK_NAME, EXECUTE_LOCK_NAME, REQUEST_FILE_NAME, f"{DONE_PREFIX}*", "*.flag"
+    PID_FILE_NAME, START_LOCK_NAME, EXECUTE_LOCK_NAME, REQUEST_FILE_NAME, f"{DONE_PREFIX}*", "*.flag",
+    f"{cell_status.STATUS_PREFIX}*",
 )
 
 
@@ -687,7 +785,7 @@ if __name__ == "__main__":
     import uvicorn
     print("Starting NoteThreads MCP & Execution Server on 0.0.0.0:8001...")
     if note_pods.ENABLED:
-        note_pods.start(INTERNAL_SECRET)
+        note_pods.start(INTERNAL_SECRET, lambda thread_id: cell_status.active_runs(_note_dir(thread_id)))
     else:
         start_reaper()
     uvicorn.run(app, host="0.0.0.0", port=8001)

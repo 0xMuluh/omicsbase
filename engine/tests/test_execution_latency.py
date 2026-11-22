@@ -50,6 +50,35 @@ class ExecutionLatencyTests(unittest.IsolatedAsyncioTestCase):
             result = (await asyncio.wait_for(running, timeout=10)).json()
             self.assertTrue(result['cancelled'])
 
+    async def test_output_and_phase_can_be_read_while_r_is_running(self):
+        transport = httpx.ASGITransport(app=server.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-Internal-Secret": "test"}) as client:
+            execution_id = 'e' * 24
+            response = await client.post('/api/execute', json={
+                'thread_id': 'live', 'execution_id': execution_id, 'wait': False,
+                'code': 'cat("one\\n"); Sys.sleep(4); cat("two\\n")',
+            })
+            self.assertEqual(response.status_code, 202)
+            url = f'/api/executions/{execution_id}?thread_id=live'
+            phases, status = [], {}
+            for _ in range(300):
+                status = (await client.get(url)).json()
+                if not phases or phases[-1] != status['phase']:
+                    phases.append(status['phase'])
+                if status['output'] or status['done']:
+                    break
+                await asyncio.sleep(0.1)
+            self.assertEqual(status['phase'], 'running')
+            self.assertEqual(status['output'], 'one\n')
+            self.assertIn('starting_r', phases)
+            for _ in range(100):
+                status = (await client.get(f"{url}&offset={status['next_offset']}")).json()
+                if status['done']:
+                    break
+                await asyncio.sleep(0.1)
+            self.assertEqual(status['phase'], 'done')
+            self.assertEqual(status['result']['stdout'], 'one\ntwo\n')
+
     async def test_errors_and_queued_cancellation_are_preserved(self):
         result = await asyncio.to_thread(server._run_cell, 'stop("expected test failure")', 'errors', 10)
         self.assertFalse(result['success'])

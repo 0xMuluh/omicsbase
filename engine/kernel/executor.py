@@ -1,7 +1,6 @@
 import logging
 import os
 import json
-import time
 import uuid
 import pandas as pd
 from typing import Callable, Dict, Any, List, Optional
@@ -23,8 +22,6 @@ logger = logging.getLogger(__name__)
 # Console text returned per cell, to the model and to the note: the start and the end.
 OUTPUT_MAX_CHARS = int(os.environ.get("NOTE_OUTPUT_MAX_CHARS", "20000"))
 OUTPUT_TAIL_CHARS = OUTPUT_MAX_CHARS // 5
-# The shortest run a cell still gets after waiting for a free R session.
-MIN_RUN_SECONDS = 30
 
 
 def _size_label(n: int) -> str:
@@ -84,10 +81,13 @@ def execute_note_cell(
     base_url: str = "http://localhost:8001",
     timeout_seconds: int = 180,
     cancel_check: Optional[Callable[[], bool]] = None,
+    on_status: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
     """
     Executes an R cell in the thread's persistent R kernel.
     Returns console output, formatted markdown, and plot/table URLs for LibreChat.
+    on_status(phase) and on_status(run_dir=..., cell_id=...) report the run's progress.
+    timeout_seconds counts from when R begins to run the cell, not from the call.
     """
     thread_dir = os.path.join(projects_dir, thread_id)
     os.makedirs(thread_dir, exist_ok=True)
@@ -96,6 +96,8 @@ def execute_note_cell(
     run_dir_rel = os.path.join("runs", f"cell_{cell_id}")
     run_dir_full = os.path.join(thread_dir, run_dir_rel)
     os.makedirs(run_dir_full, exist_ok=True)
+    if on_status:
+        on_status(run_dir=run_dir_rel, cell_id=cell_id)
 
     blocked_call = check_blocked_package_install(code)
     if blocked_call:
@@ -119,18 +121,15 @@ def execute_note_cell(
         }
 
     try:
-        started = time.monotonic()
-        handle = ensure_kernel(thread_dir)
-        # Time spent waiting for a free session comes out of the cell's own limit,
-        # so the caller's timeout still holds.
-        waited = time.monotonic() - started
+        handle = ensure_kernel(thread_dir, on_phase=on_status)
         done_payload = request_cell(
             handle,
             request_id=cell_id,
             run_dir_rel=run_dir_rel,
             source=code,
-            timeout_seconds=max(MIN_RUN_SECONDS, int(timeout_seconds - waited)),
+            timeout_seconds=timeout_seconds,
             cancel_check=cancel_check,
+            on_phase=on_status,
         )
     except KernelBusy as e:
         return {
