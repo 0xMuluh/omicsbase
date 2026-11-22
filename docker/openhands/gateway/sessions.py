@@ -253,7 +253,24 @@ async def ensure_llm_settings():
             logger.warning(f"Could not initialize agent server LLM settings: {e}")
 
 
+# Command-line tools: CSC's bio-apps in Roihu jobs (reports.sbatch sets OMICSBASE_CSC_MODULES=1),
+# none elsewhere.
+CSC_MODULES = """
+<COMMAND_LINE_TOOLS>
+* CSC's bio-apps collection of command-line bioinformatics tools is available through Lmod: run `module load bio-apps/v202603`, then load the tool (e.g. `module load fastp/1.3.6`). Find a tool and its versions with `module spider <name>`.
+* CSC's reference databases (Kraken 2, MetaPhlAn, BLAST, DIAMOND) are under /dataset/project_2020345; the modules set KRAKEN2_DB_PATH and METAPHLAN_DB_DIR.
+* Load only the modules a step needs: tool versions can clash. Continue the analysis and the report in R.
+</COMMAND_LINE_TOOLS>
+"""
+NO_COMMAND_LINE_TOOLS = """
+<COMMAND_LINE_TOOLS>
+* No command-line tools for read QC, read alignment, assembly or taxonomic profiling are installed here. Work from processed inputs in R, such as count tables, BIOM files, MetaPhlAn or Bracken profiles and Salmon quantifications.
+</COMMAND_LINE_TOOLS>
+"""
+
+
 def build_omicsbase_system_prompt(project_id: str, project_dir: str, agent_engine: str) -> str:
+    tools = CSC_MODULES if os.environ.get("OMICSBASE_CSC_MODULES") == "1" else NO_COMMAND_LINE_TOOLS
     return f"""
 # OmicsBase Workspace Agent
 
@@ -274,7 +291,7 @@ Your primary role is to assist users in bioinformatics data analysis, microbiome
 * If an R package is missing, first verify if it is already installed in the R library. If truly needed, install via `Rscript -e "BiocManager::install('package_name')"` or `Rscript -e "install.packages('package_name')"`.
 * Never run pip commands or initiate long Python package build loops.
 </ENVIRONMENT_SETUP>
-
+{tools}
 <REPORT_FORMAT>
 ## Report format
 Deliver the analysis report as a multi-page Quarto website. Determine the chapters, structure, and analytical methods directly from the study design and research plan.
