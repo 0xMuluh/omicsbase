@@ -131,16 +131,33 @@ docker compose pull || fail "the images could not be downloaded (see the message
 docker compose up -d || fail "the services did not start. See: cd $DIR && docker compose logs"
 
 say "Starting (about a minute)..."
-i=0
+# Wait up to 5 minutes, with a line every 15 s. A slow start is not a failed install.
+s=0
+ready=yes
 until curl -fs -o /dev/null "$APP/health" 2>/dev/null || curl -fs -o /dev/null "$APP" 2>/dev/null; do
-  i=$((i + 1))
-  [ "$i" -lt 60 ] || fail "it did not answer on $APP after 5 minutes. See: cd $DIR && docker compose logs api"
   sleep 5
+  s=$((s + 5))
+  [ "$s" -lt 300 ] || { ready=no; break; }
+  [ $((s % 15)) -ne 0 ] || printf '  still starting (%d:%02d)...\n' $((s / 60)) $((s % 60))
 done
 
-cat <<EOF
+if [ "$ready" = yes ]; then
+  say ""
+  say "OmicsBase is running: $APP"
+else
+  cat <<EOF
 
-OmicsBase is running: $APP
+OmicsBase is installed and still starting.
+
+  It has not answered after 5 minutes, which can happen on the first start or on an ARM
+  machine. It keeps starting in the background: open $APP in a minute or two.
+  To see how it is doing:
+    cd $DIR && docker compose ps
+    cd $DIR && docker compose logs api
+EOF
+fi
+
+cat <<EOF
 
   Create an account there; the first one becomes the admin.
   Bring a model: paste a key (OpenRouter, OpenAI, Anthropic or Google) when you pick a

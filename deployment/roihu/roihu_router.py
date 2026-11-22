@@ -237,6 +237,18 @@ def set_meta(job, user, meta):
         return True
 
 
+def set_expires(job, user, expires):
+    """A job's route made before it queued lasts, once the job starts, as long as the job."""
+    with LOCK:
+        routes = _load(ROUTES, {})
+        r = _owned(routes, job, user)
+        if r is None:
+            return False
+        r["expires"] = int(expires)
+        _save(ROUTES, routes)
+        return True
+
+
 def user_routes(user):
     """The user's live routes, newest first, with meta and tunnel state."""
     routes = _load(ROUTES, {})
@@ -473,6 +485,7 @@ class AdminHandler(BaseHTTPRequestHandler):
     POST   /links               {"user", "pairing"} -> route: dial out to the user's machine
     GET    /routes?user=                          -> {"routes": [...]}: live routes with meta
     PUT    /routes/<id>/meta    {"user", "meta"}
+    PUT    /routes/<id>/expires {"user", "expires"} -> new expiry (Unix time, within 36 h 15 min)
     POST   /routes/<id>/link    {"user"}          -> {"url"}: one-time open link
     GET    /routes/<id>?user=                     -> {"connected"}
     DELETE /routes/<id>?user=
@@ -558,6 +571,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         body = self._body()
         if len(parts) == 3 and parts[0] == "routes" and parts[2] == "meta" and isinstance(body.get("meta"), dict):
             return self._reply(204) if set_meta(parts[1], body.get("user"), body["meta"]) else self._reply(404)
+        if len(parts) == 3 and parts[0] == "routes" and parts[2] == "expires":
+            expires = body.get("expires")
+            if not isinstance(expires, (int, float)) or not 0 < expires - time.time() <= 36.25 * 3600:
+                return self._reply(400, {"error": "expires (within 36 h 15 min) required"})
+            return self._reply(204) if set_expires(parts[1], body.get("user"), expires) else self._reply(404)
         self._reply(404)
 
     def do_GET(self):
