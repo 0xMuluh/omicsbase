@@ -389,6 +389,14 @@ The images are built for Intel/AMD, so on an Apple-silicon Mac (and other ARM ma
 - Pull a model in Ollama first. Only models already pulled appear.
 - Notes need a model that supports tool calls. A model without them cannot run R in a note.
 
+### A model in Ollama is slow to answer {#ollama-slow}
+
+A model in Ollama runs on this computer: its first answer can take a minute while Ollama loads it, and replies are slower than with a hosted model.
+
+### Could not reach the notes engine {#engine-unreachable}
+
+A cell ends with `Could not reach the notes engine at …` when `ENGINE_URL` is set and the server behind it does not answer. See [The engine does not answer](engine-server.qmd#engine-does-not-answer).
+
 ### No example notes on the landing page {#no-examples}
 
 The examples are loaded each time OmicsBase starts. See what happened:

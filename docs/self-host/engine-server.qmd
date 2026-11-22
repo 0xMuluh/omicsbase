@@ -69,6 +69,55 @@ cd ~/omicsbase && docker compose up -d
 
 New notes now run on the server. Files of notes made before stay on the machine that ran them.
 
+## The engine does not answer {#engine-does-not-answer}
+
+**You see** in a note, while a cell runs:
+
+```text
+The notes engine is not answering. Still trying…
+```
+
+The cell keeps trying for about a minute. If the engine answers again, the cell carries on. If not, or if the engine cannot be reached when the cell starts, the cell ends with:
+
+```text
+Could not reach the notes engine at engine.example.org. Check that the server is running and that ENGINE_URL in ~/omicsbase/.env is right, then run the cell again.
+```
+
+The install also asks the engine once each time it starts. See the answer on the machine with your install:
+
+```bash
+cd ~/omicsbase && docker compose logs api | grep "notes engine"
+```
+
+It says either `The notes engine at engine.example.org answers.` or `The notes engine at engine.example.org does not answer:` followed by the reason.
+
+To find the cause:
+
+1. **Ask the engine yourself.** Open its health address, with your server's name, in a browser or with `curl`:
+
+   ```bash
+   curl https://engine.example.org/health
+   ```
+
+   A running engine answers `{"status":"ok"}`. The health address needs no secret and starts no R.
+
+2. **If the health address does not answer,** check the server. In the `omicsbase-engine` folder:
+
+   ```bash
+   docker compose ps
+   docker compose logs engine caddy
+   ```
+
+   Both containers must be running. Check also that the DNS name points at the server and that ports 80 and 443 are open.
+
+3. **If the health address answers but cells still fail,** check `ENGINE_URL` in `~/omicsbase/.env` on your install: it must be the same address, starting with `https://`. After a change, restart the install:
+
+   ```bash
+   cd ~/omicsbase && docker compose up -d
+   ```
+
+Then run the cell again.
+
 ## Where your data lives {#data}
 
 With `ENGINE_URL` set, the R of your notes, their files and their plots live on the server, in the `omicsbase-engine` folder:

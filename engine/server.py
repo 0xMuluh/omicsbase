@@ -557,6 +557,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+async def handle_health(request: Request):
+    """Says the engine is up. No secret and no R, so an install can check its ENGINE_URL."""
+    return JSONResponse({"status": "ok"})
+
+
+app.add_route("/health", handle_health, methods=["GET"])
+
 # Server-side execute only (LibreChat control plane). Browser must not call this.
 async def handle_execute(request: Request):
     if not _internal_caller(request):

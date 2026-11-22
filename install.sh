@@ -162,6 +162,8 @@ cat <<EOF
   Create an account there; the first one becomes the admin.
   Bring a model: paste a key (OpenRouter, OpenAI, Anthropic or Google) when you pick a
   model, or start a model in Ollama on this machine.
+  A model in Ollama runs on this computer: its first answer can take a minute while
+  Ollama loads it, and replies are slower than with a hosted model.
 
   Stop:    cd $DIR && docker compose down
   Update:  run the install command again
