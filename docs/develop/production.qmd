@@ -1,0 +1,284 @@
+---
+title: "Production deployment"
+description: "How omicsbase.utu.fi is laid out, how its images are built and rolled out, and how to roll back."
+---
+
+This page is for maintainers of omicsbase.utu.fi. It describes the layout and the usual procedures. It names no addresses, accounts or keys; keep those in your own notes.
+
+## Hosts {#hosts}
+
+| Host | What it serves |
+| --- | --- |
+| `omicsbase.utu.fi` | The notes app (LibreChat). Also `/omics-engine/…` (notes engine files), `/docs/` (these docs), and `robots.txt` and `sitemap.xml`. |
+| `openhands.omicsbase.utu.fi` | Reports. It carries the tunnels from Reports sessions, the router's open and close links, and each user's requests to their own session. Without a Reports session it answers `404`. |
+| `admin.omicsbase.utu.fi` | The LibreChat admin panel. |
+
+Caddy serves all three with HTTPS, using HARICA certificates. Users sign in with University of Turku single sign-on (SAML) or Google.
+
+## What runs where {#layout}
+
+**The VM** is a CSC cPouta virtual machine. The checkout lives in `/srv/omicsbase/omicsbase`.
+
+- Docker Compose runs the project `librechat`: LibreChat (`api`), MongoDB, Meilisearch, the file-search services (`vectordb`, `rag_api`), the admin panel and the fallback notes engine.
+- Outside Compose, the VM runs:
+  - Caddy, the web server (a systemd service).
+  - `roihu-router`, the router for Reports sessions (a systemd service).
+  - `roihu-relay`, the chisel server that Reports sessions tunnel to (a systemd service).
+  - A nightly cron job that rebuilds the sitemap.
+
+**LUMI-K** runs the notes engine as a gateway, and one pod per live note. The manifest is `deployment/lumi-k/engine.yaml`.
+
+**Roihu** runs each user's Reports job, in that user's own CSC project.
+
+For how requests flow between these, see [How OmicsBase fits together](architecture.qmd).
+
+## Configuration files {#config}
+
+| On the VM | Comes from | Holds |
+| --- | --- | --- |
+| `librechat/.env` | `.env.example` | Secrets, image tags, hosts, Roihu settings. Not in Git. |
+| `librechat/librechat.yaml` | `deployment/librechat.yaml` | Model endpoints, the `notethreads` server, model specs. |
+| `librechat/docker-compose.override.yml` | `deployment/docker-compose.override.yml` | The production additions to LibreChat's Compose file. |
+| `/etc/caddy/Caddyfile` | `deployment/Caddyfile.production` | The web server rules. |
+
+The files on the VM are copies. The live Caddyfile has the real host names and certificate settings, so it is kept in step with `deployment/Caddyfile.production` by hand. When you change a rule, change both.
+
+### Settings in `librechat/.env` {#env}
+
+The hosts the browser sees:
+
+```text
+DOMAIN_CLIENT=https://omicsbase.example.org
+OMICSBASE_APP_HOST=omicsbase.example.org
+OMICSBASE_OPENHANDS_PUBLIC_URL=https://openhands.omicsbase.example.org
+OMICSBASE_WORKSPACE_HOST=openhands.omicsbase.example.org
+OMICSBASE_ENGINE_PUBLIC_URL=https://omicsbase.example.org/omics-engine
+OMICSBASE_ADMIN_HOST=admin.omicsbase.example.org
+```
+
+The secrets and links between the parts:
+
+| Setting | What it is |
+| --- | --- |
+| `OMICSBASE_AUTH_SECRET` | Shared by LibreChat and Reports. Generate it on its own, never reuse a LibreChat JWT secret. |
+| `OMICSBASE_ENGINE_SECRET` | Shared by LibreChat and the notes engine. It must equal the engine's secret on LUMI-K. |
+| `OMICSBASE_ENGINE_URL` | Where LibreChat sends note cells. Empty means the VM's own engine. |
+| `ROIHU_ROUTER_SECRET` | The router's admin secret, which the router keeps in its state folder. |
+| `ROIHU_RELAY_FINGERPRINT` | The relay's TLS fingerprint. The relay prints it when it starts. |
+| `ROIHU_IMAGE_TAG` | The Reports image that Roihu jobs and own computers use. |
+| `OMICSBASE_LIBRECHAT_IMAGE` | The LibreChat image to run. |
+
+To generate a secret:
+
+```bash
+openssl rand -hex 32
+```
+
+## Run Compose on the VM {#compose}
+
+All Compose commands run from the checkout, with the same files. For example, to recreate LibreChat:
+
+```bash
+cd /srv/omicsbase/omicsbase
+docker compose --project-directory "$PWD/librechat" --env-file librechat/.env -p librechat \
+  -f librechat/docker-compose.yml -f librechat/docker-compose.override.yml \
+  up -d --no-deps --force-recreate api
+```
+
+## Deploy a new LibreChat image {#librechat}
+
+The LibreChat image is built on the VM. Several server files are not taken from the image: the override mounts them from the checkout in `librechat/` (see the `volumes` of `api` in `docker-compose.override.yml`). The image and the checkout must therefore be at the same fork commit.
+
+1. Note the current image tag (`OMICSBASE_LIBRECHAT_IMAGE` in `librechat/.env`) and the current commit of the `librechat/` checkout. You need both to roll back.
+2. Export the new fork commit into a separate build folder, so the live checkout is never half-switched:
+
+   ```bash
+   mkdir -p <build folder>
+   git -C librechat archive <commit> | tar -x -C <build folder>
+   ```
+
+3. Start the build under systemd, the VM's service manager, so it keeps running if your SSH connection drops:
+
+   ```bash
+   sudo systemd-run --unit=build-librechat --working-directory=<build folder> sh -c \
+     'docker build --progress=plain --build-arg BUILD_COMMIT=<commit> -t omicsbase-librechat:<short commit> . > build.log 2>&1; echo EXIT=$? >> build.log'
+   ```
+
+4. Check whether it is still running:
+
+   ```bash
+   systemctl is-active build-librechat
+   ```
+
+   It prints `active` while it runs. A LibreChat build takes about 40 minutes.
+
+5. When it has stopped, read the end of the log:
+
+   ```bash
+   tail -n 3 <build folder>/build.log
+   ```
+
+   The last line must be `EXIT=0`.
+
+6. Move the `librechat/` checkout to the same commit.
+7. Set `OMICSBASE_LIBRECHAT_IMAGE=omicsbase-librechat:<short commit>` in `librechat/.env`.
+8. Recreate `api` with `--force-recreate`, as in [Run Compose on the VM](#compose). A plain restart is not enough: a mounted single file keeps pointing at the old file until the container is recreated.
+9. Check the server log for the line that lists the `notethreads` tools:
+
+   ```bash
+   docker logs LibreChat 2>&1 | grep "Tools:"
+   ```
+
+   It must list the tools, such as `execute_r_cell`. If it is missing, notes have no tools.
+
+10. In the browser, run an R cell in a note and open Reports.
+
+Do not run `git pull` on the VM checkout as a deployment step. Move it to an exact commit.
+
+## Notes engine on LUMI-K {#engine}
+
+The LUMI-K image must run as a random non-root user. It is the engine image with `deployment/rahti/Dockerfile` on top. The plain engine image fails there.
+
+1. Build the engine image on the VM with `python3 scripts/build_engine.py --tag omicsbase-engine:<tag>`. Engine builds are long; run them under systemd, as for LibreChat.
+2. Build the LUMI-K image on top of it:
+
+   ```bash
+   docker build -f deployment/rahti/Dockerfile --build-arg ENGINE_IMAGE=omicsbase-engine:<tag> \
+     -t <registry>/omicsbase-engine:<lumi-k tag> deployment/rahti
+   ```
+
+3. Test it as a random user in group 0 before you roll it out:
+
+   ```bash
+   docker run --rm --user <random uid>:0 <registry>/omicsbase-engine:<lumi-k tag>
+   ```
+
+   It should start and print `Starting NoteThreads MCP & Execution Server …`. Stop it with Ctrl+C.
+
+4. Push it to the LUMI-K registry.
+5. Set the new image in `deployment/lumi-k/engine.yaml` and apply it with `oc apply -f deployment/lumi-k/engine.yaml`. `oc` is the command-line tool for CSC's Kubernetes platforms.
+
+The engine's secret on LUMI-K is a Kubernetes secret, created separately (see the header of `engine.yaml`). If you change `OMICSBASE_ENGINE_SECRET`, change it on both sides.
+
+### Switch notes between LUMI-K and the VM {#engine-switch}
+
+Three settings decide where notes run:
+
+1. `OMICSBASE_ENGINE_URL` in `librechat/.env`.
+2. The `url` of `notethreads` in `librechat/librechat.yaml` (the VM engine is `http://engine:8001/sse`).
+3. The `@engine_runs` rule in the Caddyfile, which sends plot requests to LUMI-K.
+
+Change all three together, then recreate `api` and reload Caddy:
+
+```bash
+sudo systemctl reload caddy
+```
+
+## Reports on Roihu {#roihu}
+
+The router and the relay run as systemd services on the VM. The router keeps its routes, relay credentials and secrets in `/srv/omicsbase/roihu-relay`.
+
+### Update the router {#roihu-router}
+
+1. Copy the current file to a backup next to it.
+2. Copy the new `deployment/roihu/roihu_router.py` into place.
+3. Restart the service:
+
+   ```bash
+   sudo systemctl restart roihu-router
+   ```
+
+### Roll out a new Reports image {#roihu-image}
+
+1. From the repository root, build the Reports image. This also builds the interface into `openhands/build/`, which the next step copies:
+
+   ```bash
+   python3 scripts/build_openhands.py --context default
+   ```
+
+2. Build the Roihu image on top of it:
+
+   ```bash
+   docker build -f deployment/roihu/Dockerfile --build-arg BASE_IMAGE=omicsbase-openhands:dev \
+     -t ghcr.io/0xmuluh/omicsbase-reports:<tag> .
+   ```
+
+   Tags follow the pattern `v<OpenHands version>-roihu<n>`, for example `v1.41.0-roihu4`.
+
+3. Push it:
+
+   ```bash
+   docker push ghcr.io/0xmuluh/omicsbase-reports:<tag>
+   ```
+
+4. On Roihu, submit the Slurm job `deployment/roihu/pull_image.sbatch` with `REPORTS_TAG=<tag>` and `REPORTS_IMAGES=<folder>` set. It turns the image into an Apptainer file, `omicsbase-reports_<tag>.sif`.
+5. On a Roihu login node, publish that file:
+
+   ```bash
+   deployment/roihu/publish_sif.sh <path to .sif> <tag>
+   ```
+
+   It asks for a GitHub user and a token with `write:packages`, and ends with `Published oras://ghcr.io/0xmuluh/omicsbase-reports:<tag>-sif`. Each project's first launch then downloads this one file instead of converting the image.
+
+6. Set `ROIHU_IMAGE_TAG=<tag>` in `librechat/.env` and recreate `api`.
+
+Each CSC project gets the new image on its first launch after the change. The old image files stay in the projects' `images/` folders.
+
+## Search engines {#seo}
+
+- `robots.txt` and the search-console verification file come from `deployment/seo/`. They are copied to `/srv/omicsbase/seo`, where Caddy serves them.
+- `sitemap.xml` lists the front page and every public note. `scripts/build_sitemap.sh` writes it to `/srv/omicsbase/seo/sitemap.xml` every night at 03:15 UTC, from cron.
+- To list new public notes the same day, run the script by hand on the VM. It ends with `<n> examples written to /srv/omicsbase/seo/sitemap.xml`.
+- `robots.txt` also points to the docs' own sitemap.
+
+## Publish the docs {#docs}
+
+Caddy serves `/docs/` from `/srv/omicsbase/docs`. `scripts/publish_docs.sh` fills that folder.
+
+You need Quarto 1.11 or later, `gh`, `rsync`, and SSH access to the VM.
+
+1. From the repository root, publish the current docs:
+
+   ```bash
+   OMICSBASE_VM=<user>@<host> scripts/publish_docs.sh
+   ```
+
+   It ends with:
+
+   ```text
+   Published: https://omicsbase.utu.fi/docs/
+   ```
+
+2. For a release, add the version. The script also keeps a copy at `/docs/<version>/`:
+
+   ```bash
+   OMICSBASE_VM=<user>@<host> scripts/publish_docs.sh <version>
+   ```
+
+Set `OMICSBASE_SSH_KEY` to choose a key file. The script rebuilds the changelog, renders with the `publish` profile and stops if `llms.txt` is missing. It replaces the top level of `/docs/` and keeps the release copies. The release copies have no `sitemap.xml`, `robots.txt` or `llms.txt`, so search engines index only the current docs.
+
+## Roll back {#rollback}
+
+Prepare the way back before every change:
+
+- Before you edit a file on the VM, copy it next to itself with a dated suffix, for example `Caddyfile.bak-<yyyymmdd>-<what>`.
+- Keep the previous image. Note its tag and the matching checkout commit.
+
+To go back:
+
+| What changed | How to undo it |
+| --- | --- |
+| LibreChat | Set `OMICSBASE_LIBRECHAT_IMAGE` back, move the `librechat/` checkout back to the old commit, and recreate `api`. |
+| A config file | Restore the backup, then recreate `api` or reload Caddy. |
+| The Caddyfile | Restore the backup and run `sudo systemctl reload caddy`. |
+| The router | Restore the backup and run `sudo systemctl restart roihu-router`. |
+| The engine on LUMI-K | Set the previous image in `engine.yaml` and apply it, or switch notes to the VM engine (see [Switch notes between LUMI-K and the VM](#engine-switch)). |
+| The Reports image | Set `ROIHU_IMAGE_TAG` back and recreate `api`. |
+
+After any change or rollback, check:
+
+1. You can sign in.
+2. A note runs an R cell and shows its plot.
+3. The `notethreads` tools appear in the LibreChat log.
+4. A public note opens without signing in.
+5. Reports opens.

@@ -1,0 +1,3 @@
+# Rendered by CI and scripts/publish_docs.sh with Quarto 1.11 or later.
+website:
+  llms-txt: true

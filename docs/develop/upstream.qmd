@@ -1,0 +1,209 @@
+---
+title: "Syncing upstream"
+description: "Bring the LibreChat and OpenHands forks up to date with their upstream projects, see what we changed, and test the result."
+---
+
+OmicsBase builds on two projects that keep moving: LibreChat and OpenHands. We call them *upstream*. Our forks carry our changes on top of upstream. Every so often we merge upstream's new work into the forks.
+
+## How our changes are kept {#tracking}
+
+- Our changes are ordinary Git commits on the fork's working branch. There are no patch files.
+- The omicsbase repository stores the exact fork commit it uses (the submodule pointer).
+- We keep our features in our own files where we can (see [Where our code sits inside the forks](repository.qmd#fork-code)). Upstream files only get small hooks into them.
+- Two things are changed while the Reports image is built, not in the fork:
+  - The Agent Canvas files come from upstream's image, `ghcr.io/openhands/agent-canvas:<version>`.
+  - Upstream's start script is adjusted by `docker/openhands/patch_entrypoint.py`, and for Roihu by `deployment/roihu/roihu_entrypoint.py`. Each change looks for an exact line of upstream's script. If upstream moved that line, the build stops with an error instead of producing a broken script.
+
+### See what we changed {#see-changes}
+
+Inside a submodule, these commands show our side.
+
+The history of the working branch, one line per merge or commit:
+
+```bash
+git log --oneline --first-parent
+```
+
+You should see lines such as `Merge pull request #… from 0xMuluh/…` for our changes and `chore(upstream): merge …` for upstream syncs.
+
+Every file we changed since the last upstream merge, in LibreChat:
+
+```bash
+git diff --stat upstream/main...HEAD
+```
+
+The same for OpenHands, against the release we merged last:
+
+```bash
+git diff --stat v1.41.0...HEAD
+```
+
+## Before you start {#prepare}
+
+Each submodule needs a second remote, `upstream`, that points at the original project. A *remote* is a named address of another copy of the repository.
+
+1. Go into the submodule:
+
+   ```bash
+   cd librechat
+   ```
+
+2. Check the remotes:
+
+   ```bash
+   git remote -v
+   ```
+
+   You should see `origin` (our fork) and `upstream`.
+
+3. If `upstream` is missing, add it. For LibreChat:
+
+   ```bash
+   git remote add upstream https://github.com/danny-avila/LibreChat.git
+   ```
+
+   For OpenHands, in `openhands/`:
+
+   ```bash
+   git remote add upstream https://github.com/OpenHands/OpenHands.git
+   ```
+
+## Sync LibreChat {#librechat}
+
+We merge LibreChat's `main` branch.
+
+1. In `librechat/`, fetch upstream:
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+2. Start a new branch from the fork's working branch:
+
+   ```bash
+   git switch -c chore/librechat-upstream-<yyyymmdd> origin/chore/librechat-upstream-20261021
+   ```
+
+3. Merge upstream:
+
+   ```bash
+   git merge upstream/main -m "chore(upstream): merge LibreChat main (<yyyy-mm-dd>)"
+   ```
+
+4. Resolve the conflicts. These files are edited on both sides and conflict most often:
+
+   - `client/index.html`
+   - `client/src/style.css`
+   - `client/src/locales/en/translation.json`
+   - `client/src/components/Chat/Messages/Content/ToolCall.tsx`
+   - `packages/client/src/theme/registry.ts` and `packages/client/src/theme/themes/index.ts`
+
+5. Run the tests in [Test LibreChat](#test-librechat).
+6. Push the branch to the fork and open a pull request against the working branch.
+
+## Sync OpenHands {#openhands}
+
+We merge OpenHands release tags, such as `v1.41.0`.
+
+1. In `openhands/`, fetch upstream:
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+2. Start a branch named after the release, from the fork's working branch:
+
+   ```bash
+   git switch -c chore/openhands-v<version> origin/chore/openhands-v1.41.0
+   ```
+
+3. Merge the release tag:
+
+   ```bash
+   git merge v<version> -m "chore(upstream): merge OpenHands v<version>"
+   ```
+
+4. Resolve the conflicts. Our changes are in `src/integrations/omicsbase/`, `src/routes/root-layout.tsx`, `src/components/features/browser/browser.tsx` and `src/utils/file-validation.ts`.
+5. Push the branch to the fork and open a pull request against the working branch.
+
+Then update the versions that the images name, in the omicsbase repository:
+
+1. In `docker/openhands/Dockerfile`, set the Agent Canvas image tag in the `COPY --from=ghcr.io/openhands/agent-canvas:…` line.
+2. In the same file, set the versions of `openhands-agent-server`, `openhands-tools` and `openhands-automation` to the ones that release uses.
+3. In `deployment/roihu/Dockerfile`, set `CANVAS_IMAGE` to the same Agent Canvas tag, and `BASE_IMAGE` to the matching `omicsbase-openhands` tag.
+4. Build the image (see [Test OpenHands](#test-openhands)). If `patch_entrypoint.py` or `roihu_entrypoint.py` stops the build, find the moved line in upstream's `entrypoint.sh` and update the anchor in the script.
+
+## Move the submodule pointer {#pointer}
+
+After the fork's pull request is merged:
+
+1. Inside the submodule, check out the merge commit:
+
+   ```bash
+   git fetch origin
+   git checkout <merge commit>
+   ```
+
+2. Go back to the repository root:
+
+   ```bash
+   cd ..
+   ```
+
+3. Stage the new pointer, with any Dockerfile changes:
+
+   ```bash
+   git add librechat
+   ```
+
+4. Commit with a message that names the upstream version, for example `chore(openhands): update to v<version>`.
+5. Open the omicsbase pull request.
+
+## What to test after a sync {#test}
+
+### Test LibreChat {#test-librechat}
+
+Run these in `librechat/`:
+
+1. `npm ci`
+2. `npm run build:packages`
+3. `npm run test:packages:api`
+4. `npm run test:client`
+5. `npm run lint`
+
+Then, from the repository root:
+
+1. Build the image with `python3 scripts/build_librechat.py --context default`.
+2. Start it, either in the full stack or in a local install. See [Development loop](dev-loop.qmd).
+3. Check in the browser:
+   - You can sign in.
+   - A new note runs an R cell and shows a plot.
+   - A file uploads into a note.
+   - A public note opens without signing in, and continuing it makes your own copy.
+   - The Reports page opens.
+4. Check the server log for the line that lists the `notethreads` tools. It ends in `Tools:` followed by the tool names, such as `execute_r_cell`. If it is missing, the notes have no tools.
+
+### Test OpenHands {#test-openhands}
+
+1. Run the contract tests:
+
+   ```bash
+   python3 scripts/build_openhands.py --verify-only
+   ```
+
+2. Build the Reports image. This also type-checks and builds the interface:
+
+   ```bash
+   python3 scripts/build_openhands.py --context default
+   ```
+
+3. Run it in a local install with your own images (see [Run the local install with your own images](dev-loop.qmd#own-images)) and check:
+   - Reports opens inside OmicsBase, with its sidebar.
+   - The agent answers.
+   - The editor and the report viewer open a report's files.
+4. Build the Roihu image from `deployment/roihu/Dockerfile` and connect it as your own computer, or start a Roihu session.
+5. Through the session, send a request to the agent's `/api/settings` without the session key, and one with a wrong key. Both must be refused with `401`. Only then let users use the new image.
+
+### Python tests {#test-python}
+
+Run `python3 -m pytest tests` from the repository root. It covers the gateway and the router, which depend on upstream's behaviour.

@@ -1,0 +1,109 @@
+---
+title: "Notes engine on a server"
+description: "Run the R of your notes on a bigger server while OmicsBase stays on your own machine."
+---
+
+A local install runs the R of your notes on the machine it is installed on. To use a bigger machine instead, start the notes engine on a server and point your install at it with `ENGINE_URL`.
+
+The install connects to the server; nothing on the server needs to reach the install. Your install can therefore stay on a laptop behind a home router.
+
+This moves notes only. To run Reports on another machine, see [Reports on your own computer](../start/reports-own-computer.qmd).
+
+## What you need {#requirements}
+
+- A working OmicsBase install. See [Install on your own machine](install.qmd).
+- A server with Docker and Compose v2.
+- A DNS name pointing at the server, for example `engine.example.org`.
+- Ports 80 and 443 open on the server, so it can get an HTTPS certificate and receive connections.
+
+The engine must be reached at a public HTTPS address. An engine on a private address, such as a machine on your local network, is refused by the install.
+
+## 1. Set up the server {#server}
+
+On the server, download the three setup files into a new folder:
+
+```bash
+mkdir omicsbase-engine && cd omicsbase-engine
+for f in docker-compose.yml Caddyfile .env.example; do
+  curl -fsSLO https://raw.githubusercontent.com/0xMuluh/omicsbase/main/local/engine-server/$f
+done
+cp .env.example .env
+chmod 600 .env
+```
+
+## 2. Fill in the server's `.env` {#server-env}
+
+Open `.env` on the server and set:
+
+| Variable | Set it to |
+| --- | --- |
+| `ENGINE_DOMAIN` | The server's DNS name, for example `engine.example.org` |
+| `OMICSBASE_ENGINE_SECRET` | The value of `OMICSBASE_ENGINE_SECRET` in your install's `~/omicsbase/.env` |
+| `OMICSBASE_VERSION` | The image version, `latest` by default. If you pinned a version on the install, use the same one. |
+
+Copy the secret from your install's `.env`; do not generate a new one. The two must match.
+
+## 3. Start the engine {#server-start}
+
+On the server, in the `omicsbase-engine` folder:
+
+```bash
+docker compose up -d
+```
+
+This starts two containers: the engine, and Caddy in front of it. Caddy gets the HTTPS certificate for `ENGINE_DOMAIN` by itself.
+
+## 4. Point your install at the server {#point-install}
+
+On the machine with your install, add this line to `~/omicsbase/.env`, with your server's name:
+
+```text
+ENGINE_URL=https://engine.example.org
+```
+
+Then restart the install:
+
+```bash
+cd ~/omicsbase && docker compose up -d
+```
+
+New notes now run on the server. Files of notes made before stay on the machine that ran them.
+
+## Where your data lives {#data}
+
+With `ENGINE_URL` set, the R of your notes, their files and their plots live on the server, in the `omicsbase-engine` folder:
+
+| Folder | What it holds |
+| --- | --- |
+| `data/projects/` | Files of notes: data, figures and results |
+| `data/engine-cache/` | Downloaded ExperimentHub and AnnotationHub data |
+| `data/caddy/` | Caddy's HTTPS certificate |
+
+Your accounts and the notes' messages stay in the install's `data/` on your own machine.
+
+## Security {#security}
+
+- **The secret is the key to the server.** Anyone holding `OMICSBASE_ENGINE_SECRET` can run R on the engine. Keep `.env` private on both machines, and never share or commit it.
+- **The server is on the internet.** Caddy publishes the engine on ports 80 and 443 of the server's name. The engine's notes connection only accepts requests that carry the secret.
+- **One install per secret.** Give the server the secret of the install that uses it. If you think the secret has leaked, set a new value in the install's `.env` (from `openssl rand -hex 32`), copy it to the server's `.env`, and run `docker compose up -d` on both.
+
+## Update the server {#update}
+
+On the server, in the `omicsbase-engine` folder:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Update the server when you update the install, so both run the same version. See [Updating and backups](updating.qmd).
+
+## Go back to the engine on your machine {#go-back}
+
+Remove the `ENGINE_URL` line from `~/omicsbase/.env`, or put `#` in front of it, then:
+
+```bash
+cd ~/omicsbase && docker compose up -d
+```
+
+New notes run on your machine again. Files of notes that ran on the server stay there.

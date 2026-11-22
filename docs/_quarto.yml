@@ -1,0 +1,85 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - "*.qmd"
+    - "!archive/"
+    - "!screenshots/"
+
+website:
+  title: "OmicsBase docs"
+  description: "Guides for OmicsBase, the open-source AI workspace for omics analysis in R and Bioconductor."
+  site-url: https://omicsbase.utu.fi/docs/
+  repo-url: https://github.com/0xMuluh/omicsbase
+  repo-subdir: docs
+  repo-branch: main
+  repo-actions: [edit, issue]
+  search:
+    location: navbar
+    type: overlay
+  navbar:
+    left:
+      - text: "Open OmicsBase"
+        href: https://omicsbase.utu.fi
+    right:
+      - icon: github
+        href: https://github.com/0xMuluh/omicsbase
+        aria-label: GitHub
+  sidebar:
+    style: docked
+    collapse-level: 1
+    contents:
+      - href: index.qmd
+        text: Home
+      - section: "Get started"
+        contents:
+          - start/first-note.qmd
+          - start/models.qmd
+          - start/your-data.qmd
+          - start/share.qmd
+          - start/reports-roihu.qmd
+          - start/reports-own-computer.qmd
+          - start/faq.qmd
+      - section: "Analyses"
+        href: analyses/index.qmd
+        contents:
+          - analyses/microbiome.qmd
+          - analyses/transcriptomics.qmd
+          - analyses/single-cell.qmd
+          - analyses/spatial.qmd
+          - analyses/proteomics-metabolomics.qmd
+          - analyses/functional.qmd
+          - analyses/genomes.qmd
+          - analyses/multi-omics.qmd
+          - analyses/reports.qmd
+      - section: "Run it yourself"
+        contents:
+          - self-host/install.qmd
+          - self-host/troubleshooting.qmd
+          - self-host/settings.qmd
+          - self-host/engine-server.qmd
+          - self-host/updating.qmd
+      - section: "Develop"
+        contents:
+          - develop/architecture.qmd
+          - develop/repository.qmd
+          - develop/dev-loop.qmd
+          - develop/contributing.qmd
+          - develop/upstream.qmd
+          - develop/production.qmd
+      - changelog.qmd
+  page-footer:
+    left: "OmicsBase · [Turku Data Science](https://datascience.utu.fi), University of Turku"
+    right: "[MIT licence](https://github.com/0xMuluh/omicsbase/blob/main/LICENSE)"
+
+format:
+  html:
+    theme:
+      light: [cosmo, theme-light.scss]
+      dark: [darkly, theme-dark.scss]
+    toc: true
+    toc-depth: 3
+    anchor-sections: true
+    code-copy: true
+    smooth-scroll: true
+    link-external-newwindow: true

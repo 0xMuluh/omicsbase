@@ -1,0 +1,4 @@
+/_site/
+/.quarto/
+/screenshots/node_modules/
+*.llms.md

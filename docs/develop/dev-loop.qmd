@@ -1,0 +1,363 @@
+---
+title: "Development loop"
+description: "Set up OmicsBase for development, change the notes app or the engine, run the tests and preview these docs."
+---
+
+This page shows three ways to work on OmicsBase. Pick the one that fits your change:
+
+- **Change the web pages only** (React components, styles, texts): run the page dev server against a local install. See [Work on the web pages](#ui).
+- **Change the server or the engine**: build the images and run the full stack from source. See [Run the full stack from source](#from-source).
+- **Change Reports, or test your images before a release**: run the local install with your own images. See [Run the local install with your own images](#own-images).
+
+## What you need {#requirements}
+
+- Git.
+- Docker Engine with Compose v2.
+- Node.js 24 and npm. The LibreChat fork names its version in `librechat/.nvmrc`.
+- Python 3.12 or later.
+- Quarto 1.11 or later, if you work on these docs.
+- Your own key for at least one model provider.
+
+The images are built for Linux on Intel/AMD (amd64). The engine image installs a large R and Bioconductor stack, so its first build takes a long time and needs plenty of disk space.
+
+## Get the source {#clone}
+
+1. Clone the repository with both submodules:
+
+   ```bash
+   git clone --recurse-submodules https://github.com/0xMuluh/omicsbase.git
+   ```
+
+2. Go into it:
+
+   ```bash
+   cd omicsbase
+   ```
+
+3. Check that both submodules are filled:
+
+   ```bash
+   git submodule status
+   ```
+
+   You should see two lines, one for `librechat` and one for `openhands`, each starting with a commit.
+
+If you cloned without `--recurse-submodules`, run `git submodule update --init --recursive` now.
+
+## Work on the web pages {#ui}
+
+The page dev server (Vite) serves the web pages from your source and reloads them when you save a file. It sends every `/api` and `/oauth` request on to a running LibreChat server. The quickest such server is a local install.
+
+1. Install OmicsBase on your machine as described in [Install on your own machine](../self-host/install.qmd). Its server listens on port 3080.
+2. Open <http://localhost:3080> and create your account.
+3. In your clone, go into the fork:
+
+   ```bash
+   cd librechat
+   ```
+
+4. Install the packages:
+
+   ```bash
+   npm ci
+   ```
+
+5. Build the shared packages that the pages import:
+
+   ```bash
+   npm run build:packages
+   ```
+
+6. Start the dev server and point it at port 3080:
+
+   ```bash
+   BACKEND_PORT=3080 npm run frontend:dev
+   ```
+
+   You should see Vite report its address:
+
+   ```text
+   ➜  Local:   http://localhost:3090/
+   ```
+
+7. Open <http://localhost:3090> and sign in with the account from step 2.
+
+<!-- screenshot: dev-server-notes — the notes app served by the Vite dev server on localhost:3090 -->
+
+Changes under `client/src/` show up in the browser when you save. Changes to the server (`api/`, `packages/api/`) do not: the server is the one in the install's image. For those, use the full stack below.
+
+If you change a shared package (`packages/data-provider`, `packages/client`, …), run `npm run build:packages` again.
+
+## Run the full stack from source {#from-source}
+
+This runs the same Compose stack as production, with images you build yourself.
+
+### 1. Copy the settings {#from-source-config}
+
+1. From the repository root, copy the three templates into the fork:
+
+   ```bash
+   cp .env.example librechat/.env
+   cp deployment/librechat.yaml librechat/librechat.yaml
+   cp deployment/docker-compose.override.yml librechat/docker-compose.override.yml
+   ```
+
+2. Open `librechat/.env` in an editor.
+3. Set `UID` and `GID` to your own ids. `id -u` and `id -g` print them.
+4. Give each of these a different random value: `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_PANEL_SESSION_SECRET`, `MEILI_MASTER_KEY`, `OMICSBASE_AUTH_SECRET` and `CREDS_KEY`. This command prints one value each time you run it:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+5. Set `CREDS_IV` to the output of `openssl rand -hex 16`.
+6. Set `ALLOW_REGISTRATION=true`, so you can create the first account. Set it back to `false` afterwards if others can reach your machine.
+7. Add the key of each model provider you want to use.
+8. Open `librechat/librechat.yaml`.
+9. Remove the endpoints you have no key for.
+10. Under `mcpServers`, change the `url` of `notethreads` to the engine in your stack:
+
+    ```yaml
+    url: http://engine:8001/sse
+    ```
+
+    Keep its `headers` and `requiresOAuth: false` lines.
+
+Keep `.env`, keys, databases and project files out of Git.
+
+### 2. Prepare the folders {#from-source-dirs}
+
+1. Create the folders the stack writes to. The script uses `sudo`:
+
+   ```bash
+   scripts/prepare_runtime_dirs.sh
+   ```
+
+   It ends with:
+
+   ```text
+   Runtime directories prepared.
+   ```
+
+### 3. Build the images {#from-source-build}
+
+Use the same Docker context for building and starting. A Docker *context* names which Docker engine a command talks to; `default` is the one on your machine.
+
+1. Build the LibreChat image:
+
+   ```bash
+   python3 scripts/build_librechat.py --context default
+   ```
+
+   It ends with the tag it built, named after the fork's commit:
+
+   ```text
+   Built omicsbase-librechat:<commit>; running containers were not changed.
+   ```
+
+2. In `librechat/.env`, set `OMICSBASE_LIBRECHAT_IMAGE` to that tag.
+3. Build the engine. This builds `omicsbase-engine-base:dev` from `docker/engine-base/` first, then `omicsbase-engine:dev` from `engine/`:
+
+   ```bash
+   python3 scripts/build_engine.py --context default
+   ```
+
+   It ends with:
+
+   ```text
+   Built omicsbase-engine:dev. Running containers and deployment configuration were not changed.
+   ```
+
+Building never restarts running containers.
+
+### 4. Build the knowledge index {#from-source-knowledge}
+
+1. Download the books and build `engine/knowledge/knowledge.db`, using the engine image:
+
+   ```bash
+   docker --context default run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+     -v "$PWD:/app" --entrypoint python3 omicsbase-engine:dev /app/scripts/setup_knowledge.py
+   ```
+
+   It prints one `Fetched …` line per book, then:
+
+   ```text
+   Installed <n> chunks from <n> books at …/engine/knowledge/knowledge.db
+   ```
+
+The stack mounts `engine/` into the engine container, so the engine sees the new index without a rebuild. The books keep their own licences; see `knowledge/ATTRIBUTION.md`. `knowledge/README.md` shows how to run the same script without Docker.
+
+### 5. Start the stack {#from-source-start}
+
+1. Check the Compose files:
+
+   ```bash
+   docker --context default compose --project-directory "$PWD/librechat" \
+     --env-file librechat/.env -p librechat \
+     -f librechat/docker-compose.yml -f librechat/docker-compose.override.yml config --quiet
+   ```
+
+   It prints nothing when the files are valid.
+
+2. Start the services:
+
+   ```bash
+   docker --context default compose --project-directory "$PWD/librechat" \
+     --env-file librechat/.env -p librechat \
+     -f librechat/docker-compose.yml -f librechat/docker-compose.override.yml up -d
+   ```
+
+3. Open <http://localhost:3080>.
+4. Create your account.
+5. Open a new note and ask for a small R calculation, to check that notes run.
+
+Ports 3000, 3080 and 8001 must be free. Containers with the same names must not belong to another stack.
+
+In this stack the Reports page says Reports is not set up, because no router runs here. To work on Reports, use [your own images in the local install](#own-images).
+
+### Apply a change {#from-source-changes}
+
+| You changed | Do this |
+| --- | --- |
+| A server file listed under `volumes` in `docker-compose.override.yml` (for example `api/server/routes/notes.js`) | Recreate the `api` service: add `up -d --force-recreate api` to the Compose command above. The file is mounted from your checkout, so no rebuild is needed. |
+| Python code in `engine/` | Restart the engine: `docker restart omicsbase-engine`. The folder is mounted into the container. |
+| Anything else in `librechat/` (`packages/`, `client/`) | Rebuild with `build_librechat.py`, set the new tag in `.env`, and recreate `api`. |
+| R packages in `docker/engine-base/` | Rebuild with `build_engine.py` and recreate `engine`. |
+
+## Run the local install with your own images {#own-images}
+
+The local install takes its images from `ghcr.io/0xmuluh/` with the tag in `OMICSBASE_VERSION`. If an image with that name and tag exists on your machine, Compose uses it. Tag your builds `dev` to slip them in.
+
+1. Build the engine, as in [Build the images](#from-source-build).
+2. Build the Reports image. It is built on top of `omicsbase-engine:dev`:
+
+   ```bash
+   python3 scripts/build_openhands.py --context default
+   ```
+
+   It installs the interface's packages, runs its contract tests, type-checks and builds it, then ends with:
+
+   ```text
+   Built omicsbase-openhands:dev; running containers were not changed.
+   ```
+
+3. Build the LibreChat image, as in [Build the images](#from-source-build).
+4. Give the three images the names the local install uses:
+
+   ```bash
+   docker tag omicsbase-engine:dev ghcr.io/0xmuluh/omicsbase-engine:dev
+   docker tag omicsbase-openhands:dev ghcr.io/0xmuluh/omicsbase-reports:dev
+   docker tag omicsbase-librechat:<commit> ghcr.io/0xmuluh/omicsbase-librechat:dev
+   ```
+
+5. In your install's `.env` (by default `~/omicsbase/.env`), set:
+
+   ```text
+   OMICSBASE_VERSION=dev
+   ```
+
+6. In the install folder, start it again:
+
+   ```bash
+   docker compose up -d
+   ```
+
+To go back to the published images, set `OMICSBASE_VERSION=latest` in the same `.env` and run `install.sh` again. While it says `dev`, `install.sh` stops at the download step, because no `dev` images are published.
+
+## Run the tests {#tests}
+
+### Python tests {#tests-python}
+
+1. From the repository root, run the tests for the Reports gateway, the router and the knowledge setup. They need `pytest`, `fastapi`, `httpx` and `PyJWT`:
+
+   ```bash
+   python3 -m pytest tests
+   ```
+
+   The last line counts the results, for example:
+
+   ```text
+   33 passed
+   ```
+
+2. Run the engine tests inside the engine image, which has the engine's Python packages and R:
+
+   ```bash
+   docker run --rm -v "$PWD/engine:/app/engine" --entrypoint python3 omicsbase-engine:dev \
+     -m unittest discover -s /app/engine/tests -t /app
+   ```
+
+   It ends with `OK` when all tests pass. `test_execution_latency.py` and `test_kernel_limits.py` start real R sessions, so they take a while. None of the tests call a model.
+
+### LibreChat fork tests {#tests-librechat}
+
+The fork uses Jest, a JavaScript test runner. Run these in `librechat/`, after `npm ci` and `npm run build:packages`.
+
+1. Test the server package, which holds the notes and Reports code:
+
+   ```bash
+   npm run test:packages:api
+   ```
+
+2. Test the web pages:
+
+   ```bash
+   npm run test:client
+   ```
+
+To run one test file, call Jest in its package. For example:
+
+```bash
+cd packages/api
+npx jest src/projects/roihu.spec.ts
+```
+
+### OpenHands fork tests {#tests-openhands}
+
+1. From the repository root, run the contract tests without building an image:
+
+   ```bash
+   python3 scripts/build_openhands.py --verify-only
+   ```
+
+   It ends with:
+
+   ```text
+   Verification complete (vitest contract tests passed).
+   ```
+
+## Lint rules in the LibreChat fork {#lint}
+
+The fork checks its code and design rules with ESLint, a code checker. The rules are in `eslint.config.mjs`. These come up most often:
+
+- **No inline styles.** `style={{…}}` is reported, except for measured geometry such as `width`, `height`, `top`, `transform` and `zIndex`. Use theme classes.
+- **No arbitrary Tailwind values.** Classes such as `w-[37px]` or `text-[#333]` are reported, except for layout. Use the theme's scale.
+- **No raw colours.** Use the theme's colour classes.
+
+To lint the whole fork:
+
+```bash
+npm run lint
+```
+
+A Git hook runs the same checks on the files you commit. It runs `node` and `npx` from your `PATH`, and its checks need Node 24. With an older Node first on your `PATH`, the commit fails. If you use nvm, run `nvm use` in `librechat/` first; it reads `.nvmrc`.
+
+## Preview these docs {#docs}
+
+1. Go into the docs folder:
+
+   ```bash
+   cd docs
+   ```
+
+2. Start the preview:
+
+   ```bash
+   quarto preview
+   ```
+
+   Quarto opens the site in your browser and reloads a page when you save it.
+
+<!-- screenshot: docs-preview — the docs site served by quarto preview, with the sidebar open on Develop -->
+
+CI and `scripts/publish_docs.sh` render with the `publish` profile (`quarto render docs --profile publish`). That profile writes `llms.txt` and needs Quarto 1.11 or later. `changelog.qmd` is written by `scripts/build_changelog.sh`, which reads the GitHub releases with the `gh` command.

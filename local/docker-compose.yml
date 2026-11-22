@@ -24,7 +24,7 @@ services:
       - HOST=0.0.0.0
       - APP_TITLE=OmicsBase
       - CUSTOM_FOOTER=OmicsBase · open source · [GitHub](https://github.com/0xMuluh/omicsbase)
-      - HELP_AND_FAQ_URL=https://github.com/0xMuluh/omicsbase
+      - HELP_AND_FAQ_URL=https://omicsbase.utu.fi/docs/
       - PORT=3080
       - DOMAIN_CLIENT=http://localhost:3080
       - DOMAIN_SERVER=http://localhost:3080

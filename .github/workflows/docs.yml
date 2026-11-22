@@ -1,0 +1,44 @@
+# Render the docs on every change to them and fail on render errors or broken links.
+# Pull requests check links inside the site; the weekly run also checks external links.
+name: Docs
+
+on:
+  pull_request:
+    paths: ["docs/**", "scripts/build_changelog.sh", ".github/workflows/docs.yml"]
+  push:
+    branches: [main]
+    paths: ["docs/**", "scripts/build_changelog.sh", ".github/workflows/docs.yml"]
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: 1.11.9
+      - name: Changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/build_changelog.sh
+      - name: Render
+        run: quarto render docs --profile publish
+      - name: llms.txt written
+        run: test -s docs/_site/llms.txt
+      - name: Links inside the site
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress --root-dir "${{ github.workspace }}/docs/_site" "docs/_site/**/*.html"
+          fail: true
+      - name: External links
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --max-retries 3 --accept 200,206,429 --exclude "^https://omicsbase\.utu\.fi/(c|d|login)" "docs/_site/**/*.html"
+          fail: true

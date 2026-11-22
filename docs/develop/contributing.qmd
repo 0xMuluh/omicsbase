@@ -1,0 +1,156 @@
+---
+title: "Contributing and releases"
+description: "How to report a problem, propose a change across the repository and its forks, keep the docs in step, and make a release."
+---
+
+## Report a problem {#issues}
+
+Open an issue at [github.com/0xMuluh/omicsbase/issues](https://github.com/0xMuluh/omicsbase/issues). Every page of these docs also has a "Report an issue" link.
+
+A good issue is short:
+
+1. What you did.
+2. What you expected.
+3. What happened instead, with the exact error text.
+4. Where: omicsbase.utu.fi or a local install, and which version.
+
+Keep problems in separate issues, one each.
+
+## Branches {#branches}
+
+1. Start from the current `main` of the omicsbase repository.
+2. Name the branch after the kind of change: `feat/…` for a feature, `fix/…` for a bug fix, `docs/…` for docs only, `chore/…` for upkeep. For example `fix/install-progress-memory-arm`.
+
+### Changes in a fork {#fork-branches}
+
+If your change touches `librechat/` or `openhands/`, it needs two pull requests: one in the fork, one in the omicsbase repository.
+
+1. Inside the submodule, start from the fork's working branch:
+
+   | Submodule | Start from |
+   | --- | --- |
+   | `librechat/` | `chore/librechat-upstream-20261021` |
+   | `openhands/` | `chore/openhands-v1.41.0` |
+
+2. Use the same branch name in the fork and in the omicsbase repository, so the pair is easy to find.
+3. Open the fork's pull request against that working branch.
+4. After it is merged, check out the merge commit inside the submodule.
+5. Commit the new submodule pointer in the omicsbase repository and open that pull request. Name the fork pull request in its description.
+
+## Pull requests {#prs}
+
+Keep the description short: what changed and why, in a few lines. The template asks one question: does this change what users or self-hosters see?
+
+### Update the docs in the same pull request {#docs-rule}
+
+If your change alters what users or self-hosters see, update the docs page in the same pull request. Tick the box in the template, or say that no page is affected.
+
+For a change in a fork, the docs live in the omicsbase repository. Put the docs change in the omicsbase pull request that moves the submodule pointer, and link the two.
+
+### The docs check {#docs-ci}
+
+The workflow `.github/workflows/docs.yml` runs on every pull request that touches `docs/`, `scripts/build_changelog.sh` or the workflow itself. It:
+
+1. Writes the changelog from the GitHub releases.
+2. Renders the site with Quarto 1.11 and the `publish` profile.
+3. Checks that `llms.txt` was written.
+4. Checks every link between the site's own pages, with the link checker lychee.
+
+The pull request fails on a render error or a broken link. The same check runs on pushes to `main`. A weekly run, and a manual run, also check links to other sites.
+
+To catch problems before you push, preview the site locally; see [Preview these docs](dev-loop.qmd#docs).
+
+## Make a release {#release}
+
+A release is three things with the same version name, for example `2026.11.22`:
+
+- the images, pushed to `ghcr.io/0xmuluh/omicsbase-librechat`, `omicsbase-engine` and `omicsbase-reports` with that tag and with `latest`;
+- a Git tag on the released commit of `main`;
+- a GitHub release with notes generated from the merged pull requests.
+
+Local installs take their images by this name: `OMICSBASE_VERSION` in their `.env` is `latest` unless set to a version.
+
+### 1. Build the images {#release-build}
+
+1. Check out the commit of `main` you want to release, with its submodules:
+
+   ```bash
+   git switch --detach <sha>
+   git submodule update --init --recursive
+   ```
+
+2. Build the three images, as in [Build the images](dev-loop.qmd#from-source-build) and [Run the local install with your own images](dev-loop.qmd#own-images):
+
+   ```bash
+   python3 scripts/build_engine.py --context default
+   python3 scripts/build_openhands.py --context default
+   python3 scripts/build_librechat.py --context default
+   ```
+
+3. Test them in a local install with `OMICSBASE_VERSION=dev`, as in [Run the local install with your own images](dev-loop.qmd#own-images).
+
+### 2. Push the images {#release-push}
+
+1. Sign in to the GitHub container registry with a token that has `write:packages`:
+
+   ```bash
+   docker login ghcr.io
+   ```
+
+2. Tag and push each image with the version and with `latest`. For the engine:
+
+   ```bash
+   docker tag omicsbase-engine:dev ghcr.io/0xmuluh/omicsbase-engine:<version>
+   docker tag omicsbase-engine:dev ghcr.io/0xmuluh/omicsbase-engine:latest
+   docker push ghcr.io/0xmuluh/omicsbase-engine:<version>
+   docker push ghcr.io/0xmuluh/omicsbase-engine:latest
+   ```
+
+3. Do the same for `omicsbase-openhands:dev` as `ghcr.io/0xmuluh/omicsbase-reports`, and for `omicsbase-librechat:<commit>` as `ghcr.io/0xmuluh/omicsbase-librechat`.
+
+### 3. Tag and publish the release {#release-tag}
+
+1. Tag the released commit and push the tag:
+
+   ```bash
+   git tag <version> <sha>
+   git push origin <version>
+   ```
+
+2. Create the GitHub release, with notes generated from the merged pull requests:
+
+   ```bash
+   gh release create <version> --target <sha> --generate-notes
+   ```
+
+   `gh` prints the address of the new release.
+
+### 4. Publish the docs {#release-docs}
+
+1. Publish the docs for this version:
+
+   ```bash
+   OMICSBASE_VM=<user>@<host> scripts/publish_docs.sh <version>
+   ```
+
+   It ends with:
+
+   ```text
+   Published: https://omicsbase.utu.fi/docs/ and /docs/<version>/
+   ```
+
+The script first rebuilds `docs/changelog.qmd` from the GitHub releases (`scripts/build_changelog.sh`), so the new release appears on the [Changelog](../changelog.qmd). It then copies the site to `/docs/` and keeps a copy at `/docs/<version>/`. See [Publish the docs](production.qmd#docs) for what it needs.
+
+### The Reports image for Roihu and own computers {#release-roihu-image}
+
+Roihu jobs and attached computers use a different image, built from `deployment/roihu/Dockerfile`. It is published to `ghcr.io/0xmuluh/omicsbase-reports` under its own tags, such as `v1.41.0-roihu4`. Installs choose it with `ROIHU_IMAGE_TAG`. See [Reports on Roihu](production.qmd#roihu) for how to build and roll it out.
+
+## Licence {#licence}
+
+- Original OmicsBase code is under the [MIT licence](https://github.com/0xMuluh/omicsbase/blob/main/LICENSE).
+- LibreChat's MIT licence is kept in `licenses/LIBRECHAT-LICENSE`.
+- OpenHands' notices are kept in `licenses/OPENHANDS-LICENSE`.
+- The vendored Prism syntax highlighter's licence is kept in `licenses/PRISM-LICENSE`.
+- The books in the knowledge index keep their own licences. They are listed in `knowledge/ATTRIBUTION.md` and are not covered by the MIT licence.
+
+`THIRD_PARTY_NOTICES.md` lists the third-party code. Dependencies installed by the upstream projects keep their own licences.

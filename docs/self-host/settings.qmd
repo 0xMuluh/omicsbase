@@ -1,0 +1,145 @@
+---
+title: "Settings"
+description: "Every setting of a local OmicsBase install: the .env file and the installer's variables."
+---
+
+A local install keeps its settings in `~/omicsbase/.env`. The installer writes this file the first time it runs and keeps it on every later run. You rarely need to change it.
+
+## Change a setting {#change}
+
+1. Open `~/omicsbase/.env` in a text editor.
+2. Change the value, or remove the `#` at the start of a line to turn a setting on.
+3. Apply it:
+
+   ```bash
+   cd ~/omicsbase && docker compose up -d
+   ```
+
+Make your changes only in `.env`. The other files in `~/omicsbase`, such as `docker-compose.yml` and `librechat.yaml`, are replaced each time you update, so changes there are lost.
+
+`.env` contains secrets. The installer makes it readable only by you; keep it that way and do not share it.
+
+## Version {#version}
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OMICSBASE_VERSION` | `latest` | Version of the OmicsBase images (`ghcr.io/0xmuluh/omicsbase-librechat`, `-engine` and `-reports`) |
+
+Change it to stay on one version instead of following the newest. The easiest way is the install command with `OMICSBASE_VERSION`; see [Pin a version](updating.qmd#pin).
+
+## Your user {#user}
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `UID` | your user id | The user the containers run as, so files in `data/` stay yours |
+| `GID` | your group id | Your group. Reports runs as another user in this group, so it can write to `data/projects` and `data/reports`. |
+
+The installer fills these in with the output of `id -u` and `id -g`. Change them only if you move the install to another machine or user, where these ids differ. See [Move to another machine](updating.qmd#move).
+
+## Secrets {#secrets}
+
+| Variable | What it protects |
+| --- | --- |
+| `OMICSBASE_AUTH_SECRET` | Signs the tickets that let your browser into the notes engine and Reports |
+| `OMICSBASE_ENGINE_SECRET` | Lets the app use the notes engine. Anyone holding it can run R on the engine. |
+| `OMICSBASE_LINK_SECRET` | Between the app and the service behind **Use my own computer** |
+| `MEILI_MASTER_KEY` | The search service |
+
+The installer generates each secret once, as 32 random bytes, and keeps it on later runs. If a newer version needs a new secret, the installer adds it to your `.env`. You do not need to set or change them.
+
+If you write `.env` by hand instead of running the installer, copy `.env.example` to `.env` and set each empty secret to the output of:
+
+```bash
+openssl rand -hex 32
+```
+
+When you run notes on your own server, that server needs the same `OMICSBASE_ENGINE_SECRET`. See [Notes engine on a server](engine-server.qmd).
+
+The app also generates its own sign-in keys on first start. It keeps them in `data/app/`, not in `.env`.
+
+## Notes engine {#engine}
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ENGINE_URL` | not set: the engine on this machine | The HTTPS address of a notes engine on your own server |
+
+Set it to run notes' R on a bigger machine. See [Notes engine on a server](engine-server.qmd).
+
+## Model keys {#model-keys}
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `user_provided` | Key for OpenAI models |
+| `ANTHROPIC_API_KEY` | `user_provided` | Key for Anthropic models |
+| `GOOGLE_KEY` | `user_provided` | Key for Google models |
+
+With `user_provided`, each user enters their own key in the browser when they pick a model, and it is stored encrypted for that user.
+
+To share one key with every account on the install, replace `user_provided` with the key, for example `OPENAI_API_KEY=<your-key>`. Every account then uses your key, and you pay for their use.
+
+OpenRouter keys are always entered by each user in the browser. Ollama needs no key. See [Bring a model](install.qmd#step-model).
+
+## Optional extras {#extras}
+
+Two extras are off by default. Each is a Compose profile that you add to the start command.
+
+### Attached-file search {#file-search}
+
+Lets notes search the contents of attached files. The search uses embeddings, which are sent to OpenAI with the key you set here.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `RAG_API_URL` | not set | Address of the file-search service. Set it to `http://rag_api:8000`. |
+| `RAG_OPENAI_API_KEY` | not set | OpenAI key used for the embeddings |
+
+Remove the `#` from both lines in `.env`, set the key, then start with the profile:
+
+```bash
+cd ~/omicsbase && docker compose --profile files up -d
+```
+
+The search data is kept in `data/vectordb/`.
+
+### Admin panel {#admin-panel}
+
+An admin panel on <http://localhost:3000>, reachable only from this machine.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ADMIN_PANEL_SESSION_SECRET` | not set | Secret for the admin panel's sign-in sessions |
+
+The installer does not generate this one. Remove the `#` from the line in `.env`, set it to the output of `openssl rand -hex 32`, then start with the profile:
+
+```bash
+cd ~/omicsbase && docker compose --profile admin up -d
+```
+
+## Install-time settings {#install-time}
+
+These variables change what the install command does. They are not kept in `.env`. Put them before `sh` in the install command, for example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | OMICSBASE_DIR=/data/omicsbase sh
+```
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OMICSBASE_DIR` | `~/omicsbase` | The folder OmicsBase is installed into. Use the same value each time you update. |
+| `OMICSBASE_VERSION` | `latest` | The version to install. It is written into `.env`, also into an existing one, and the setup files are taken from that version's release (if it has none, the newest ones are used, with a note). Leave it out to keep the version already in `.env`. |
+| `OMICSBASE_REF` | `main`, or the version you asked for | The branch or tag of the repository that the setup files are downloaded from. You rarely need it. |
+| `OMICSBASE_EXAMPLES` | `examples-2026-11-20` | The GitHub release the example notes are downloaded from. Used only while the examples are missing. |
+| `OMICSBASE_REPO` | `0xMuluh/omicsbase` | The GitHub repository the setup files and examples come from |
+
+Several can be combined:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | OMICSBASE_DIR=/data/omicsbase OMICSBASE_VERSION=<version> sh
+```
+
+## Fixed settings {#fixed}
+
+Some settings are fixed in `docker-compose.yml` and cannot be changed in `.env`:
+
+- The ports: 3080 for the app, 3001 for Reports, 8001 for the notes engine and 3000 for the admin panel.
+- Every port is reachable only from this machine.
+- Sign-in is with email and password, anyone who can open the app may register, and the first account becomes the admin.

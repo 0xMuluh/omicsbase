@@ -1,0 +1,125 @@
+---
+title: "Repository layout"
+description: "What lives in each folder of the omicsbase repository, the two forks it includes as submodules, and where these docs are."
+---
+
+Everything starts from one repository: [github.com/0xMuluh/omicsbase](https://github.com/0xMuluh/omicsbase). It holds our own code and points at our forks of LibreChat and OpenHands.
+
+## Top-level folders {#folders}
+
+| Path | What is in it |
+| --- | --- |
+| `librechat/` | The notes app: our fork of LibreChat, included as a submodule. |
+| `openhands/` | The Reports interface: our fork of the OpenHands interface (Agent Canvas), included as a submodule. |
+| `engine/` | The notes engine: `server.py` (MCP tools and HTTP API), `access.py` (who may call it), `note_pods.py` (one pod per note on Kubernetes), `kernel/` (R sessions), `knowledge/` (the books index), `tests/`, its `Dockerfile` and `requirements.txt`. |
+| `docker/engine-base/` | The base image under the engine: Bioconductor, system libraries, Quarto and the R package lists (`backend/r-package-list.R`, `backend/r-package-list-extra.R`). |
+| `docker/openhands/` | The Reports image: its `Dockerfile`, our gateway (`gateway/`: launch API, editor, report viewer) and `patch_entrypoint.py`, which adjusts upstream's start script while the image is built. |
+| `deployment/` | Settings for omicsbase.utu.fi. See the table below. |
+| `local/` | The local install: `docker-compose.yml`, `librechat.yaml`, `.env.example`, `reports-gate.Caddyfile`, `import_examples.js` (loads the example notes), and `engine-server/` for running notes on another server. |
+| `install.sh` | The one-command installer for the local install. |
+| `scripts/` | Build, knowledge, sitemap and docs scripts. See below. |
+| `knowledge/` | The list of books in the knowledge index (`sources.json`), their licences (`ATTRIBUTION.md`) and a README. |
+| `tests/` | Python tests for the Reports gateway, the router, the knowledge setup and the package-install guard. |
+| `docs/` | These docs, as a Quarto website. |
+| `.github/` | The docs workflow (`workflows/docs.yml`) and the pull request template. |
+| `.env.example` | Settings template for running the full stack from source. See [Development loop](dev-loop.qmd#from-source). |
+| `LICENSE`, `licenses/`, `THIRD_PARTY_NOTICES.md` | Our MIT licence and the licences of the code we build on. |
+| `UPSTREAM.md` | Where the forks come from. |
+
+The `projects/` folder holds note and report files at run time. Git ignores it.
+
+### `deployment/` {#deployment-folder}
+
+| Path | What is in it |
+| --- | --- |
+| `docker-compose.override.yml` | Production additions to LibreChat's `docker-compose.yml`: the LibreChat image tag, the engine service, the server files mounted from the checkout, and the Roihu settings. |
+| `librechat.yaml` | Production LibreChat settings: model endpoints, the `notethreads` MCP server, model specs. |
+| `Caddyfile.production` | The web server rules for the three production hosts. |
+| `roihu/` | Reports sessions: `roihu_router.py` (the router), `reports.sbatch` and `pull_image.sbatch` (Roihu jobs), `Dockerfile` (the Reports image for Roihu and own computers), `roihu_entrypoint.py`, `connect.py` (pairing an own computer) and `publish_sif.sh`. |
+| `lumi-k/engine.yaml` | The Kubernetes manifest for the notes engine on LUMI-K. |
+| `rahti/Dockerfile` | Makes the engine image run as a random non-root user, which Kubernetes platforms at CSC require. The LUMI-K image is built with it. |
+| `seo/` | `robots.txt` and the search-console verification file. |
+| `local-image-inventory.json` | A record of image names and IDs. |
+
+### `scripts/` {#scripts}
+
+| Script | What it does |
+| --- | --- |
+| `build_librechat.py` | Builds the LibreChat image from `librechat/`. |
+| `build_engine.py` | Builds the engine base image, then the engine image. |
+| `build_openhands.py` | Tests and builds the Reports interface from `openhands/`, then builds the Reports image. |
+| `setup_knowledge.py` | Downloads the books and writes `engine/knowledge/knowledge.db`. |
+| `build_package_knowledge.py` | Adds installed R package help to the knowledge index. |
+| `prepare_runtime_dirs.sh` | Creates the folders the from-source stack writes to. |
+| `build_sitemap.sh` | Writes the sitemap of public notes on the VM. |
+| `export_examples.js` | Exports public example notes from production, for local installs to load. |
+| `build_changelog.sh` | Writes `docs/changelog.qmd` from the GitHub releases. |
+| `publish_docs.sh` | Renders these docs and copies them to the VM. |
+
+## Submodules and forks {#submodules}
+
+A *submodule* is a Git repository inside another one. The outer repository stores only the exact commit of each submodule.
+
+| Folder | Fork | Upstream project | Branch we work on |
+| --- | --- | --- | --- |
+| `librechat/` | [0xMuluh/LibreChat](https://github.com/0xMuluh/LibreChat) | [danny-avila/LibreChat](https://github.com/danny-avila/LibreChat) | `chore/librechat-upstream-20261021` |
+| `openhands/` | [0xMuluh/OpenHands](https://github.com/0xMuluh/OpenHands) | [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands) | `chore/openhands-v1.41.0` |
+
+Our changes are ordinary commits on those branches. There are no patch files.
+
+To fill both folders after a clone without submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+To see which commit each folder is at:
+
+```bash
+git submodule status
+```
+
+You should see one line per submodule, starting with the commit:
+
+```text
+ <commit> librechat (<nearest tag>)
+ <commit> openhands (<nearest tag>)
+```
+
+A `+` in front of a line means the folder is at a different commit than the one the outer repository records.
+
+### Where our code sits inside the forks {#fork-code}
+
+We keep our features in our own files, so upstream updates touch as little as possible.
+
+In `librechat/`:
+
+| Path | What it does |
+| --- | --- |
+| `packages/api/src/notes/` | Note cells: saving, running, cancelling, revisions. |
+| `packages/api/src/projects/` | Reports: launch tickets (`workspace.ts`), Roihu sessions and own computers (`roihu.ts`), sign-out. |
+| `api/server/services/NoteCells/` | The engine client and copying note files. |
+| `api/server/routes/notes.js`, `projects.js`, `roihu.js` | The HTTP routes for the above. |
+| `api/server/middleware/publicPageMeta.js` | Page titles and readable text for search engines on public notes. |
+| `client/src/components/Notes/` | The R cell view in a note. |
+| `client/src/components/Projects/` | The Reports page, including `WorkspaceCanvas.tsx` and `Workspace/RoihuSessionCard.tsx`. |
+| `packages/client/src/theme/themes/omicsbase.ts` | OmicsBase colours. |
+
+In `openhands/`:
+
+| Path | What it does |
+| --- | --- |
+| `src/integrations/omicsbase/` | Behaviour when Reports is shown inside OmicsBase. |
+| `__tests__/integrations/omicsbase.test.ts` | The contract tests that `build_openhands.py` runs. |
+
+## The docs {#docs}
+
+These pages are a Quarto website in `docs/`.
+
+- `_quarto.yml` sets the site and its sidebar.
+- `_quarto-publish.yml` is the `publish` profile. It adds `llms.txt` and needs Quarto 1.11 or later.
+- `start/`, `analyses/`, `self-host/` and `develop/` hold the pages.
+- `changelog.qmd` is written by `scripts/build_changelog.sh`.
+- `archive/` holds older records. It is not rendered.
+
+To preview the site, see [Development loop](dev-loop.qmd#docs).

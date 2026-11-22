@@ -1,0 +1,81 @@
+---
+title: "Proteomics and metabolomics"
+---
+
+Proteomics measures proteins. Metabolomics measures small molecules, such as sugars, fats and drugs. Both often use a mass spectrometer, a machine that weighs molecules. In a note you can read the raw machine files, turn them into tables and compare groups.
+
+## Prompts to try
+
+Copy a prompt into a new note and send it. When the result is back, send the follow-up.
+
+1. From peptides to proteins. Send:
+
+   ```text
+   Read the CPTAC peptide table from MsDataHub into a QFeatures object, with the condition, 6A or 6B, for each sample.
+   ```
+
+   Then:
+
+   ```text
+   Replace zeros with NA, remove peptides missing in 4 or more of the 6 samples, then remove reverse hits, contaminants and peptides with a PEP above 0.05.
+   ```
+
+2. Look inside a TMT run:
+
+   ```text
+   Load the MS3TMT11 mzML file from MsDataHub with Spectra.
+   ```
+
+3. Find peaks in metabolomics data. Send:
+
+   ```text
+   Load the faahKO CDF files from the faahKO package into an MsExperiment, with genotype labels.
+   ```
+
+   Then:
+
+   ```text
+   How does centWave decide what counts as a peak?
+   ```
+
+4. Name molecules from their fragments:
+
+   ```text
+   Load the PestMix1 DDA file from MsDataHub with Spectra and keep the MS2 spectra.
+   ```
+
+## What a note can do
+
+Notes follow the books R for Mass Spectrometry and Metabonaut.
+
+**Proteomics**
+
+- **Raw spectra.** Spectra reads and plots mzML files.
+- **Identifications.** PSMatch reads search results and uses decoy hits to judge them.
+- **Quantification.** QFeatures keeps PSMs, peptides and proteins linked while it adds them up, including TMT reporter ions.
+- **Missing values.** Look at what is missing and compare ways to fill it in.
+- **Compare groups.** limma and msqrob2 find proteins that differ, shown in volcano plots.
+- **More.** Single-cell proteomics (scp) and where proteins sit in the cell (pRoloc).
+
+**Metabolomics**
+
+- **Raw data.** Read LC-MS files into an MsExperiment and check them with chromatograms.
+- **Preprocessing.** xcms finds peaks (centWave), lines up retention times and matches peaks across samples.
+- **Annotation.** MetaboAnnotation and CompoundDb match masses and fragment spectra to known compounds, for example from MassBank. MetaboCoreUtils works out masses and adducts.
+- **Compare groups.** Turn the features into a table and test them between groups.
+
+Data can come from MsDataHub, msdata, faahKO, scpdata and pRolocdata, or from your own files. Notes read open file formats, such as mzML and CDF, in R. Convert files in a machine maker's own format to mzML before you upload them.
+
+## Example notes
+
+<!-- screenshot: proteomics-volcano — the volcano plot in the "Spike-in proteins: from peptides to a volcano plot" note -->
+![](../images/screens/proteomics-volcano.webp){.screenshot fig-alt="The volcano plot in the 'Spike-in proteins: from peptides to a volcano plot' note."}
+
+- [Reporter ions in a TMT11 MS3 run](https://omicsbase.utu.fi/share/EO_LG89UzF_5c-nPTXI8J): where the reporter ions appear in the spectra.
+- [Peptide identifications and the target-decoy approach](https://omicsbase.utu.fi/share/ng0e2sCH6VaH86hpPQJop): judging search results with decoys.
+- [From PSMs to proteins with QFeatures](https://omicsbase.utu.fi/share/5CjBGI3sLufBF4XDA2Vcq): adding up from PSM to protein.
+- [Spike-in proteins: from peptides to a volcano plot](https://omicsbase.utu.fi/share/V2M6cSUr7lFPto0GJPUK2): a full pipeline, checked against proteins known to be added.
+- [Missing values in proteomics: to impute or not](https://omicsbase.utu.fi/share/-uDWnIa2hxaHurMC623ME): how much the choice of filling method matters.
+- [First look at untargeted LC-MS data](https://omicsbase.utu.fi/share/i56xBhTIzDdgh-SDMz-7p): raw files and chromatograms before any processing.
+- [Chromatographic peak detection with centWave](https://omicsbase.utu.fi/share/nrEoiLfRqJjJiRRsk2OsM): peak finding tried on one ion first.
+- [MS2 spectral matching against MassBank](https://omicsbase.utu.fi/share/bY4upPTH5Y_AzZahs47Jw): naming compounds by comparing fragment spectra.
