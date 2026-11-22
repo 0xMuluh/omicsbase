@@ -21,6 +21,7 @@ from engine.kernel.note_kernel import (
     DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, START_LOCK_NAME,
     save_all_kernels, start_reaper,
 )
+from engine.knowledge.book_refs import log_lookups
 from engine.knowledge.search import search_bioc_knowledge
 from engine import note_pods
 
@@ -57,14 +58,14 @@ mcp = MCPServer(
         "  ecosystem's functions.\n"
         "- Microbial abundance data (TreeSummarizedExperiment): use mia for each step,\n"
         "  e.g. agglomerateByRank, agglomerateByPrevalence or subsetByPrevalent,\n"
-        "  transformAssay, addAlpha, getDissimilarity, addPERMANOVA, addRDA; miaTime\n"
+        "  transformAssay, addAlpha, getDissimilarity, getPERMANOVA, addRDA; miaTime\n"
         "  for time series.\n"
-        "- Comparing abundances between groups in any omics, when the user names no\n"
-        "  method: use LimROTS if it fits (a categorical group; two groups with or\n"
-        "  without covariates; three or more groups without covariates, otherwise\n"
-        "  compare pairs). Use log = TRUE, set a seed and report BH-adjusted q-values.\n"
-        "  If it does not fit, e.g. a continuous exposure, say why and use another\n"
-        "  method. A method the user names always comes first.\n"
+        "- Comparing abundances between groups, when the user names no method: follow\n"
+        "  the differential abundance chapter of the OMA book (search it first): MaAsLin2\n"
+        "  for a two-group comparison and for covariates or interactions, maaslin3 for\n"
+        "  differences in prevalence and in non-zero abundances, miaViz::plotBoxplot to\n"
+        "  show the results. Report BH-adjusted q-values. A method the user names always\n"
+        "  comes first.\n"
         "- Plot with the ecosystem's plotting functions:\n"
         "  TreeSummarizedExperiment: miaViz (plotAbundance, plotBoxplot, plotPrevalence,\n"
         "  plotRowTree, plotSeries, plotDMNFit, plotRDA, plotLoadings);\n"
@@ -155,16 +156,27 @@ def _run_cell(code, thread_id, timeout_seconds, execution_id=None):
         "Consult this tool before generating analysis code to ensure standard Bioconductor methodology."
     )
 )
-def search_bioc_books(query: str, book: str = "", limit: int = 4) -> str:
+def search_bioc_books(query: str, book: str = "", limit: int = 4, thread_id: str = "") -> str:
     """
     Search curated Bioconductor books for canonical R code snippets and workflow guidance.
     Optional books: 'osca', 'osca-basic', 'osca-advanced', 'scrapbook', 'osta', 'tidy-spatial',
     'oma', 'rnaseq-gene', 'tidyomics', 'mofa2', 'r-for-mass-spectrometry', 'metabonaut'.
-    Leave empty to search across all 12 books.
+    Leave empty to search across all 12 books. 'thread_id' is the note the search is made for.
     """
     book_filter = book.strip().lower() if book and book.strip() else None
     res = search_bioc_knowledge(query=query, book=book_filter, limit=limit)
+    _log_knowledge_lookups(thread_id, res)
     return res.get("markdown", "")
+
+
+def _log_knowledge_lookups(thread_id, result):
+    """Remember which book sections were looked up in a note; the book badge prefers them."""
+    if not thread_id or not _NOTE_ID.match(str(thread_id)):
+        return
+    try:
+        log_lookups(os.path.join(PROJECTS_DIR, str(thread_id)), result.get("matches", []))
+    except Exception:
+        pass
 
 
 R_LIBRARY_DIRS = ("/usr/local/lib/R/site-library", "/usr/local/lib/R/library")
@@ -616,6 +628,9 @@ async def handle_knowledge_search(request: Request):
     book = request.query_params.get("book", None)
     limit = int(request.query_params.get("limit", 4))
     res = search_bioc_knowledge(query=q, book=book, limit=limit)
+    # Only OmicsBase itself may write to a note's look-up log.
+    if _internal_caller(request):
+        _log_knowledge_lookups(request.query_params.get("thread_id", ""), res)
     return JSONResponse(res)
 
 app.add_route("/api/knowledge/search", handle_knowledge_search, methods=["GET"])

@@ -10,6 +10,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --break-system-packages --ignore-installed -r /app/requirements.txt
 
 COPY . /app/engine
+# The book index is not in git; without it the agent cannot search the books.
+RUN test -s /app/engine/knowledge/knowledge.db \
+    || { echo "engine/knowledge/knowledge.db is missing: run scripts/setup_knowledge.py first" >&2; exit 1; }
 
 ENV PYTHONPATH=/app
 ENV PROJECTS_DIR=/app/projects

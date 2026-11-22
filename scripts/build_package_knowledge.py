@@ -106,13 +106,18 @@ DEFAULT_PACKAGES = [
 ]
 
 
-def extract_packages(packages: list[str], output_json: Path) -> Path:
-    """Run extract_package_docs.R to extract Rd topics and vignettes."""
+def extract_packages(packages: list[str], output_json: Path, exports_json: Path | None = None,
+                     exports_only: bool = False) -> Path:
+    """Run extract_package_docs.R to extract Rd topics and vignettes, and the names every
+    installed package exports (used by the book index for its function map)."""
     extractor_script = ROOT / "engine" / "knowledge" / "extract_package_docs.R"
     if not extractor_script.exists():
         raise FileNotFoundError(f"Extractor script not found: {extractor_script}")
 
-    cmd = ["Rscript", str(extractor_script), "--output", str(output_json)] + packages
+    cmd = ["Rscript", str(extractor_script), "--output", str(output_json)]
+    if exports_json is not None:
+        cmd += ["--exports-output", str(exports_json)]
+    cmd += ["--exports-only"] if exports_only else packages
     print(f"Running R extraction for {len(packages)} packages...")
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
@@ -137,6 +142,17 @@ def main():
         help="Path to extracted JSON intermediary",
     )
     parser.add_argument(
+        "--exports-json",
+        type=Path,
+        default=ROOT / "engine" / "knowledge" / "package_exports.json",
+        help="Path for the exported names of all installed packages (read by scripts/setup_knowledge.py)",
+    )
+    parser.add_argument(
+        "--exports-only",
+        action="store_true",
+        help="Only write --exports-json and stop; run this before scripts/setup_knowledge.py",
+    )
+    parser.add_argument(
         "--skip-extract",
         action="store_true",
         help="Skip R extraction step and re-index existing JSON",
@@ -150,8 +166,12 @@ def main():
 
     args = parser.parse_args()
 
+    if args.exports_only:
+        extract_packages([], args.output_json, args.exports_json, exports_only=True)
+        return
+
     if not args.skip_extract or not args.output_json.exists():
-        extract_packages(args.packages, args.output_json)
+        extract_packages(args.packages, args.output_json, args.exports_json)
 
     print(f"Indexing documentation into {args.db}...")
     stats = index_package_docs(args.output_json, args.db)

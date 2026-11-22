@@ -127,6 +127,51 @@ tryCatch({{
   }}
 }}
 
+# Book badge: lists the functions the cell called and the package each one lives in, looked up
+# after the cell ran so its library() calls count. Never lets a failure reach the cell.
+.note_calls <- function(run_dir, source) {{
+  tryCatch({{
+    pd <- utils::getParseData(parse(text = source, keep.source = TRUE))
+    pd <- pd[pd$terminal, , drop = FALSE]
+    pd <- pd[order(pd$line1, pd$col1), , drop = FALSE]
+    calls <- list()
+    seen <- character()
+    for (i in which(pd$token == 'SYMBOL_FUNCTION_CALL')) {{
+      name <- pd$text[i]
+      prev <- if (i > 1L) pd$token[i - 1L] else ''
+      if (prev %in% c("'$'", "'@'")) next
+      ns <- if (prev %in% c('NS_GET', 'NS_GET_INT') && i > 2L) pd$text[i - 2L] else NA_character_
+      key <- paste(ns, name)
+      if (key %in% seen) next
+      seen <- c(seen, key)
+      f <- if (is.na(ns)) {{
+        get0(name, envir = .GlobalEnv, mode = 'function')
+      }} else if (isNamespaceLoaded(ns)) {{
+        get0(name, envir = asNamespace(ns), mode = 'function')
+      }} else NULL
+      pkg <- ns
+      generic <- FALSE
+      if (is.function(f)) {{
+        if (methods::is(f, 'genericFunction')) {{
+          pkg <- as.character(f@package)[1L]
+          generic <- TRUE
+        }} else if (is.primitive(f)) {{
+          pkg <- 'base'
+        }} else {{
+          found <- environmentName(topenv(environment(f)))
+          if (nzchar(found)) pkg <- found
+        }}
+      }}
+      rec <- list(name = name, generic = generic)
+      if (!is.na(pkg)) rec$package <- pkg
+      calls[[length(calls) + 1L]] <- rec
+    }}
+    writeLines(jsonlite::toJSON(list(calls = calls, attached = I(.packages())), auto_unbox = TRUE),
+      file.path(run_dir, 'calls.json'))
+  }}, error = function(e) NULL)
+  invisible(NULL)
+}}
+
 .note_run <- function(run_dir, source) {{
   .note_state$plots_dir <- file.path(run_dir, 'plots')
   .note_state$tables_dir <- file.path(run_dir, 'tables')
@@ -148,6 +193,7 @@ tryCatch({{
     .note_restore_msg <<- ''
   }}
   .note_t1 <- proc.time()
+  .note_evaluated <- FALSE
   .note_source <- tryCatch({{
     .note_parsed <- parse(text = source)
     paste(vapply(as.list(.note_parsed), function(e) {{
@@ -202,10 +248,13 @@ tryCatch({{
           }}
         )
       )
+      .note_evaluated <- TRUE
     }}
   }}, finally = {{
     close(.note_state$con)
     close(.note_state$ev_con)
+    # Skipped when the cell did not parse or was interrupted.
+    if (.note_evaluated) .note_calls(run_dir, source)
     .note_timing <- list(
       total_seconds = (proc.time() - .note_t0)[['elapsed']],
       load_seconds = .note_t_load,

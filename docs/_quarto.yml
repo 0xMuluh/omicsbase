@@ -37,6 +37,8 @@ website:
           - start/models.qmd
           - start/your-data.qmd
           - start/share.qmd
+          - start/cells.qmd
+          - start/energy.qmd
           - start/reports-roihu.qmd
           - start/reports-own-computer.qmd
           - start/faq.qmd

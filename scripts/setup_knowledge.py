@@ -41,7 +41,7 @@ def fetch(book, sources):
     stage = Path(tempfile.mkdtemp(prefix='download-', dir=parent))
     try:
         git(stage, 'init', '-q')
-        git(stage, 'fetch', '--depth=1', '--no-tags', book['repository'], book['commit'])
+        git(stage, 'fetch', '--depth=1', '--no-tags', book.get('fetch_repository') or book['repository'], book['commit'])
         git(stage, 'checkout', '--detach', 'FETCH_HEAD')
         if git(stage, 'rev-parse', 'HEAD') != book['commit']:
             raise RuntimeError(f'Commit verification failed: {book["slug"]}')
@@ -56,7 +56,48 @@ def fetch(book, sources):
     return book['slug'], target
 
 
-def install(manifest, cache, output):
+def book_branch(book, manifest):
+    """The branch a book follows; 'release' stands for the manifest's release_branch."""
+    branch = book.get('branch')
+    return manifest.get('release_branch') if branch == 'release' else branch
+
+
+def update_pins(manifest, resolve=None):
+    """Move each book's pin to the head of its branch. Asks the remotes for the commit ids only;
+    the sources are fetched by the next ordinary run. Returns {slug: (old, new)} for moved pins."""
+    def ls_remote(repository, branch):
+        result = subprocess.run(['git', 'ls-remote', repository, f'refs/heads/{branch}'], capture_output=True, text=True)
+        if result.returncode or not result.stdout.strip():
+            raise RuntimeError(f'Cannot read branch {branch} of {repository}: {result.stderr.strip()}')
+        return result.stdout.split()[0]
+
+    resolve = resolve or ls_remote
+    moved = {}
+    for index, book in enumerate(manifest['books']):
+        branch = book_branch(book, manifest)
+        if not branch:
+            continue
+        old = book['commit']
+        new = resolve(book.get('fetch_repository') or book['repository'], branch)
+        if new != old:
+            # The license statement links carry the commit too.
+            manifest['books'][index] = json.loads(json.dumps(book).replace(old, new))
+            moved[book['slug']] = (old, new)
+    return moved
+
+
+def description_version(path):
+    """The Version field of a source's DESCRIPTION file, if it has one."""
+    try:
+        for line in (Path(path) / 'DESCRIPTION').read_text(errors='ignore').splitlines():
+            if line.startswith('Version:'):
+                return line.split(':', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def install(manifest, cache, output, check_anchors=False):
     from engine.knowledge.indexer import build_index
     from engine.knowledge.search import search_bioc_knowledge
 
@@ -83,9 +124,14 @@ def install(manifest, cache, output):
                     raise RuntimeError('SQLite integrity check failed')
                 conn.execute('CREATE TABLE knowledge_sources (book_slug TEXT PRIMARY KEY, metadata_json TEXT NOT NULL)')
                 for book in manifest['books']:
-                    conn.execute('INSERT INTO knowledge_sources VALUES (?, ?)', (book['slug'], json.dumps(book, sort_keys=True)))
+                    version = book.get('version') or description_version(downloaded[book['slug']])
+                    record = dict(book, version=version) if version else book
+                    conn.execute('INSERT INTO knowledge_sources VALUES (?, ?)', (book['slug'], json.dumps(record, sort_keys=True)))
                 conn.execute('CREATE TABLE knowledge_build (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
                 conn.execute('INSERT INTO knowledge_build VALUES (?, ?)', ('manifest_sha256', hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()))
+            if check_anchors:
+                from engine.knowledge.book_urls import check_anchors as check
+                print(f'Checked section links against the live pages: {check(temporary, manifest["books"])}', flush=True)
             result = search_bioc_knowledge('analysis', db_path=temporary)
             if result['status'] != 'success' or result['count'] == 0:
                 raise RuntimeError('Search smoke test failed')
@@ -102,10 +148,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache-dir', type=Path, default=ROOT / '.knowledge')
     parser.add_argument('--output', type=Path, default=ROOT / 'engine/knowledge/knowledge.db')
+    parser.add_argument('--check-anchors', action='store_true',
+                        help='Fetch each book page once and keep only section links that exist on it')
+    parser.add_argument('--update-pins', action='store_true',
+                        help="Move the pins in knowledge/sources.json to each book's branch head, then stop")
     args = parser.parse_args()
-    manifest = json.loads((ROOT / 'knowledge/sources.json').read_text())
+    manifest_path = ROOT / 'knowledge/sources.json'
+    manifest = json.loads(manifest_path.read_text())
+    if args.update_pins:
+        moved = update_pins(manifest)
+        if moved:
+            manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+        for slug, (old, new) in moved.items():
+            print(f'{slug}: {old[:12]} -> {new[:12]}')
+        print(f'{len(moved)} pins moved. Review knowledge/sources.json, then run again without --update-pins.')
+        return
     try:
-        install(manifest, args.cache_dir.resolve(), args.output.resolve())
+        install(manifest, args.cache_dir.resolve(), args.output.resolve(), check_anchors=args.check_anchors)
     except ImportError as error:
         raise SystemExit('Install knowledge dependencies first: python3 -m pip install -r knowledge/requirements.txt') from error
 

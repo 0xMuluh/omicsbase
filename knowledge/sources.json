@@ -1,12 +1,23 @@
 {
   "version": 1,
+  "release_branch": "RELEASE_3_23",
   "books": [
     {
       "slug": "osca",
       "title": "Orchestrating Single-Cell Analysis with Bioconductor",
+      "short": "OSCA",
       "repository": "https://github.com/OSCA-source/OSCA",
       "commit": "b1d002f82d1d17286a889c08b31f36c19bd83c15",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/OSCA",
       "book_url": "https://bioconductor.org/books/release/OSCA/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/OSCA/{page}.html",
+        "page": "heading"
+      },
+      "exclude": [
+        "vignettes/stub.Rmd"
+      ],
       "attribution": "The authors and contributors identified in the pinned source repository",
       "license_statements": [
         {
@@ -19,9 +30,19 @@
     {
       "slug": "osta",
       "title": "Orchestrating Spatial Transcriptomics Analysis with Bioconductor",
+      "short": "OSTA",
       "repository": "https://github.com/lmweber/OSTA",
       "commit": "de4d0c826c43ceddcaed58dda37868dbcf512d80",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/OSTA",
       "book_url": "https://bioconductor.org/books/release/OSTA/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/OSTA/{page}.html",
+        "page": "path",
+        "strip_prefix": "inst/"
+      },
+      "chapters_file": "inst/assets/_book.yml",
+      "chapters_root": "inst",
       "attribution": "The authors and contributors identified in the pinned source repository",
       "license_statements": [
         {
@@ -34,29 +55,48 @@
     {
       "slug": "oma",
       "title": "Orchestrating Microbiome Analysis with Bioconductor",
+      "short": "OMA",
       "repository": "https://github.com/microbiome/OMA",
-      "commit": "22d30d95bd3994e8838a1b9401e9e70563f316de",
+      "commit": "7b65ff7024f4b4b0764cd91b0a8b3f12511484cf",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/OMA",
       "book_url": "https://bioconductor.org/books/release/OMA/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/OMA/{page}.html",
+        "page": "path",
+        "strip_prefix": "inst/"
+      },
+      "chapters_file": "inst/assets/_book.yml",
+      "chapters_root": "inst",
       "attribution": "The authors and contributors identified in the pinned source repository",
       "license_statements": [
         {
           "path": "DESCRIPTION",
           "statement": "CC BY-NC-SA 4.0",
-          "url": "https://github.com/microbiome/OMA/blob/22d30d95bd3994e8838a1b9401e9e70563f316de/DESCRIPTION"
+          "url": "https://github.com/microbiome/OMA/blob/7b65ff7024f4b4b0764cd91b0a8b3f12511484cf/DESCRIPTION"
         },
         {
           "path": "inst/index.qmd",
           "statement": "CC BY-NC 3.0 US (book text; differs from package metadata)",
-          "url": "https://github.com/microbiome/OMA/blob/22d30d95bd3994e8838a1b9401e9e70563f316de/inst/index.qmd"
+          "url": "https://github.com/microbiome/OMA/blob/7b65ff7024f4b4b0764cd91b0a8b3f12511484cf/inst/index.qmd"
         }
       ]
     },
     {
       "slug": "r-for-mass-spectrometry",
       "title": "R for Mass Spectrometry",
+      "short": "R for Mass Spectrometry",
       "repository": "https://github.com/RforMassSpectrometry/book",
       "commit": "1c6a15f6ed95e2e1b48910d43bb6c4fb2608fe62",
+      "branch": "main",
       "book_url": "https://rformassspectrometry.github.io/book/",
+      "web": {
+        "template": "https://rformassspectrometry.github.io/book/{page}.html",
+        "page": "heading"
+      },
+      "exclude": [
+        "lib/*"
+      ],
       "attribution": "Laurent Gatto, Sebastian Gibb, Johannes Rainer",
       "license_statements": [
         {
@@ -69,74 +109,113 @@
     {
       "slug": "metabonaut",
       "title": "Metabonaut (Metabolomics)",
+      "short": "Metabonaut",
       "repository": "https://github.com/rformassspectrometry/Metabonaut",
-      "commit": "35a1a9b99fb9434348ae7c1e05ea801d754a16db",
+      "commit": "46a551087afcd5ae65ddec0ff490d9bfe27df41d",
+      "branch": "devel",
       "book_url": "https://rformassspectrometry.github.io/Metabonaut/",
+      "web": {
+        "template": "https://rformassspectrometry.github.io/Metabonaut/articles/{page}.html",
+        "page": "stem"
+      },
       "attribution": "The authors and contributors identified in the pinned source repository",
       "license_statements": [
         {
           "path": "README.md",
           "statement": "CC BY-NC 4.0 (book badge)",
-          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/35a1a9b99fb9434348ae7c1e05ea801d754a16db/README.md"
+          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/46a551087afcd5ae65ddec0ff490d9bfe27df41d/README.md"
         },
         {
           "path": "DESCRIPTION",
           "statement": "Artistic-2.0 (package metadata)",
-          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/35a1a9b99fb9434348ae7c1e05ea801d754a16db/DESCRIPTION"
+          "url": "https://github.com/rformassspectrometry/Metabonaut/blob/46a551087afcd5ae65ddec0ff490d9bfe27df41d/DESCRIPTION"
         }
       ]
     },
     {
       "slug": "osca-basic",
       "title": "Orchestrating Single-Cell Analysis: Basics",
+      "short": "OSCA Basics",
       "repository": "https://github.com/OSCA-source/OSCA.basic",
-      "commit": "e82ba056962c949f361798fb11dba6a884cd32d4",
+      "commit": "71cb54c7f1d513bc199771af86ed1b94f359e276",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/OSCA.basic",
       "book_url": "https://bioconductor.org/books/release/OSCA.basic/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/OSCA.basic/{page}.html",
+        "page": "heading"
+      },
+      "exclude": [
+        "vignettes/stub.Rmd"
+      ],
       "attribution": "Robert Amezquita, Aaron Lun, Stephanie Hicks, Raphael Gottardo",
       "license_statements": [
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.basic/blob/e82ba056962c949f361798fb11dba6a884cd32d4/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.basic/blob/71cb54c7f1d513bc199771af86ed1b94f359e276/DESCRIPTION"
         }
       ]
     },
     {
       "slug": "osca-advanced",
       "title": "Orchestrating Single-Cell Analysis: Advanced",
+      "short": "OSCA Advanced",
       "repository": "https://github.com/OSCA-source/OSCA.advanced",
-      "commit": "2f1050180630665e196962cde3c2742ddd066a51",
+      "commit": "6fde3a71b6300c5fcdb254ab280e47521c18e0c2",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/OSCA.advanced",
       "book_url": "https://bioconductor.org/books/release/OSCA.advanced/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/OSCA.advanced/{page}.html",
+        "page": "heading"
+      },
+      "exclude": [
+        "vignettes/stub.Rmd"
+      ],
       "attribution": "Robert Amezquita, Aaron Lun, Stephanie Hicks, Raphael Gottardo",
       "license_statements": [
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/2f1050180630665e196962cde3c2742ddd066a51/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/6fde3a71b6300c5fcdb254ab280e47521c18e0c2/DESCRIPTION"
         }
       ]
     },
     {
       "slug": "rnaseq-gene",
       "title": "RNA-Seq Workflow: Gene-Level Exploratory Analysis & Differential Expression",
+      "short": "rnaseqGene",
       "repository": "https://github.com/thelovelab/rnaseqGene",
-      "commit": "0d7e27dde3ca9875cf94770ed9de35e346dd3676",
+      "commit": "19d2ab9e6a801bb8a7f22b250cf69d9023ac965b",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/rnaseqGene",
       "book_url": "https://www.bioconductor.org/packages/rnaseqGene",
+      "web": {
+        "template": "https://bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/{page}.html",
+        "page": "stem"
+      },
       "attribution": "Michael I. Love, Simon Anders, Vladislav Kim, Wolfgang Huber",
       "license_statements": [
         {
           "path": "DESCRIPTION",
           "statement": "GPL (>= 2)",
-          "url": "https://github.com/thelovelab/rnaseqGene/blob/0d7e27dde3ca9875cf94770ed9de35e346dd3676/DESCRIPTION"
+          "url": "https://github.com/thelovelab/rnaseqGene/blob/19d2ab9e6a801bb8a7f22b250cf69d9023ac965b/DESCRIPTION"
         }
       ]
     },
     {
       "slug": "tidyomics",
       "title": "Tidyomics Analysis Tutorials & Workflows",
+      "short": "tidyomics",
       "repository": "https://github.com/tidyomics/tidyomicsWorkshop",
       "commit": "db39e8ecb871dc924bfc36bdf6c77b1e61b98b0e",
+      "branch": "devel",
       "book_url": "https://tidyomics.github.io/tidyomicsBlog/",
+      "web": {
+        "template": "https://tidyomics.github.io/tidyomicsWorkshop/articles/{page}.html",
+        "page": "stem"
+      },
       "attribution": "The tidyomics team and contributors",
       "license_statements": [
         {
@@ -149,24 +228,41 @@
     {
       "slug": "mofa2",
       "title": "Multi-Omics Factor Analysis (MOFA2) Workflows",
+      "short": "MOFA2",
       "repository": "https://github.com/biofam/MOFA2",
-      "commit": "4a102f2b491ab600738ddf693a70f0baf032ca68",
+      "commit": "6f1b319824205a1ef20fac25717f0df394f69311",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/MOFA2",
       "book_url": "https://biofam.github.io/MOFA2/",
+      "web": {
+        "template": "https://bioconductor.org/packages/release/bioc/vignettes/MOFA2/inst/doc/{page}.html",
+        "page": "stem"
+      },
       "attribution": "Ricard Argelaguet, Damien Arnol, Britta Velten, Wolfgang Huber",
       "license_statements": [
         {
           "path": "DESCRIPTION",
           "statement": "GPL-3",
-          "url": "https://github.com/biofam/MOFA2/blob/4a102f2b491ab600738ddf693a70f0baf032ca68/DESCRIPTION"
+          "url": "https://github.com/biofam/MOFA2/blob/6f1b319824205a1ef20fac25717f0df394f69311/DESCRIPTION"
         }
       ]
     },
     {
       "slug": "scrapbook",
       "title": "Single-cell RNA-seq analyses with scrapper",
+      "short": "scrapbook",
       "repository": "https://github.com/libscran/scrapbook",
       "commit": "362f100cd92d307d00ddef38c905aa9394fa92aa",
+      "branch": "release",
+      "fetch_repository": "https://git.bioconductor.org/packages/scrapbook",
       "book_url": "https://bioconductor.org/books/release/scrapbook/",
+      "web": {
+        "template": "https://bioconductor.org/books/release/scrapbook/{page}.html",
+        "page": "heading"
+      },
+      "exclude": [
+        "vignettes/stub.Rmd"
+      ],
       "attribution": "Aaron Lun",
       "license_statements": [
         {
@@ -179,9 +275,15 @@
     {
       "slug": "tidy-spatial",
       "title": "Workshop Materials for Tidy Spatial Analysis",
+      "short": "Tidy Spatial",
       "repository": "https://github.com/tidyomics/tidySpatialWorkshop",
       "commit": "50af22bc92d8fdc5e3a0fc624a35cea2a0f502ca",
+      "branch": "devel",
       "book_url": "https://tidyomics.github.io/tidySpatialWorkshop/",
+      "web": {
+        "template": "https://tidyomics.github.io/tidySpatialWorkshop/articles/{page}.html",
+        "page": "stem"
+      },
       "attribution": "Stefano Mangiola, Malvika Kharbanda",
       "license_statements": [
         {

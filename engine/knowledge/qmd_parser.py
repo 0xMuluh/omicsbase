@@ -38,6 +38,9 @@ class QmdBlock:
     source_start_line: int | None = None
     source_end_line: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Id of the block's own heading and of its level-1 heading, as on the rendered page.
+    anchor: str = ""
+    page_anchor: str = ""
 
     @property
     def chunk_type(self) -> str:
@@ -67,6 +70,7 @@ class QmdDocument:
     frontmatter: dict[str, Any]
     blocks: list[QmdBlock]
     content_sha256: str
+    first_heading_anchor: str = ""
 
 
 def _sha256(value: bytes | str) -> str:
@@ -79,7 +83,9 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
     """Parse QMD without rendering or evaluating executable code."""
     frontmatter, body, frontmatter_lines = _split_frontmatter(text)
     lines = body.splitlines()
-    heading_stack: list[tuple[int, str]] = []
+    heading_stack: list[tuple[int, str, str]] = []
+    used_ids: dict[str, int] = {}
+    first_heading_anchor = ""
     blocks: list[QmdBlock] = []
     prose_lines: list[str] = []
     code_lines: list[str] = []
@@ -88,7 +94,13 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
     in_code = False
 
     def current_heading_path() -> list[str]:
-        return [title for _level, title in heading_stack]
+        return [title for _level, title, _anchor in heading_stack]
+
+    def current_anchors() -> dict[str, str]:
+        return {
+            "anchor": heading_stack[-1][2] if heading_stack else "",
+            "page_anchor": next((anchor for level, _title, anchor in heading_stack if level == 1), ""),
+        }
 
     def flush_prose() -> None:
         nonlocal prose_lines
@@ -100,6 +112,7 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
                 prose=value,
                 source_start_line=max(1, ordinal - len(prose_lines) + frontmatter_lines),
                 source_end_line=max(1, ordinal + frontmatter_lines),
+                **current_anchors(),
             ))
         prose_lines = []
 
@@ -114,6 +127,7 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
                 code_language=code_language or "r",
                 source_start_line=code_start,
                 source_end_line=end_line + frontmatter_lines,
+                **current_anchors(),
             ))
         code_lines = []
         code_language = None
@@ -139,9 +153,11 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
             flush_prose()
             level = len(heading.group(1))
             title = _strip_heading_attributes(heading.group(2))
+            anchor = heading_identifier(heading.group(2), used_ids)
+            first_heading_anchor = first_heading_anchor or anchor
             while heading_stack and heading_stack[-1][0] >= level:
                 heading_stack.pop()
-            heading_stack.append((level, title))
+            heading_stack.append((level, title, anchor))
         prose_lines.append(line)
 
     if in_code:
@@ -161,6 +177,7 @@ def parse_qmd(text: str, relative_path: str = "document.qmd") -> QmdDocument:
         frontmatter=frontmatter,
         blocks=blocks,
         content_sha256=_sha256(text),
+        first_heading_anchor=first_heading_anchor,
     )
 
 
@@ -190,6 +207,34 @@ def _normalise_code_language(value: str) -> str:
 
 def _strip_heading_attributes(value: str) -> str:
     return re.sub(r"\s*\{[^}]+\}\s*$", "", value).strip()
+
+
+def pandoc_identifier(title: str) -> str:
+    """The identifier Pandoc gives a heading without an explicit id (auto_identifiers)."""
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", title)  # links and images keep their text
+    text = re.sub(r"\[\^[^\]]*\]|<[^>]+>", "", text)  # footnote marks, inline HTML
+    text = re.sub(r"[^\w\s.-]", "", text.lower())  # \w keeps letters, digits and underscores
+    text = "-".join(text.split())
+    first_letter = re.search(r"[^\W\d_]", text)
+    return text[first_letter.start():] if first_letter else "section"
+
+
+def heading_identifier(raw_heading: str, used: dict[str, int] | None = None) -> str:
+    """A heading's id on the rendered page: its explicit `{#id}`, else Pandoc's automatic one.
+
+    `used` counts the automatic ids seen so far in the document; Pandoc numbers repeats (-1, -2).
+    """
+    attributes = re.search(r"\{([^}]*)\}\s*$", raw_heading)
+    if attributes:
+        explicit = re.search(r"(?:^|\s)#([^\s}]+)", attributes.group(1))
+        if explicit:
+            return explicit.group(1)
+    identifier = pandoc_identifier(_strip_heading_attributes(raw_heading))
+    if used is None:
+        return identifier
+    seen = used.get(identifier, 0)
+    used[identifier] = seen + 1
+    return identifier if seen == 0 else f"{identifier}-{seen}"
 
 
 def _coalesce_blocks(blocks: list[QmdBlock]) -> list[QmdBlock]:
@@ -242,6 +287,8 @@ def _copy_block(block: QmdBlock, *, prose: str, code: str) -> QmdBlock:
         source_start_line=block.source_start_line,
         source_end_line=block.source_end_line,
         metadata=dict(block.metadata),
+        anchor=block.anchor,
+        page_anchor=block.page_anchor,
     )
 
 
