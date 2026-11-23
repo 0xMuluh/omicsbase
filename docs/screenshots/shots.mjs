@@ -43,11 +43,15 @@ async function myNote(state, page) {
 
 /** The first R cell card on the page. */
 const firstCell = 'div.rounded-xl.border:has(button[aria-label="Run code in NoteKernel"]) >> nth=0';
-/** What the cell shots run: an alpha diversity analysis, which OMA's alpha diversity chapter uses. */
+/** What the cell shots run: an alpha diversity analysis, which OMA's alpha diversity chapter uses.
+ * The rarefied richness takes some seconds, so the status line can be seen while it runs. */
 const ANALYSIS = [
   'library(mia)',
   'data(GlobalPatterns, package = "mia")',
   'tse <- addAlpha(GlobalPatterns, index = c("shannon", "faith"))',
+  '# Observed richness, averaged over 50 subsamples at the smallest library size',
+  'tse <- addAlpha(tse, index = "observed_richness",',
+  '                sample = min(colSums(assay(tse, "counts"))), niter = 50)',
   'summary(tse$shannon)',
 ].join('\n');
 
@@ -70,7 +74,11 @@ async function runAnalysis(page) {
   // Already saved by an earlier shot of this run: nothing to save.
   const save = cell.locator('button[aria-label="Save revision"]');
   if (await save.isEnabled()) await save.click();
-  await cell.locator('button[aria-label="Run code in NoteKernel"]:enabled').click({ timeout: 60_000 });
+  // Centred, so the note's header bar does not cover it.
+  const run = cell.locator('button[aria-label="Run code in NoteKernel"]:enabled');
+  await run.waitFor({ timeout: 60_000 });
+  await run.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await run.click();
   // TEMP: the statuses the run goes through.
   (async () => {
     let last = '';
