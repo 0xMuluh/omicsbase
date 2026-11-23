@@ -11,7 +11,7 @@ Everything starts from one repository: [github.com/0xMuluh/omicsbase](https://gi
 | --- | --- |
 | `librechat/` | The notes app: our fork of LibreChat, included as a submodule. |
 | `openhands/` | The Reports interface: our fork of the OpenHands interface (Agent Canvas), included as a submodule. |
-| `engine/` | The notes engine: `server.py` (MCP tools and HTTP API), `access.py` (who may call it), `note_pods.py` (one pod per note on Kubernetes), `kernel/` (R sessions), `knowledge/` (the books index), `tests/`, its `Dockerfile` and `requirements.txt`. |
+| `engine/` | The notes engine: `server.py` (MCP tools and HTTP API), `access.py` (who may call it), `note_pods.py` (one pod per note on Kubernetes), `note_workers.py` (shared worker pods on Kubernetes), `kernel/` (R sessions, `session_memory.py` for their memory), `knowledge/` (the books index), `tests/`, its `Dockerfile` and `requirements.txt`. |
 | `docker/engine-base/` | The base image under the engine: Bioconductor, system libraries, Quarto and the R package lists (`backend/r-package-list.R`, `backend/r-package-list-extra.R`). |
 | `docker/openhands/` | The Reports image: its `Dockerfile`, our gateway (`gateway/`: launch API, editor, report viewer) and `patch_entrypoint.py`, which adjusts upstream's start script while the image is built. |
 | `deployment/` | Settings for omicsbase.utu.fi. See the table below. |

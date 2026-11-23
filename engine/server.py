@@ -7,6 +7,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -17,15 +18,16 @@ from starlette.requests import Request
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
-from engine.kernel import cell_status
+from engine.kernel import cell_status, session_memory
 from engine.kernel.executor import execute_note_cell
+from engine.kernel.sandbox import confined_command
 from engine.kernel.note_kernel import (
     DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, R_START_SECONDS, START_LOCK_NAME,
     save_all_kernels, start_reaper,
 )
 from engine.knowledge.book_refs import log_lookups
 from engine.knowledge.search import search_bioc_knowledge
-from engine import note_pods
+from engine import note_pods, note_workers
 
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/app/projects")
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
@@ -277,12 +279,17 @@ threading.Thread(target=_help_index, daemon=True).start()
 def _run_r_helper_script(r_code: str, timeout: int = 15) -> str:
     """Run a fast, isolated R snippet via Rscript and return stdout."""
     try:
-        res = subprocess.run(
-            ["Rscript", "--vanilla", "-e", r_code],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        # The code is built from tool arguments: run it confined to a throwaway folder.
+        with tempfile.TemporaryDirectory(prefix="r-help-") as folder:
+            argv, env = confined_command(folder, ["Rscript", "--vanilla", "-e", r_code])
+            res = subprocess.run(
+                argv,
+                env=env,
+                cwd=folder,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
         out = res.stdout.strip()
         if not out and res.stderr:
             err = res.stderr.strip()
@@ -465,12 +472,14 @@ def render_quarto_report(project_id: str = "default") -> str:
         _scaffold_default_quarto(project_dir, project_id)
     
     try:
+        argv, env = confined_command(project_dir, ["quarto", "render", project_dir])
         proc = subprocess.run(
-            ["quarto", "render", project_dir],
+            argv,
+            env=env,
             capture_output=True,
             text=True,
             cwd=project_dir,
-            timeout=300
+            timeout=300,
         )
         has_site = os.path.exists(os.path.join(project_dir, "_site", "index.html"))
         report_url = f"{BASE_URL}/projects/{project_id}/_site/index.html" if has_site else None
@@ -634,9 +643,17 @@ async def handle_cancel(request: Request):
     return JSONResponse({"success": True, "thread_id": thread_id})
 
 
+async def handle_sessions(request: Request):
+    """The notes whose R sessions this engine hosts and their memory, for a gateway's placement."""
+    if not _internal_caller(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    return JSONResponse({"sessions": await asyncio.to_thread(session_memory.report, PROJECTS_DIR)})
+
+
 app.add_route("/api/execute", handle_execute, methods=["POST"])
 app.add_route("/api/cancel", handle_cancel, methods=["POST"])
 app.add_route("/api/executions/{execution_id}", handle_execution_status, methods=["GET"])
+app.add_route("/api/sessions", handle_sessions, methods=["GET"])
 
 
 # Note files arrive and are copied through the engine, so LibreChat needs no access to
@@ -752,11 +769,13 @@ async def handle_quarto_render(request: Request):
     if not os.path.exists(os.path.join(project_dir, "_quarto.yml")) and len(qmd_files) == 0:
         _scaffold_default_quarto(project_dir, project_id)
         
+    argv, env = confined_command(project_dir, ["quarto", "render", project_dir])
     proc = await asyncio.create_subprocess_exec(
-        "quarto", "render", project_dir,
+        *argv,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=project_dir
+        cwd=project_dir,
     )
     stdout, stderr = await proc.communicate()
     
@@ -808,7 +827,10 @@ if __name__ == "__main__":
     import uvicorn
     print("Starting NoteThreads MCP & Execution Server on 0.0.0.0:8001...")
     if note_pods.ENABLED:
-        note_pods.start(INTERNAL_SECRET, lambda thread_id: cell_status.active_runs(_note_dir(thread_id)))
+        gateway = note_workers if note_workers.ENABLED else note_pods
+        gateway.start(INTERNAL_SECRET, lambda thread_id: cell_status.active_runs(_note_dir(thread_id)))
     else:
         start_reaper()
+        if session_memory.LIMIT:
+            session_memory.start_watchdog()
     uvicorn.run(app, host="0.0.0.0", port=8001)

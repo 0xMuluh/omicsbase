@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from engine.kernel.sandbox import session_command
+
 logger = logging.getLogger("note_kernel")
 
 KERNEL_DIR_REL = Path(".omicsbase") / "note-kernel"
@@ -43,6 +45,16 @@ REAP_INTERVAL_SECONDS = 60
 R_START_SECONDS = int(os.environ.get("NOTE_R_START_SECONDS", "300"))
 # Console text one cell may write to disk.
 CONSOLE_MAX_BYTES = int(os.environ.get("NOTE_CONSOLE_MAX_BYTES", str(5_000_000)))
+# After a cell that ran this long the session is saved, so a failing worker loses little, if
+# the last saved workspace is at most NOTE_SAVE_AFTER_CELL_MAX_MB (for a session never saved,
+# its objects' size in memory). Larger sessions are saved only when they stop.
+SAVE_AFTER_CELL_SECONDS = float(os.environ.get("NOTE_SAVE_AFTER_CELL_SECONDS", "5"))
+SAVE_AFTER_CELL_MAX_BYTES = int(float(os.environ.get("NOTE_SAVE_AFTER_CELL_MAX_MB", "50")) * 1_000_000)
+# What a note is told when its session was stopped for using more memory than it may.
+OUT_OF_MEMORY_MESSAGE = (
+    "The note's R session ran out of memory (limit {limit}) and was restarted. Objects created "
+    "since it was last saved are gone; rerun the earlier cells, with less data in memory."
+)
 
 WORKSPACE_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace.RData"
 WORKSPACE_OBJECTS_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace-objects.txt"
@@ -274,6 +286,15 @@ tryCatch({{
   invisible(NULL)
 }}
 
+.note_save <- function() tryCatch({{
+  assign('.note_attached_packages', setdiff(.packages(), defaults), envir = .GlobalEnv)
+  # Save beside the old workspace and swap, so an interrupted save keeps the last one.
+  save.image(file = paste0(ws, '.tmp'))
+  file.rename(paste0(ws, '.tmp'), ws)
+  dir.create(dirname(objects_file), showWarnings = FALSE, recursive = TRUE)
+  writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), objects_file)
+}}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
+
 .note_request_file <- {request_q}
 .note_done_dir <- {done_dir_q}
 repeat {{
@@ -284,22 +305,23 @@ repeat {{
   file.remove(.note_request_file)
   .note_id <- .note_req$id
   if (isTRUE(.note_req$shutdown)) {{
-    tryCatch({{
-      assign('.note_attached_packages', setdiff(.packages(), defaults), envir = .GlobalEnv)
-      # Save beside the old workspace and swap, so an interrupted save keeps the last one.
-      save.image(file = paste0(ws, '.tmp'))
-      file.rename(paste0(ws, '.tmp'), ws)
-      dir.create(dirname(objects_file), showWarnings = FALSE, recursive = TRUE)
-      writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), objects_file)
-    }}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
+    .note_save()
     quit(save = 'no', status = 0)
   }}
+  .note_t_cell <- proc.time()
   tryCatch(.note_run(.note_req$run_dir, .note_req$source),
     error = function(e) cat('[note] kernel request failed:', conditionMessage(e), '\n'))
   tryCatch(
     writeLines(jsonlite::toJSON(list(id = .note_id, status = 'ok'), auto_unbox = TRUE),
       file.path(.note_done_dir, paste0({done_prefix_q}, .note_id, '.json'))),
     error = function(e) NULL)
+  # After the cell has answered: the request asks for this only while the saved workspace is small.
+  if (!is.null(.note_req$save_after_seconds) &&
+      (proc.time() - .note_t_cell)[['elapsed']] >= .note_req$save_after_seconds &&
+      tryCatch(file.exists(ws) || sum(vapply(ls(.GlobalEnv),
+        function(n) as.numeric(object.size(get(n, envir = .GlobalEnv))), 0)) <= {save_max_bytes},
+        error = function(e) FALSE))
+    .note_save()
 }}
 """
 
@@ -324,6 +346,7 @@ def build_kernel_script(
         done_prefix_q=q(DONE_PREFIX),
         poll_interval=POLL_INTERVAL,
         console_max_bytes=CONSOLE_MAX_BYTES,
+        save_max_bytes=SAVE_AFTER_CELL_MAX_BYTES,
     )
 
 
@@ -343,8 +366,12 @@ class KernelBusy(Exception):
     pass
 
 
+class KernelOutOfMemory(Exception):
+    pass
+
+
 class KernelHandle:
-    __slots__ = ("project_dir", "pid", "proc", "started_at", "last_used")
+    __slots__ = ("project_dir", "pid", "proc", "started_at", "last_used", "out_of_memory")
 
     def __init__(self, project_dir: str, pid: int, proc: subprocess.Popen | None = None):
         now = time.time()
@@ -354,6 +381,8 @@ class KernelHandle:
         self.proc = proc
         self.started_at = now
         self.last_used = now
+        # The memory limit, once the watchdog has stopped the session for passing it.
+        self.out_of_memory: str | None = None
 
 
 _kernels: dict[str, KernelHandle] = {}
@@ -378,6 +407,15 @@ def _pid_alive(pid: int) -> bool:
         return "R" in cmdline or "Rscript" in cmdline
     except (OSError, IndexError):
         return True
+
+
+def _works_in(pid: int, project_dir: str) -> bool:
+    """Whether the process works in the note's folder. A pid file left by a session in
+    another pod (another worker) can name a different note's R process here."""
+    try:
+        return Path(os.readlink(f"/proc/{pid}/cwd")).is_relative_to(Path(project_dir).resolve())
+    except OSError:
+        return False
 
 
 def _alive(handle: KernelHandle) -> bool:
@@ -422,8 +460,10 @@ def start_kernel(project_dir: str) -> KernelHandle:
         encoding="utf-8",
     )
     log_handle = open(root / KERNEL_LOG_NAME, "ab")
+    argv, env = session_command(project_dir, ["Rscript", "--vanilla", (KERNEL_DIR_REL / KERNEL_SCRIPT_NAME).as_posix()])
     proc = subprocess.Popen(
-        ["Rscript", "--vanilla", (KERNEL_DIR_REL / KERNEL_SCRIPT_NAME).as_posix()],
+        argv,
+        env=env,
         cwd=project_dir,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
@@ -461,7 +501,7 @@ def ensure_kernel(
             if pid_file.exists():
                 try:
                     pid = int(pid_file.read_text().strip())
-                    if _pid_alive(pid):
+                    if _pid_alive(pid) and _works_in(pid, project_dir):
                         handle = KernelHandle(project_dir, pid)
                         with _registry_lock:
                             _kernels[project_dir] = handle
@@ -481,6 +521,17 @@ def ensure_kernel(
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
 
 
+def save_after_cell(project_dir: str) -> dict[str, float]:
+    """Asks R to save the session after a slow cell, unless its saved workspace is large.
+    A session never saved is asked too; R then checks its objects' size instead."""
+    try:
+        if (Path(project_dir) / WORKSPACE_RELATIVE_PATH).stat().st_size > SAVE_AFTER_CELL_MAX_BYTES:
+            return {}
+    except FileNotFoundError:
+        pass
+    return {"save_after_seconds": SAVE_AFTER_CELL_SECONDS}
+
+
 def request_cell(
     handle: KernelHandle,
     *,
@@ -495,7 +546,8 @@ def request_cell(
     root = _kernel_root(handle.project_dir)
     _write_atomic(
         root / REQUEST_FILE_NAME,
-        json.dumps({"id": request_id, "run_dir": run_dir_rel, "source": source}),
+        json.dumps({"id": request_id, "run_dir": run_dir_rel, "source": source,
+                    **save_after_cell(handle.project_dir)}),
     )
     handle.last_used = time.time()
     # R creates the cell's console file as it begins to run the cell. Until then it is
@@ -520,6 +572,8 @@ def request_cell(
         if not _alive(handle):
             with _registry_lock:
                 _kernels.pop(handle.project_dir, None)
+            if handle.out_of_memory:
+                raise KernelOutOfMemory(OUT_OF_MEMORY_MESSAGE.format(limit=handle.out_of_memory))
             raise KernelDied("The R kernel process died")
         time.sleep(POLL_INTERVAL)
 

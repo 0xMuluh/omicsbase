@@ -10,6 +10,7 @@ from engine.kernel.note_kernel import (
     request_cell,
     KernelBusy,
     KernelCancelled,
+    KernelOutOfMemory,
     KernelTimeout,
     CONSOLE_FILE_NAME,
     EVENTS_FILE_NAME,
@@ -162,6 +163,17 @@ def execute_note_cell(
             "error": str(e),
             "stdout": f"[Kernel Timeout]: {str(e)}",
             "markdown": f"**Timed out:**\n```\n{str(e)}\n```",
+            "cell_id": cell_id,
+            "engine_run_dir": run_dir_rel,
+            "run_dir": run_dir_rel,
+        }
+    except KernelOutOfMemory as e:
+        # out_of_memory tells a gateway to give the note a pod of its own next time.
+        return {
+            "success": False,
+            "out_of_memory": True,
+            "error": str(e),
+            "markdown": f"**{e}**",
             "cell_id": cell_id,
             "engine_run_dir": run_dir_rel,
             "run_dir": run_dir_rel,
