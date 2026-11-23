@@ -48,7 +48,7 @@ services:
       # "Use my own computer": users' machines, through the reports-link service.
       - ROIHU_ROUTER_URL=http://reports-link:18096
       # The image users run on their own machine (deployment/roihu/Dockerfile).
-      - ROIHU_IMAGE_TAG=v1.41.0-roihu4
+      - ROIHU_IMAGE_TAG=v1.41.0-roihu6
       - ROIHU_ROUTER_SECRET=${OMICSBASE_LINK_SECRET:?run install.sh or set OMICSBASE_LINK_SECRET in .env}
     extra_hosts:
       - "host.docker.internal:host-gateway"

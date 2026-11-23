@@ -17,7 +17,7 @@ services:
       # and relay fingerprint come from .env; without them the Reports page says it is not set up.
       - ROIHU_ROUTER_URL=${ROIHU_ROUTER_URL:-http://172.18.0.1:18096}
       - ROIHU_ROUTER_SECRET=${ROIHU_ROUTER_SECRET:-}
-      - ROIHU_IMAGE_TAG=${ROIHU_IMAGE_TAG:-v1.41.0-roihu2}
+      - ROIHU_IMAGE_TAG=${ROIHU_IMAGE_TAG:-v1.41.0-roihu6}
       - ROIHU_RELAY_URL=${OMICSBASE_OPENHANDS_PUBLIC_URL:-http://localhost:3001}
       - ROIHU_RELAY_FINGERPRINT=${ROIHU_RELAY_FINGERPRINT:-}
       - ROIHU_SCRIPTS_DIR=/app/roihu
