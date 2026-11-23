@@ -41,8 +41,8 @@ async function myNote(state, page) {
 }
 
 
-/** The first R cell card on the page. */
-const firstCell = 'div.rounded-xl.border:has(button[aria-label="Run code in NoteKernel"]) >> nth=0';
+/** The first R cell card on the page (by its copy button: Run turns into Cancel while it runs). */
+const firstCell = 'div.rounded-xl.border:has(button[aria-label="Copy R code"]) >> nth=0';
 /** What the cell shots run: an alpha diversity analysis, which OMA's alpha diversity chapter uses.
  * The rarefied richness takes some seconds, so the status line can be seen while it runs. */
 const ANALYSIS = [
@@ -80,16 +80,6 @@ async function runAnalysis(page) {
   await run.waitFor({ timeout: 60_000 });
   await run.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await run.dispatchEvent('click');
-  // TEMP: the statuses the run goes through.
-  (async () => {
-    let last = '';
-    for (let i = 0; i < 240; i++) {
-      const text = await cell.locator('[data-testid="note-cell-status"]').first().textContent({ timeout: 1000 }).catch(() => null);
-      if (text !== last) console.log(`     status ${(i / 4).toFixed(2)}s: ${text}`);
-      last = text;
-      await page.waitForTimeout(250).catch(() => {});
-    }
-  })().catch(() => {});
   return cell;
 }
 
