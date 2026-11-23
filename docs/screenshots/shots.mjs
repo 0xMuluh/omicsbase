@@ -66,9 +66,21 @@ async function runAnalysis(page) {
   await page.keyboard.press('Control+A');
   await page.keyboard.press('Delete');
   await page.keyboard.insertText(ANALYSIS);
-  await cell.locator('button[aria-label="Save revision"]').click();
-  await page.waitForTimeout(1500);
-  await cell.locator('button[aria-label="Run code in NoteKernel"]').click();
+  await page.waitForTimeout(500);
+  // Already saved by an earlier shot of this run: nothing to save.
+  const save = cell.locator('button[aria-label="Save revision"]');
+  if (await save.isEnabled()) await save.click();
+  await cell.locator('button[aria-label="Run code in NoteKernel"]:enabled').click({ timeout: 60_000 });
+  // TEMP: the statuses the run goes through.
+  (async () => {
+    let last = '';
+    for (let i = 0; i < 240; i++) {
+      const text = await cell.locator('[data-testid="note-cell-status"]').first().textContent({ timeout: 1000 }).catch(() => null);
+      if (text !== last) console.log(`     status ${(i / 4).toFixed(2)}s: ${text}`);
+      last = text;
+      await page.waitForTimeout(250).catch(() => {});
+    }
+  })().catch(() => {});
   return cell;
 }
 
@@ -95,21 +107,23 @@ const openModels = async (page, state) => {
   await page.waitForTimeout(500);
 };
 
-const chatOptions = role('button', /Chat options|More options/);
+const chatOptions = role('button', /^Chat options/);
 
 /** The Workspace tab of the test account's report, made once per run. */
 async function reportWorkspace(state, page) {
   if (!state.report) {
     const name = 'Docs example';
+    // The report's card in the list (the sidebar entry only folds open).
+    const card = page.locator(`button:has-text("${name}"):has-text("notes")`).first();
     await page.goto(`${state.base}/projects`, { waitUntil: 'load' });
-    await page.locator(role('button', 'New report')).first().click();
-    await page.getByLabel('Report name').fill(name);
-    await page.locator(role('button', 'Create report')).last().click();
-    await page.waitForTimeout(4000);
-    if (!/\/projects\/[^/]+/.test(page.url())) {
-      // The report's card in the list (the sidebar entry only folds open).
-      await page.locator(`button:has-text("${name}"):has-text("notes")`).first().click();
+    await page.waitForTimeout(3000);
+    if (!(await card.count())) {
+      await page.locator(role('button', 'New report')).first().click();
+      await page.getByLabel('Report name').fill(name);
+      await page.locator(role('button', 'Create report')).last().click();
+      await page.waitForTimeout(4000);
     }
+    if (!/\/projects\/[^/]+/.test(page.url())) await card.click();
     await page.waitForURL(/\/projects\/[^/]+/, { timeout: 30_000 });
     state.report = new URL(page.url()).pathname;
   }
