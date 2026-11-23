@@ -58,13 +58,22 @@ Uploads into a note, and copies of a note when someone continues a shared one, a
 
 On **omicsbase.utu.fi**, notes run on CSC's LUMI-K, a Kubernetes platform. Kubernetes runs containers in units called *pods*.
 
-- The engine on LUMI-K is a gateway (`NOTE_RUNNER=pods`, see `engine/note_pods.py`).
-- A note's first cell starts a pod for that note. Later cells go to the same pod.
-- Each pod may use 2 cores and 4 GiB of memory by default.
-- When a note is idle, its pod saves the R session to a shared volume and is deleted. The next cell starts a new pod, which restores the session.
+- The engine on LUMI-K is a gateway (`NOTE_RUNNER=workers`, see `engine/note_workers.py`). It runs no R itself.
+- Notes run in a few shared *worker* pods. Each worker is the same engine in local mode and hosts up to `NOTE_WORKER_SESSIONS` notes' R sessions, each its own R process. The gateway starts workers from its own pod spec, up to `NOTE_WORKERS`, keeps `NOTE_WORKERS_MIN` running, and deletes others that have hosted no note for `NOTE_IDLE_SECONDS`.
+- A note's cells go to the worker that hosts its session. A note without a session goes to the worker with the most free memory that has a free session. When every worker is full, a new worker starts if `NOTE_WORKERS` allows. Otherwise the worker saves and stops its least recently used idle session, which restores on its next cell.
+- Each worker answers `GET /api/sessions` (engine secret required) with the notes it hosts and the resident memory of each session's processes. The gateway places notes with it, and a restarted gateway finds every note's worker again.
+- A watchdog in each worker stops a session that holds more than `NOTE_SESSION_MEMORY_LIMIT`. The note is told that it ran out of memory.
+- A note whose session passed `NOTE_HEAVY_SESSION_MEMORY`, or was stopped by the watchdog, is *heavy*. Its next session runs in a pod of its own, sized by `NOTE_POD_*`, with at most `NOTE_HEAVY_PODS` at once. The gateway keeps this mark in memory, so it is lost when the gateway restarts.
+- A session is saved when it stops. It is also saved after any cell that ran 5 seconds or more, unless its saved workspace is larger than `NOTE_SAVE_AFTER_CELL_MAX_MB`. A failing worker then loses little.
+- A NetworkPolicy lets workers and note pods take connections only from the gateway. They can reach only DNS and the internet, not the gateway, each other or the VM.
+- With `NOTE_RUNNER=pods` (`engine/note_pods.py`), every live note gets a pod of its own instead, with `NOTE_MAX_SESSIONS` pods at most. When a note is idle, its pod saves the R session to the shared volume and is deleted. The next cell starts a new pod, which restores the session.
 - The VM keeps its own engine container as a fallback.
 
 In a **local install**, notes run in the `engine` container on the same machine, one R process per note (`NOTE_RUNNER=local`, the default). With `ENGINE_URL` set, they run on a server of the user's choice; see [Notes engine on a server](../self-host/engine-server.qmd).
+
+### How a note's R session is confined {#notes-sandbox}
+
+Wherever it runs, the engine starts each note's R session through `engine/kernel/sandbox.py`, and so also a Quarto render of a note (confined to that note's folder) and the `r_help` tool (confined to a throwaway folder). The file runs as a small launcher: a new process that applies the restrictions to itself and then becomes the command. R gets only the environment variables it needs (path, locale, time zone, R's own settings and the download caches), never the engine's secrets, and a private home and temporary folder inside the note's session folder. On Linux, the session is then confined with Landlock, the kernel's sandbox for unprivileged processes. It may read and write its own note folder and the shared download caches, read R, its packages and the system, and read `/proc`, where Landlock still hides the environment, memory and files of every process outside the session (only command lines and status show). Other notes' folders are out of reach, and with Landlock version 6 or later the session cannot signal processes outside itself. The session is also first in line for the kernel's out-of-memory killer, so a note that runs out of memory is stopped before the engine. `NOTE_SANDBOX` sets the policy: `auto` (the default) confines the session where the kernel offers Landlock and logs a warning where it does not, `required` refuses to start R without it, and `off` skips Landlock but still starts R with the minimal environment. The shared caches stay writable for every note.
 
 ### The knowledge index {#knowledge}
 
@@ -136,7 +145,7 @@ If the engine runs on another machine, give it its own `OMICSBASE_ENGINE_SECRET`
 ## Where things run in production {#production}
 
 - **A CSC cPouta VM** serves `omicsbase.utu.fi`. Docker Compose runs LibreChat, MongoDB, Meilisearch, the file-search services, the admin panel and the fallback engine. Caddy, the router and the relay run outside Compose.
-- **LUMI-K** runs the notes engine gateway and one pod per live note.
+- **LUMI-K** runs the notes engine gateway, shared worker pods for notes, and pods of their own for heavy notes.
 - **Roihu** runs each user's Reports job, in their own CSC project.
 - **Users' own computers** run attached Reports sessions. Their traffic passes through the relay on the VM.
 

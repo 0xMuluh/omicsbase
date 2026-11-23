@@ -67,9 +67,9 @@ class FakeKube:
         if name in self.pods:
             self.pods[name]["gone_at"] = self.clock() + self.save_seconds
 
-    def list_notes(self):
+    def list_pods(self, label):
         self._expire()
-        return [{"metadata": p["metadata"]} for p in self.pods.values()]
+        return [{"metadata": p["metadata"]} for p in self.pods.values() if label in p["metadata"]["labels"]]
 
 
 class NotePodTests(unittest.TestCase):

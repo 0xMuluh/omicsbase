@@ -1,6 +1,7 @@
-# OmicsBase engine on LUMI-K. The engine pod is a gateway (NOTE_RUNNER=pods): each live
-# note runs in a pod of its own, which the gateway starts from its own pod spec and
-# deletes when the note is idle (engine/note_pods.py). A shared (CephFS) volume holds
+# OmicsBase engine on LUMI-K. The engine pod is a gateway (NOTE_RUNNER=workers): notes'
+# R sessions run in a few shared worker pods, which the gateway starts from its own pod
+# spec and deletes when they host no note; a heavy note gets a pod of its own
+# (engine/note_workers.py, engine/note_pods.py). A shared (CephFS) volume holds
 # note folders and caches, and a TLS route lets only the OmicsBase VM in. The image is
 # the Rahti one (deployment/rahti/Dockerfile), which already runs as LUMI-K's random
 # non-root user. The engine secret is created separately:
@@ -64,7 +65,8 @@ spec:
         app: omicsbase-engine
     spec:
       serviceAccountName: omicsbase-engine
-      # Note pods inherit this: time for the R session to save before the pod is killed.
+      # Workers and note pods inherit this: time for their R sessions to save before the
+      # pod is killed (a worker saves its sessions in parallel).
       terminationGracePeriodSeconds: 150
       containers:
         - name: engine
@@ -85,14 +87,59 @@ spec:
               value: https://omicsbase.utu.fi/omics-engine
             - name: DOMAIN_CLIENT
               value: https://omicsbase.utu.fi
+            # LUMI-K counts declared limits against the quota: 12 cores, 48 GiB, 50 pods;
+            # at most 8 cores and 16 GiB per container, a limit at most 5 times its request.
+            # An R session with the single-cell packages and a modest object holds about
+            # 0.9 GiB (load test on LUMI-K: 13.8 GiB in a worker with 16 sessions). Limits:
+            #   gateway                    1 core    2 GiB
+            #   2 workers x 4 cores/16 GiB 8 cores  32 GiB   (2 x 16 sessions)
+            #   1 heavy note pod           2 cores  12 GiB
+            #   total                     11 cores  46 GiB, 4 pods
+            # A worker of 16 GiB hosts 16 such sessions; a session past 3 GiB moves to the
+            # heavy note pod on its next start, and one past 4 GiB is stopped. The heavy note
+            # pod is larger than a session's cap, so a note too large for a worker still runs.
+            # When every worker is full, the least recently used idle session is saved and
+            # stopped; it restores on its next cell.
             - name: NOTE_RUNNER
-              value: pods
-            # Live note pods at most. Each has a limit of 2 cores and 4 GiB
-            # (NOTE_POD_* in note_pods.py); with the 1-core gateway, five fit the
-            # project's default quota of 12 cores.
-            - name: NOTE_MAX_SESSIONS
-              value: "5"
-            # Room for a stopped note pod to save its session and free its quota.
+              value: workers
+            - name: NOTE_WORKERS
+              value: "2"
+            # Both workers stay up: the gateway fills a worker before it starts the next, so
+            # with one warm worker all new notes load their packages on the same 4 cores.
+            - name: NOTE_WORKERS_MIN
+              value: "2"
+            - name: NOTE_WORKER_SESSIONS
+              value: "16"
+            - name: NOTE_WORKER_CPU_REQUEST
+              value: "1"
+            - name: NOTE_WORKER_CPU_LIMIT
+              value: "4"
+            - name: NOTE_WORKER_MEMORY_REQUEST
+              value: 8Gi
+            - name: NOTE_WORKER_MEMORY_LIMIT
+              value: 16Gi
+            # A worker stops a session holding more than this; the note is told it ran out
+            # of memory. A session past NOTE_HEAVY_SESSION_MEMORY gets a pod of its own at
+            # its next start.
+            - name: NOTE_SESSION_MEMORY_LIMIT
+              value: 4Gi
+            - name: NOTE_HEAVY_SESSION_MEMORY
+              value: 3Gi
+            - name: NOTE_HEAVY_PODS
+              value: "1"
+            - name: NOTE_POD_CPU_REQUEST
+              value: 500m
+            - name: NOTE_POD_CPU_LIMIT
+              value: "2"
+            - name: NOTE_POD_MEMORY_REQUEST
+              value: 3Gi
+            - name: NOTE_POD_MEMORY_LIMIT
+              value: 12Gi
+            # A session whose saved workspace is at most this is also saved after any cell
+            # that ran 5 s or more, so a failing worker loses little.
+            - name: NOTE_SAVE_AFTER_CELL_MAX_MB
+              value: "50"
+            # Room for a stopped pod to save its sessions and free its quota.
             - name: NOTE_QUEUE_SECONDS
               value: "240"
           # The gateway runs no notes itself, only the help and search tools.
@@ -147,3 +194,46 @@ spec:
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
+---
+# Workers and note pods (label omicsbase-runner, set by the gateway) take connections only
+# from the gateway, and reach only DNS and the internet (data downloads): not the gateway,
+# each other, the cluster's internal addresses, cloud metadata or the OmicsBase VM.
+# Policies add up, so a project policy allowing all traffic within the namespace still
+# lets other pods connect to them; the egress rules alone keep them from reaching the
+# gateway and each other, as pod and service addresses are private.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omicsbase-note-runners
+spec:
+  podSelector:
+    matchLabels:
+      omicsbase-runner: "true"
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: omicsbase-engine
+      ports:
+        - port: 8001
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 128.214.252.225/32

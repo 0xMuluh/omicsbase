@@ -26,7 +26,7 @@ Caddy serves all three with HTTPS, using HARICA certificates. Users sign in with
   - `roihu-relay`, the chisel server that Reports sessions tunnel to (a systemd service).
   - A nightly cron job that rebuilds the sitemap.
 
-**LUMI-K** runs the notes engine as a gateway, and one pod per live note. The manifest is `deployment/lumi-k/engine.yaml`.
+**LUMI-K** runs the notes engine as a gateway, shared worker pods that host many notes' R sessions, and pods of their own for heavy notes. The manifest is `deployment/lumi-k/engine.yaml`; its comments explain the sizes.
 
 **Roihu** runs each user's Reports job, in that user's own CSC project.
 
