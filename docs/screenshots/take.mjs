@@ -124,7 +124,7 @@ for (const shot of shots) {
     console.log(`ok   ${shot.name}`);
   } catch (e) {
     failed += 1;
-    console.error(`FAIL ${shot.name}: ${e.message.split('\n').slice(0, process.env.SHOTS_DEBUG ? 8 : 1).join('\n')}`);
+    console.error(`FAIL ${shot.name}: ${e.message.split('\n').slice(0, process.env.SHOTS_DEBUG ? 20 : 1).join('\n')}`);
     // What the page showed when it failed, for fixing the shot.
     if (process.env.SHOTS_DEBUG && page) {
       await page.screenshot({ path: join(process.env.SHOTS_DEBUG, `fail-${shot.name}.png`) }).catch(() => {});

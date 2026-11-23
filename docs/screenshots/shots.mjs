@@ -74,11 +74,12 @@ async function runAnalysis(page) {
   // Already saved by an earlier shot of this run: nothing to save.
   const save = cell.locator('button[aria-label="Save revision"]');
   if (await save.isEnabled()) await save.click();
-  // Centred, so the note's header bar does not cover it.
+  // A pointer click here waits forever on something drawn over the button; the button's own
+  // click event runs the cell the same way.
   const run = cell.locator('button[aria-label="Run code in NoteKernel"]:enabled');
   await run.waitFor({ timeout: 60_000 });
   await run.evaluate((el) => el.scrollIntoView({ block: 'center' }));
-  await run.click();
+  await run.dispatchEvent('click');
   // TEMP: the statuses the run goes through.
   (async () => {
     let last = '';
