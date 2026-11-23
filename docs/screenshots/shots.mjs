@@ -50,8 +50,8 @@ const ANALYSIS = [
   'data(GlobalPatterns, package = "mia")',
   'tse <- addAlpha(GlobalPatterns, index = c("shannon", "faith"))',
   '# Observed richness, averaged over 50 subsamples at the smallest library size',
-  'tse <- addAlpha(tse, index = "observed_richness",',
-  '                sample = min(colSums(assay(tse, "counts"))), niter = 50)',
+  'depth <- min(colSums(assay(tse, "counts")))',
+  'tse <- addAlpha(tse, index = "observed_richness", sample = depth, niter = 50)',
   'summary(tse$shannon)',
 ].join('\n');
 
@@ -326,7 +326,7 @@ export const shots = [
       await page.waitForTimeout(500);
     },
     clip: firstCell,
-    highlight: [`${firstCell} >> text=From the book`],
+    highlight: [`${firstCell} >> text=From the book >> xpath=..`],
   },
   {
     name: 'note-usage-energy',
