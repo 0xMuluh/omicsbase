@@ -40,6 +40,49 @@ async function myNote(state, page) {
   return state.note;
 }
 
+
+/** The first R cell card on the page (by its copy button: Run turns into Cancel while it runs). */
+const firstCell = 'div.rounded-xl.border:has(button[aria-label="Copy R code"]) >> nth=0';
+/** What the cell shots run: an alpha diversity analysis, which OMA's alpha diversity chapter uses.
+ * The rarefied richness takes some seconds, so the status line can be seen while it runs. */
+const ANALYSIS = [
+  'library(mia)',
+  'data(GlobalPatterns, package = "mia")',
+  'tse <- addAlpha(GlobalPatterns, index = c("shannon", "faith"))',
+  '# Observed richness, averaged over 50 subsamples at the smallest library size',
+  'depth <- min(colSums(assay(tse, "counts")))',
+  'tse <- addAlpha(tse, index = "observed_richness", sample = depth, niter = 50)',
+  'summary(tse$shannon)',
+].join('\n');
+
+/** The note for the cell and energy shots: OMICSBASE_CELL_NOTE (a /c/<id> path of a test note
+ * with at least one R cell and some model use), or the copy of an example. */
+const cellNote = async (state, page) => process.env.OMICSBASE_CELL_NOTE ?? (await myNote(state, page));
+
+/** Put ANALYSIS into the first cell, save it as a revision and run it. */
+async function runAnalysis(page) {
+  const cell = page.locator(firstCell);
+  await cell.scrollIntoViewIfNeeded();
+  await cell.evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await page.mouse.wheel(0, -90);
+  await cell.locator('button[aria-label="Edit code"]').click();
+  await cell.locator('.monaco-editor').first().click();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Delete');
+  await page.keyboard.insertText(ANALYSIS);
+  await page.waitForTimeout(500);
+  // Already saved by an earlier shot of this run: nothing to save.
+  const save = cell.locator('button[aria-label="Save revision"]');
+  if (await save.isEnabled()) await save.click();
+  // A pointer click here waits forever on something drawn over the button; the button's own
+  // click event runs the cell the same way.
+  const run = cell.locator('button[aria-label="Run code in NoteKernel"]:enabled');
+  await run.waitFor({ timeout: 60_000 });
+  await run.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await run.dispatchEvent('click');
+  return cell;
+}
+
 const scrollTo = (selector) => async (page) => {
   await page.locator(selector).first().scrollIntoViewIfNeeded();
   await page.locator(selector).first().evaluate((el) => el.scrollIntoView({ block: 'start' }));
@@ -47,13 +90,15 @@ const scrollTo = (selector) => async (page) => {
   await page.waitForTimeout(800);
 };
 
-const openModels = async (page) => {
+const openModels = async (page, state) => {
   await page.waitForTimeout(1500);
   const button = page.locator(role('button', 'Select a model')).first();
-  await button.evaluate((el) => {
-    el.style.outline = '3px solid #e8590c';
-    el.style.outlineOffset = '3px';
-  });
+  if (!state.clean) {
+    await button.evaluate((el) => {
+      el.style.outline = '3px solid #e8590c';
+      el.style.outlineOffset = '3px';
+    });
+  }
   // The menu fades in with an animation that does not run in an automated browser.
   await page.addStyleTag({ content: '.animate-popover { opacity: 1 !important; animation: none !important; }' });
   await button.click();
@@ -61,7 +106,41 @@ const openModels = async (page) => {
   await page.waitForTimeout(500);
 };
 
-const chatOptions = role('button', /Chat options|More options/);
+const chatOptions = role('button', /^Chat options/);
+
+/** The Workspace tab of the test account's report, made once per run. */
+async function reportWorkspace(state, page) {
+  if (!state.report) {
+    const name = 'Docs example';
+    // The report's card in the list (the sidebar entry only folds open).
+    const card = page.locator(`button:has-text("${name}"):has-text("notes")`).first();
+    await page.goto(`${state.base}/projects`, { waitUntil: 'load' });
+    await page.waitForTimeout(3000);
+    if (!(await card.count())) {
+      await page.locator(role('button', 'New report')).first().click();
+      await page.getByLabel('Report name').fill(name);
+      await page.locator(role('button', 'Create report')).last().click();
+      await page.waitForTimeout(4000);
+    }
+    if (!/\/projects\/[^/]+/.test(page.url())) await card.click();
+    await page.waitForURL(/\/projects\/[^/]+/, { timeout: 30_000 });
+    state.report = new URL(page.url()).pathname;
+  }
+  return state.report;
+}
+
+/** The panel "Use my own computer" opens, with the download and pairing commands; the
+ * innermost match (the last in page order) is the panel itself. */
+const pairingPanel = 'div.rounded-xl.border:has-text("Code valid for")';
+const copyCommand = role('button', /^(Copy command|Copied)$/);
+
+/** On the Workspace tab, choose Use my own computer and wait for the pairing code. */
+async function startPairing(page) {
+  await page.locator('text="Workspace"').first().click();
+  await page.locator(role('button', 'Use my own computer')).click();
+  await page.locator('text=/Code valid for/').first().waitFor({ timeout: 30_000 });
+  await page.locator(pairingPanel).last().scrollIntoViewIfNeeded();
+}
 
 export const shots = [
   // The start page and signing in.
@@ -159,15 +238,13 @@ export const shots = [
     name: 'first-reply',
     path: myNote,
     prepare: async (page) => {
-      const edit = page.locator(role('button', 'Edit code')).first();
-      await edit.scrollIntoViewIfNeeded();
-      await edit.click();
-      await page.locator(`${role('button', 'Run code in NoteKernel')} >> visible=true`).first().click();
-      await page.locator('text=/Queued|Running/').first().waitFor({ timeout: 15_000 });
-      await page.locator('text=/Queued|Running/').first().evaluate((el) => el.scrollIntoView({ block: 'center' }));
+      const cell = await runAnalysis(page);
+      const status = cell.locator('[data-testid="note-cell-status"]', { hasText: /Running/ });
+      await status.waitFor({ timeout: 60_000 });
+      await status.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     },
     wait: 2000,
-    highlight: ['text=/Queued|Running/ >> nth=0'],
+    highlight: [`${firstCell} >> [data-testid="note-cell-status"]`],
   },
   {
     name: 'share-menu',
@@ -185,7 +262,7 @@ export const shots = [
       if (await create.count()) await create.first().click();
       await page.locator('[role=dialog] input[value*="/share/"]').first().waitFor({ timeout: 15_000 });
     },
-    highlight: ['[role=dialog] input[value*="/share/"] >> xpath=..'],
+    highlight: [`[role=dialog] >> ${role('button', 'Copy link')}`],
   },
   {
     name: 'delete-link',
@@ -226,6 +303,72 @@ export const shots = [
   figure('proteomics-volcano', 'V2M6cSUr7lFPto0GJPUK2'),
   figure('single-cell-qc-plot', 'Q84Un8slx3cxWtT6uIuPA'),
 
+  // Cells and energy.
+  {
+    name: 'cell-status-line',
+    path: cellNote,
+    prepare: async (page) => {
+      const cell = await runAnalysis(page);
+      await cell.locator('[data-testid="note-cell-status"]', { hasText: /Running · 0:0[1-9]/ }).waitFor({ timeout: 120_000 });
+    },
+    clip: firstCell,
+    highlight: [`${firstCell} >> [data-testid="note-cell-status"]`],
+  },
+  {
+    name: 'cell-book-badge',
+    path: cellNote,
+    prepare: async (page) => {
+      const cell = await runAnalysis(page);
+      const line = cell.locator('text=From the book').first();
+      await line.waitFor({ timeout: 180_000 });
+      await line.evaluate((el) => el.scrollIntoView({ block: 'end' }));
+      await page.mouse.wheel(0, 140);
+      await page.waitForTimeout(500);
+    },
+    clip: firstCell,
+    highlight: [`${firstCell} >> text=From the book >> xpath=..`],
+  },
+  {
+    name: 'note-usage-energy',
+    path: cellNote,
+    prepare: async (page) => {
+      await page.locator('[data-testid="token-usage"]').click();
+      await page.locator('text=/This note: about/').first().waitFor({ timeout: 15_000 });
+    },
+    clip: '[data-testid="token-usage-card"]',
+    pad: 24,
+    highlight: ['text=/This note: about/'],
+  },
+  {
+    name: 'settings-energy-total',
+    path: '/c/new',
+    prepare: async (page) => {
+      await page.locator(role('button', 'Account Settings')).click();
+      await page.locator('text=Settings').last().click();
+      await page.locator(role('tab', /Account/)).click();
+      await page.locator('text=/All your notes: about/').first().waitFor({ timeout: 15_000 });
+    },
+    highlight: ['text=/All your notes: about/'],
+  },
   // A local install's first screens.
   { name: 'local-sign-up-page', path: '/register' },
+
+  // Reports on your own computer: the pairing panel on a report's Workspace tab.
+  {
+    name: 'use-own-computer-panel',
+    path: reportWorkspace,
+    prepare: startPairing,
+    clip: `${pairingPanel} >> nth=-1`,
+    highlight: [`${copyCommand} >> nth=0`, `${copyCommand} >> nth=1`, 'text=/Code valid for/'],
+  },
+  {
+    name: 'pairing-waiting',
+    path: reportWorkspace,
+    prepare: async (page) => {
+      await startPairing(page);
+      await page.locator(copyCommand).nth(1).click();
+      await page.locator(role('button', 'Copied')).waitFor({ timeout: 10_000 });
+    },
+    clip: `${pairingPanel} >> nth=-1`,
+  },
 ];

@@ -1,0 +1,167 @@
+# Retake the docs screenshots against a fresh local install in the runner, with a throwaway
+# test account made here, and upload them. The images go into the repo by hand after a look.
+#
+# The install uses the release images, with the LibreChat image of the production build so the
+# newest panels show. The relay that pairs own computers is the router from deployment/roihu,
+# run from this checkout. Shots that need a model's reply (the energy estimate) do not succeed
+# here: no model key is given.
+name: Docs screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["docs/screenshots-*"]
+
+permissions:
+  contents: read
+
+env:
+  OMICSBASE_VERSION: "2026.11.22.2"
+  LIBRECHAT_BUILD: "c7194ac3c"
+  EXAMPLES: "examples-2026-11-20"
+
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The engine image alone is about 15 GB unpacked.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install files
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/omicsbase"
+          mkdir -p "$dir" && cd "$dir"
+          cp "$GITHUB_WORKSPACE"/local/{docker-compose.yml,librechat.yaml,import_examples.js} .
+          secret() { openssl rand -hex 32; }
+          {
+            echo "OMICSBASE_VERSION=$OMICSBASE_VERSION"
+            echo "UID=$(id -u)"
+            echo "GID=$(id -g)"
+            for name in OMICSBASE_AUTH_SECRET OMICSBASE_ENGINE_SECRET OMICSBASE_LINK_SECRET MEILI_MASTER_KEY; do
+              echo "$name=$(secret)"
+            done
+            echo "OPENAI_API_KEY=user_provided"
+            echo "ANTHROPIC_API_KEY=user_provided"
+            echo "GOOGLE_KEY=user_provided"
+          } > .env
+          chmod 600 .env
+          for d in app uploads images logs projects mongodb meilisearch engine-cache reports-link; do
+            mkdir -p "data/$d"
+          done
+          chmod 2775 data/projects
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/$EXAMPLES"
+          curl -fsSL "$url/omicsbase-examples.tgz" -o examples.tgz
+          curl -fsSL "$url/omicsbase-examples.tgz.sha256" -o examples.sha256
+          [ "$(awk '{ print $1 }' examples.sha256)" = "$(sha256sum examples.tgz | awk '{ print $1 }')" ]
+          mkdir -p examples && tar xzf examples.tgz -C examples --strip-components=1
+          # The production LibreChat; Reports in Roihu mode, so the Workspace tab offers
+          # "Use my own computer"; the router runs from this checkout. The relay settings are
+          # never used here, only required to be set.
+          cat > docker-compose.override.yml <<EOF
+          services:
+            api:
+              image: ghcr.io/0xmuluh/omicsbase-librechat-build:$LIBRECHAT_BUILD
+              environment:
+                - OMICSBASE_REPORTS_MODE=roihu
+                - DOMAIN_CLIENT=\${SHOTS_DOMAIN_CLIENT:-http://localhost:3080}
+                - ROIHU_RELAY_URL=https://relay.invalid
+                - ROIHU_RELAY_FINGERPRINT=unused
+            examples:
+              image: ghcr.io/0xmuluh/omicsbase-librechat-build:$LIBRECHAT_BUILD
+            reports-link:
+              image: python:3.12-slim
+              volumes:
+                - $GITHUB_WORKSPACE/deployment/roihu/roihu_router.py:/opt/omicsbase/roihu_router.py:ro
+          EOF
+
+      - name: Start
+        working-directory: ${{ runner.temp }}/omicsbase
+        run: |
+          set -eu
+          docker compose pull -q api examples mongodb meilisearch engine reports-link
+          docker compose up -d api examples engine reports-link
+          for i in $(seq 1 90); do
+            app=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3080/health || true)
+            engine=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/ || true)
+            [ "$app" = 200 ] && [ "$engine" != 000 ] && break
+            sleep 5
+          done
+          echo "app $app, engine $engine"
+          docker compose ps
+          [ "$app" = 200 ]
+
+      - name: Test account
+        run: |
+          set -eu
+          password=$(openssl rand -hex 16)
+          echo "::add-mask::$password"
+          email="docs-$(openssl rand -hex 4)@example.org"
+          body=$(jq -n --arg e "$email" --arg p "$password" \
+            '{name: "Researcher", username: "researcher", email: $e, password: $p, confirm_password: $p}')
+          code=$(curl -s -o /tmp/register.json -w '%{http_code}' -X POST http://localhost:3080/api/auth/register \
+            -H 'Content-Type: application/json' -H 'Origin: http://localhost:3080' -d "$body")
+          echo "register: $code $(jq -c '.message // empty' /tmp/register.json 2>/dev/null || true)"
+          rm -f /tmp/register.json
+          case "$code" in 2*) ;; *) exit 1 ;; esac
+          echo "OMICSBASE_TEST_EMAIL=$email" >> "$GITHUB_ENV"
+          echo "OMICSBASE_TEST_PASSWORD=$password" >> "$GITHUB_ENV"
+
+      - name: Playwright and Pillow
+        run: |
+          set -eu
+          sudo apt-get update -qq && sudo apt-get install -y -qq python3-pil
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright-core@1
+          echo "OMICSBASE_PLAYWRIGHT_FROM=$RUNNER_TEMP/pw/package.json" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/debug"
+          echo "SHOTS_DEBUG=$RUNNER_TEMP/debug" >> "$GITHUB_ENV"
+          google-chrome --version
+
+      # Only images taken in this run are uploaded.
+      - name: Docs shots
+        run: |
+          rm -f docs/images/screens/*.webp
+          node docs/screenshots/take.mjs || echo "::warning::some docs shots failed"
+
+      # The pairing command names the app's address: the public one, as users see it. The notes
+      # tools get their display name, so press images show no internal server name.
+      - name: Pairing and press shots
+        working-directory: ${{ runner.temp }}/omicsbase
+        run: |
+          set -u
+          sed -i 's/^  notethreads:$/  notethreads:\n    title: NoteKernel/' librechat.yaml
+          SHOTS_DOMAIN_CLIENT=https://omicsbase.utu.fi docker compose up -d --no-deps --force-recreate api
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3080/health)" = 200 ] && break
+            sleep 5
+          done
+          cd "$GITHUB_WORKSPACE"
+          node docs/screenshots/take.mjs use-own-computer-panel pairing-waiting || echo "::warning::pairing shots failed"
+          node docs/screenshots/take.mjs --clean || echo "::warning::some press shots failed"
+
+      - name: Logs
+        if: always()
+        working-directory: ${{ runner.temp }}/omicsbase
+        run: docker compose logs --tail 80 api engine reports-link
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens
+          path: docs/images/screens/
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: failed-shots
+          path: ${{ runner.temp }}/debug/
+          if-no-files-found: ignore
