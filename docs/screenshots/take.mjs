@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Retake the screenshots in the docs in one go, then place them in the pages.
 //
-//   node docs/screenshots/take.mjs [name ...]
+//   node docs/screenshots/take.mjs [--clean] [name ...]
+//
+// --clean (or OMICSBASE_SHOTS_CLEAN=1) takes the same shots without the orange outlines, for press
+// material, into docs/images/screens/press/ and leaves the pages alone.
 //
 // Signed-in shots use a local install with an ordinary test account (never a real person's):
 // OMICSBASE_URL (default http://localhost:3080) and OMICSBASE_TEST_EMAIL / OMICSBASE_TEST_PASSWORD,
@@ -20,7 +23,8 @@ import { fileURLToPath } from 'node:url';
 import { shots } from './shots.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(join(here, '../../librechat/package.json'));
+// OMICSBASE_PLAYWRIGHT_FROM: a package.json whose node_modules has playwright-core (e.g. another checkout).
+const require = createRequire(process.env.OMICSBASE_PLAYWRIGHT_FROM ?? join(here, '../../librechat/package.json'));
 const { chromium } = require('playwright-core');
 
 const accountFile = join(here, '.test-account');
@@ -32,9 +36,11 @@ if (existsSync(accountFile)) {
 }
 const base = (process.env.OMICSBASE_URL ?? 'http://localhost:3080').replace(/\/$/, '');
 const publicBase = (process.env.OMICSBASE_PUBLIC_URL ?? 'https://omicsbase.utu.fi').replace(/\/$/, '');
-const out = join(here, '../images/screens');
+const args = process.argv.slice(2);
+const clean = args.includes('--clean') || process.env.OMICSBASE_SHOTS_CLEAN === '1';
+const out = join(here, '../images/screens', clean ? 'press' : '');
 const tmp = join(here, '.tmp');
-const only = new Set(process.argv.slice(2));
+const only = new Set(args.filter((a) => !a.startsWith('--')));
 
 /** Outline the elements a step talks about, so the reader sees where to click. */
 async function highlight(page, selectors = []) {
@@ -75,7 +81,13 @@ const contexts = {};
 async function contextFor(kind, viewport) {
   const key = `${kind}:${viewport.width}x${viewport.height}`;
   if (!contexts[key]) {
-    const context = await browser.newContext({ viewport, colorScheme: 'light', deviceScaleFactor: 1.5 });
+    // Clipboard access lets the Copy buttons switch to "Copied".
+    const context = await browser.newContext({
+      viewport,
+      colorScheme: 'light',
+      deviceScaleFactor: 1.5,
+      permissions: ['clipboard-read', 'clipboard-write'],
+    });
     if (kind === 'signed-in') await signIn(await context.newPage());
     contexts[key] = context;
   }
@@ -83,7 +95,7 @@ async function contextFor(kind, viewport) {
 }
 
 // State shared between shots, such as the address of the note copied from an example.
-const state = { base, publicBase, here };
+const state = { base, publicBase, here, clean };
 
 let failed = 0;
 for (const shot of shots) {
@@ -102,7 +114,7 @@ for (const shot of shots) {
       await page.waitForTimeout(shot.wait ?? 3000);
     }
     if (shot.prepare) await shot.prepare(page, state);
-    await highlight(page, shot.highlight);
+    if (!clean) await highlight(page, shot.highlight);
     await page.waitForTimeout(300);
     const clip = shot.clip ? await boxAround(page, shot.clip, shot.pad) : undefined;
     const png = join(tmp, `${shot.name}.png`);
@@ -121,5 +133,5 @@ for (const shot of shots) {
 }
 await browser.close();
 rmSync(tmp, { recursive: true, force: true });
-execFileSync('python3', ['-I', join(here, 'place.py')], { stdio: 'inherit' });
+if (!clean) execFileSync('python3', ['-I', join(here, 'place.py')], { stdio: 'inherit' });
 process.exit(failed ? 1 : 0);
