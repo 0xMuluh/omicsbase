@@ -213,6 +213,9 @@ bioc_packages <- c(
   "org.Hs.eg.db",
   "org.Mm.eg.db",
 
+  # DNA methylation: 450k probe annotation (depends on minfi, which brings getAnnotation)
+  "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+
   # Single-cell data and tools
   "TENxPBMCData",
   "muscData",

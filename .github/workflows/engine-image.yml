@@ -57,5 +57,6 @@ jobs:
               set -e
               quarto --version
               python3 -c "import engine.server, mofapy2"
-              Rscript -e "for (p in c(\"Seurat\", \"clusterProfiler\", \"MicrobiomeStat\", \"mia\", \"MOFA2\")) suppressPackageStartupMessages(library(p, character.only = TRUE))" \
-                -e "stopifnot(reticulate::py_module_available(\"mofapy2\"))"'
+              Rscript -e "for (p in c(\"Seurat\", \"clusterProfiler\", \"MicrobiomeStat\", \"mia\", \"MOFA2\", \"IlluminaHumanMethylation450kanno.ilmn12.hg19\")) suppressPackageStartupMessages(library(p, character.only = TRUE))" \
+                -e "stopifnot(reticulate::py_module_available(\"mofapy2\"))" \
+                -e "stopifnot(nrow(getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)) > 400000)"'
