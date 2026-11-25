@@ -1,6 +1,9 @@
-"""Idle reaping, the session limit and the output cap, with real R; no model API calls."""
+"""Idle reaping, saving and restoring, the session limit and the output cap, with real R;
+no model API calls."""
 import asyncio
+import glob
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -96,6 +99,76 @@ class KernelLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[1] 1", result["stdout"])
         result = await asyncio.to_thread(self.run_cell, "two", "print(b)")
         self.assertIn("[1] 2", result["stdout"])
+
+    def workspace(self, thread_id):
+        return os.path.join(self.scope(thread_id), note_kernel.WORKSPACE_RELATIVE_PATH)
+
+    def reap_all(self):
+        with patch.object(note_kernel, "IDLE_SECONDS", 0):
+            return note_kernel.reap_idle_kernels()
+
+    async def test_cells_cannot_reach_the_kernel_state(self):
+        result = await asyncio.to_thread(self.run_cell, "state", "print(ls(all.names = TRUE))")
+        self.assertEqual(result["stdout"].strip(), "character(0)")
+        # Names the kernel once used, a cleared workspace and a new working directory.
+        result = await asyncio.to_thread(
+            self.run_cell, "state",
+            'ws <- "saved"; objects_file <- "elsewhere.txt"; defaults <- NULL\n'
+            "rm(list = setdiff(ls(all.names = TRUE), c('ws', 'objects_file', 'defaults')))\n"
+            "setwd(tempdir()); x <- 41",
+        )
+        self.assertTrue(result["success"], result)
+        self.assertIn("working directory was set back", result["stdout"])
+        result = await asyncio.to_thread(self.run_cell, "state", "print(x + 1); print(basename(getwd()))")
+        self.assertEqual(result["stdout"].strip(), '[1] 42\n[1] "state"')
+        self.assertEqual(await asyncio.to_thread(self.reap_all), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.scope("state"), "saved")))
+        result = await asyncio.to_thread(self.run_cell, "state", "print(c(x, nchar(ws))); print(ls())")
+        self.assertIn("4 saved objects were restored", result["stdout"])
+        self.assertIn("[1] 41  5", result["stdout"])
+        self.assertIn('"defaults"     "objects_file" "ws"           "x"', result["stdout"])
+
+    async def test_cleared_workspace_is_still_saved_and_restored(self):
+        result = await asyncio.to_thread(self.run_cell, "cleared", "a <- 1; rm(list = ls()); b <- 2")
+        self.assertTrue(result["success"], result)
+        self.assertEqual(await asyncio.to_thread(self.reap_all), 1)
+        result = await asyncio.to_thread(self.run_cell, "cleared", "print(ls())")
+        self.assertIn("1 saved objects were restored", result["stdout"])
+        self.assertIn('[1] "b"', result["stdout"])
+
+    async def test_unreadable_workspace_is_moved_aside_once(self):
+        workspace = self.workspace("bad")
+        os.makedirs(os.path.dirname(workspace))
+        with open(workspace, "wb") as f:
+            f.write(b"saved\n")
+        result = await asyncio.to_thread(self.run_cell, "bad", "y <- 1")
+        self.assertIn("saved objects could not be restored", result["stdout"])
+        self.assertIn("kept as workspace.RData.bad-", result["stdout"])
+        moved = glob.glob(workspace + note_kernel.WORKSPACE_BAD_SUFFIX + "*")
+        self.assertEqual(len(moved), 1)
+        with open(moved[0], "rb") as f:
+            self.assertEqual(f.read(), b"saved\n")
+        # The session saves normally and the next one restores without the error.
+        self.assertEqual(await asyncio.to_thread(self.reap_all), 1)
+        result = await asyncio.to_thread(self.run_cell, "bad", "print(y)")
+        self.assertIn("1 saved objects were restored", result["stdout"])
+        self.assertNotIn("could not be restored", result["stdout"])
+        self.assertIn("[1] 1", result["stdout"])
+
+    async def test_workspace_saved_by_the_old_kernel_restores_only_user_objects(self):
+        defaults = ", ".join(f'"{p}"' for p in note_kernel._R_DEFAULT_ATTACHED)
+        os.makedirs(os.path.dirname(self.workspace("legacy")))
+        subprocess.run(
+            ["Rscript", "--vanilla", "-e",
+             f'ws <- "{note_kernel.WORKSPACE_RELATIVE_PATH.as_posix()}"; '
+             f'objects_file <- "{note_kernel.WORKSPACE_OBJECTS_RELATIVE_PATH.as_posix()}"; '
+             f"defaults <- c({defaults}); .note_state <- new.env(); .note_run <- function() NULL; "
+             ".disarm_fn <- function() NULL; x <- 1; save.image(ws)"],
+            cwd=self.scope("legacy"), check=True,
+        )
+        result = await asyncio.to_thread(self.run_cell, "legacy", "print(ls(all.names = TRUE))")
+        self.assertIn("1 saved objects were restored", result["stdout"])
+        self.assertIn('[1] "x"', result["stdout"])
 
     async def test_running_session_is_not_reaped(self):
         running = asyncio.create_task(asyncio.to_thread(self.run_cell, "busy", "Sys.sleep(4); print('done')"))

@@ -89,9 +89,9 @@ mcpServers:
 
 endpoints:
   agents:
-    # Each tool call uses two graph steps; 24 allows about 11 calls per turn (lookups included).
-    recursionLimit: 24
-    maxRecursionLimit: 30
+    # Each tool call uses two graph steps; 40 allows about 19 calls per turn (lookups included).
+    recursionLimit: 40
+    maxRecursionLimit: 50
   custom:
     - name: "Qwen"
       apiKey: "${DASHSCOPE_API_KEY}"

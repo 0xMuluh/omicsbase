@@ -23,7 +23,7 @@ from engine.kernel.executor import execute_note_cell
 from engine.kernel.sandbox import confined_command
 from engine.kernel.note_kernel import (
     DONE_PREFIX, EXECUTE_LOCK_NAME, PID_FILE_NAME, REQUEST_FILE_NAME, R_START_SECONDS, START_LOCK_NAME,
-    save_all_kernels, start_reaper,
+    WORKSPACE_BAD_SUFFIX, save_all_kernels, start_reaper,
 )
 from engine.knowledge.book_refs import log_lookups
 from engine.knowledge.search import search_bioc_knowledge
@@ -659,10 +659,11 @@ app.add_route("/api/sessions", handle_sessions, methods=["GET"])
 # Note files arrive and are copied through the engine, so LibreChat needs no access to
 # the engine's disk (the engine may run on another platform).
 _NOTE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-# A live session's process and lock files; a copied note starts a session of its own.
+# A live session's process and lock files, and unreadable saved sessions; a copied note
+# starts a session of its own.
 _SESSION_RUNTIME_FILES = shutil.ignore_patterns(
     PID_FILE_NAME, START_LOCK_NAME, EXECUTE_LOCK_NAME, REQUEST_FILE_NAME, f"{DONE_PREFIX}*", "*.flag",
-    f"{cell_status.STATUS_PREFIX}*",
+    f"{cell_status.STATUS_PREFIX}*", f"*{WORKSPACE_BAD_SUFFIX}*",
 )
 
 
