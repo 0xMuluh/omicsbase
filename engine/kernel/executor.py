@@ -16,6 +16,7 @@ from engine.kernel.note_kernel import (
     EVENTS_FILE_NAME,
 )
 
+from engine.kernel.cell_files import cell_files, snapshot
 from engine.knowledge import book_refs
 from engine.knowledge.search import DEFAULT_DB_PATH as KNOWLEDGE_DB_PATH
 
@@ -89,7 +90,8 @@ def execute_note_cell(
 ) -> Dict[str, Any]:
     """
     Executes an R cell in the thread's persistent R kernel.
-    Returns console output, formatted markdown, and plot/table URLs for LibreChat.
+    Returns console output, formatted markdown, plot/table URLs and the files the cell
+    saved in the note's folder, for LibreChat.
     on_status(phase) and on_status(run_dir=..., cell_id=...) report the run's progress.
     timeout_seconds counts from when R begins to run the cell, not from the call.
     """
@@ -126,6 +128,7 @@ def execute_note_cell(
 
     try:
         handle = ensure_kernel(thread_dir, on_phase=on_status)
+        files_before = snapshot(thread_dir)
         done_payload = request_cell(
             handle,
             request_id=cell_id,
@@ -280,6 +283,12 @@ def execute_note_cell(
         "run_dir": run_dir_rel,
         "done": done_payload,
     }
+    # Files the cell saved in the note's folder, for download under the cell.
+    try:
+        result.update(cell_files(thread_dir, files_before, thread_id, base_url))
+    except Exception as ex:
+        logger.warning("Listing the files of cell %s failed: %s", cell_id, ex)
+        result["files"] = []
     # Book badge: only for a cell that ran without error and called analysis functions.
     if not errors:
         try:
