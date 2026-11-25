@@ -55,9 +55,9 @@ endpoints:
   allowedAddresses:
     - 'host.docker.internal:11434'
   agents:
-    # Each tool call uses two graph steps; 24 allows about 11 calls per turn.
-    recursionLimit: 24
-    maxRecursionLimit: 30
+    # Each tool call uses two graph steps; 40 allows about 19 calls per turn.
+    recursionLimit: 40
+    maxRecursionLimit: 50
   custom:
     - name: "OpenRouter"
       apiKey: "user_provided"

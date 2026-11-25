@@ -58,45 +58,153 @@ OUT_OF_MEMORY_MESSAGE = (
 
 WORKSPACE_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace.RData"
 WORKSPACE_OBJECTS_RELATIVE_PATH = Path(".omicsbase") / "note-kernel" / "workspace-objects.txt"
+# An unreadable workspace is renamed workspace.RData.bad-<time> so the next session starts clean.
+WORKSPACE_BAD_SUFFIX = ".bad-"
 CONSOLE_FILE_NAME = ".note_console.txt"
 EVENTS_FILE_NAME = ".note_events.jsonl"
 
 _R_DEFAULT_ATTACHED = ("base", "stats", "graphics", "grDevices", "utils", "datasets", "methods")
 
+# The kernel's own state lives in this local() environment, not in .GlobalEnv where cells
+# run: a cell cannot overwrite it, ls() does not list it and save.image() does not save it.
+# Paths are absolute so a cell's setwd() cannot move them either.
 _KERNEL_SCRIPT_TEMPLATE = r"""
+local({{
 .note_t0 <- proc.time()
 .note_t_load <- 0
-ws <- {ws_rel_q}
-objects_file <- {objects_rel_q}
-defaults <- c({defaults})
+.note_root <- getwd()
+.note_ws <- file.path(.note_root, {ws_rel_q})
+.note_objects_file <- file.path(.note_root, {objects_rel_q})
+.note_defaults <- c({defaults})
+
+# Installers: a package that is installed is not installed again, and one that is missing
+# gets a message naming it. So the usual guard, if (!requireNamespace('x')) install('x'),
+# passes whenever x is installed. Each namespace is patched as it loads (utils at once), so
+# the kernel itself loads none of these packages.
+.note_pkg_name <- function(ref) {{
+  ref <- sub('^[A-Za-z]+::', '', ref)
+  ref <- sub('[@#=].*$', '', ref)
+  ref <- basename(sub('/+$', '', ref))
+  sub('_[^_]*\\.(tar\\.gz|tgz|zip)$', '', ref)
+}}
+.note_pkg_list <- function(pkgs)
+  paste0(paste0("'", pkgs, "'", collapse = ', '), if (length(pkgs) > 1L) ' are' else ' is')
+.note_install_refused <- function(installer, pkgs = character()) {{
+  if (!length(pkgs)) stop(sprintf(
+    '%s: packages cannot be installed or updated from a note in OmicsBase.', installer), call. = FALSE)
+  stop(sprintf(paste('%s: %s not installed in OmicsBase, and packages cannot be installed',
+    'from a note. Use an installed package instead.'), installer, .note_pkg_list(pkgs)),
+    call. = FALSE)
+}}
+.note_install <- function(installer, refs) {{
+  refs <- unlist(refs)
+  if (!is.character(refs) || !length(refs)) .note_install_refused(installer)
+  pkgs <- unique(.note_pkg_name(refs))
+  missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) .note_install_refused(installer, missing)
+  message(sprintf('%s: %s already installed in OmicsBase; nothing was installed.', installer,
+    .note_pkg_list(pkgs)))
+  invisible(NULL)
+}}
+# The argument naming the packages: by its name in the installer, else the first unnamed one.
+.note_installer <- function(installer) {{
+  force(installer)
+  function(...) {{
+    args <- list(...)
+    named <- intersect(c('pkgs', 'pkg', 'package', 'repo', 'url', 'path'), names(args))
+    refs <- if (length(named)) args[[named[1L]]] else if (length(args)) {{
+      unnamed <- if (is.null(names(args))) seq_along(args) else which(!nzchar(names(args)))
+      if (length(unnamed)) args[[unnamed[1L]]]
+    }}
+    .note_install(installer, refs)
+  }}
+}}
+# Every exported install* function of remotes and devtools.
+.note_install_fns <- function(pkg) function(ns) {{
+  fns <- grep('^install', getNamespaceExports(ns), value = TRUE)
+  setNames(lapply(paste0(pkg, '::', fns), .note_installer), fns)
+}}
+# pacman takes bare package names.
+.note_pacman_names <- function(exprs, character.only, env) {{
+  if (character.only) return(unlist(lapply(exprs, eval, envir = env)))
+  vapply(exprs, function(e) if (is.character(e)) e else deparse(e), character(1))
+}}
+.note_installers <- list(
+  utils = function(ns) list(install.packages = .note_installer('install.packages')),
+  BiocManager = function(ns) list(install = .note_installer('BiocManager::install')),
+  remotes = .note_install_fns('remotes'),
+  devtools = .note_install_fns('devtools'),
+  pak = function(ns) list(pkg_install = .note_installer('pak::pkg_install'),
+    pak = .note_installer('pak::pak')),
+  pacman = function(ns) list(
+    p_install = function(package, character.only = FALSE, ...) {{
+      .note_install('pacman::p_install', .note_pacman_names(
+        list(substitute(package)), character.only, parent.frame()))
+    }},
+    # Loads the packages that are installed and refuses the rest.
+    p_load = function(..., char, install = TRUE, update = FALSE, character.only = FALSE) {{
+      pkgs <- if (!missing(char)) char else .note_pacman_names(
+        as.list(substitute(list(...)))[-1L], character.only, parent.frame())
+      have <- vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)
+      for (p in pkgs[have]) library(p, character.only = TRUE)
+      if (!all(have)) .note_install_refused('pacman::p_load', pkgs[!have])
+      invisible(setNames(have, pkgs))
+    }})
+)
+.note_disarm <- function(pkg) tryCatch({{
+  fns <- .note_installers[[pkg]](asNamespace(pkg))
+  # The namespace and, if the package is attached (utils always is), its copies on the search
+  # path. utils::assignInNamespace() refuses base packages such as utils.
+  envs <- list(asNamespace(pkg))
+  if (paste0('package:', pkg) %in% search()) envs <- c(envs, as.environment(paste0('package:', pkg)))
+  for (env in envs) for (name in names(fns)) if (exists(name, envir = env, inherits = FALSE)) {{
+    locked <- bindingIsLocked(name, env)
+    if (locked) unlockBinding(name, env)
+    assign(name, fns[[name]], envir = env)
+    if (locked) lockBinding(name, env)
+  }}
+}}, error = function(e) cat('[note] could not disarm', pkg, 'installers:', conditionMessage(e), '\n'))
+for (.note_p in names(.note_installers)) {{
+  if (isNamespaceLoaded(.note_p)) .note_disarm(.note_p)
+  else setHook(packageEvent(.note_p, 'onLoad'), local({{
+    p <- .note_p
+    function(...) .note_disarm(p)
+  }}))
+}}
+
 # Told to the note in its first cell, so a restart is never silent.
 .note_restore_msg <- ''
-if (file.exists(ws)) .note_restore_msg <- tryCatch({{
-  .note_loaded <- load(ws, envir = .GlobalEnv)
+if (file.exists(.note_ws)) .note_restore_msg <- tryCatch({{
+  .note_loaded <- load(.note_ws, envir = .GlobalEnv)
+  # Workspaces saved before the kernel kept its state private also hold the kernel's
+  # objects; drop them, but keep a user's own ws, objects_file or defaults.
+  .note_old <- .note_loaded[.note_loaded == '.disarm_fn' |
+    (startsWith(.note_loaded, '.note_') & .note_loaded != '.note_attached_packages')]
+  .note_legacy <- list(ws = {ws_rel_q}, objects_file = {objects_rel_q}, defaults = .note_defaults)
+  for (.note_n in intersect(names(.note_legacy), .note_loaded))
+    if (identical(get(.note_n, envir = .GlobalEnv), .note_legacy[[.note_n]])) .note_old <- c(.note_old, .note_n)
+  rm(list = .note_old, envir = .GlobalEnv)
   sprintf('[note] This note\'s R session was restarted; %d saved objects were restored.\n',
-    sum(!startsWith(.note_loaded, '.') & !.note_loaded %in% c('ws', 'objects_file', 'defaults')))
+    sum(!startsWith(setdiff(.note_loaded, .note_old), '.')))
 }}, error = function(e) {{
-  cat('[note] workspace load failed:', conditionMessage(e), '\n')
+  # Move the unreadable file aside so later sessions start clean instead of failing again.
+  .note_bad <- paste0(.note_ws, {bad_suffix_q}, format(Sys.time(), '%Y%m%d-%H%M%S'))
+  .note_moved <- file.rename(.note_ws, .note_bad)
+  cat('[note] workspace load failed:', conditionMessage(e),
+    if (.note_moved) paste('; moved to', .note_bad) else '; could not move it aside', '\n')
   paste0('[note] This note\'s R session was restarted and its saved objects could not be restored: ',
-    conditionMessage(e), '\n')
+    conditionMessage(e), if (.note_moved) paste0('\n[note] The unreadable file was kept as ',
+    basename(.note_bad), '; this session starts empty.'), '\n')
 }})
-.note_attached <- tryCatch(get('.note_attached_packages', envir = .GlobalEnv),
-  error = function(e) character())
+.note_attached <- character()
+if (exists('.note_attached_packages', envir = .GlobalEnv, inherits = FALSE)) {{
+  .note_attached <- get('.note_attached_packages', envir = .GlobalEnv)
+  rm('.note_attached_packages', envir = .GlobalEnv)
+}}
 for (.note_p in .note_attached) tryCatch(
   suppressPackageStartupMessages(suppressWarnings(require(.note_p, character.only = TRUE))),
   error = function(e) NULL)
 .note_t_load <- (proc.time() - .note_t0)[['elapsed']]
-
-tryCatch({{
-  .disarm_fn <- function(name) {{
-    function(...) {{
-      stop(paste0("Dynamic package installation via '", name, "' is disabled in OmicsBase. All analysis libraries are pre-compiled into the container."))
-    }}
-  }}
-  if (exists('install.packages', envir = asNamespace('utils'))) {{
-    utils::assignInNamespace('install.packages', .disarm_fn('install.packages'), ns = 'utils')
-  }}
-}}, error = function(e) NULL)
 
 .note_state <- new.env(parent = emptyenv())
 
@@ -144,6 +252,10 @@ tryCatch({{
     base::print(x, ...)
   }}
 }}
+# Cells' print() calls are rewritten to .note_display(), so it alone is reachable from
+# cells, on the search path rather than in .GlobalEnv.
+assign('.note_display', .note_display,
+  envir = attach(NULL, name = 'omicsbase:note', warn.conflicts = FALSE))
 
 # Book badge: lists the functions the cell called and the package each one lives in, looked up
 # after the cell ran so its library() calls count. Never lets a failure reach the cell.
@@ -191,6 +303,7 @@ tryCatch({{
 }}
 
 .note_run <- function(run_dir, source) {{
+  run_dir <- file.path(.note_root, run_dir)
   .note_state$plots_dir <- file.path(run_dir, 'plots')
   .note_state$tables_dir <- file.path(run_dir, 'tables')
   .note_state$seq <- 0L
@@ -224,7 +337,8 @@ tryCatch({{
       .note_log(paste0('Error: ', conditionMessage(.note_source), '\n'))
       .note_emit('error', content = conditionMessage(.note_source))
     }} else {{
-      evaluate::evaluate(.note_source, envir = .GlobalEnv, stop_on_error = 0L,
+      # The cell stops at its first error rather than running on with stale objects.
+      evaluate::evaluate(.note_source, envir = .GlobalEnv, stop_on_error = 1L,
         output_handler = evaluate::new_output_handler(
           text = function(x) .note_text(x),
           message = function(cond) {{
@@ -269,6 +383,11 @@ tryCatch({{
       .note_evaluated <- TRUE
     }}
   }}, finally = {{
+    # Every cell starts in the note's folder, where its data/ and earlier outputs are.
+    if (!identical(getwd(), .note_root)) tryCatch({{
+      setwd(.note_root)
+      .note_text('[note] The working directory was set back to the note\'s folder.\n')
+    }}, error = function(e) NULL)
     close(.note_state$con)
     close(.note_state$ev_con)
     # Skipped when the cell did not parse or was interrupted.
@@ -286,17 +405,21 @@ tryCatch({{
   invisible(NULL)
 }}
 
-.note_save <- function() tryCatch({{
-  assign('.note_attached_packages', setdiff(.packages(), defaults), envir = .GlobalEnv)
-  # Save beside the old workspace and swap, so an interrupted save keeps the last one.
-  save.image(file = paste0(ws, '.tmp'))
-  file.rename(paste0(ws, '.tmp'), ws)
-  dir.create(dirname(objects_file), showWarnings = FALSE, recursive = TRUE)
-  writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), objects_file)
-}}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
+.note_save <- function() {{
+  tryCatch({{
+    assign('.note_attached_packages', setdiff(.packages(), .note_defaults), envir = .GlobalEnv)
+    # Save beside the old workspace and swap, so an interrupted save keeps the last one.
+    save.image(file = paste0(.note_ws, '.tmp'))
+    file.rename(paste0(.note_ws, '.tmp'), .note_ws)
+    dir.create(dirname(.note_objects_file), showWarnings = FALSE, recursive = TRUE)
+    writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), .note_objects_file)
+  }}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
+  # In .GlobalEnv only while it is saved.
+  suppressWarnings(rm('.note_attached_packages', envir = .GlobalEnv))
+}}
 
-.note_request_file <- {request_q}
-.note_done_dir <- {done_dir_q}
+.note_request_file <- file.path(.note_root, {request_q})
+.note_done_dir <- file.path(.note_root, {done_dir_q})
 repeat {{
   Sys.sleep({poll_interval})
   if (!file.exists(.note_request_file)) next
@@ -318,11 +441,12 @@ repeat {{
   # After the cell has answered: the request asks for this only while the saved workspace is small.
   if (!is.null(.note_req$save_after_seconds) &&
       (proc.time() - .note_t_cell)[['elapsed']] >= .note_req$save_after_seconds &&
-      tryCatch(file.exists(ws) || sum(vapply(ls(.GlobalEnv),
+      tryCatch(file.exists(.note_ws) || sum(vapply(ls(.GlobalEnv),
         function(n) as.numeric(object.size(get(n, envir = .GlobalEnv))), 0)) <= {save_max_bytes},
         error = function(e) FALSE))
     .note_save()
 }}
+}})
 """
 
 
@@ -336,6 +460,7 @@ def build_kernel_script(
     return _KERNEL_SCRIPT_TEMPLATE.format(
         ws_rel_q=q(WORKSPACE_RELATIVE_PATH.as_posix()),
         objects_rel_q=q(WORKSPACE_OBJECTS_RELATIVE_PATH.as_posix()),
+        bad_suffix_q=q(WORKSPACE_BAD_SUFFIX),
         defaults=", ".join(repr(item) for item in _R_DEFAULT_ATTACHED),
         console_name_q=q(CONSOLE_FILE_NAME),
         events_name_q=q(EVENTS_FILE_NAME),

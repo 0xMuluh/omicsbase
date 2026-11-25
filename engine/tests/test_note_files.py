@@ -63,10 +63,11 @@ class NoteFileTests(unittest.TestCase):
             self.assertIn(self.put(note, name, b"x").status_code, (400, 404))
         self.assertFalse(any(self.root.rglob("escape")))
 
-    def test_copy_takes_files_and_saved_session_but_not_the_live_process(self):
+    def test_copy_takes_files_and_saved_session_but_not_the_live_process_or_bad_saves(self):
         kernel = self.root / "src" / ".omicsbase" / "note-kernel"
         kernel.mkdir(parents=True)
         (kernel / "workspace.RData").write_bytes(b"saved")
+        (kernel / "workspace.RData.bad-20261122-135246").write_bytes(b"unreadable")
         (kernel / "kernel.pid").write_text("12345")
         (kernel / "execute.lock").write_text("")
         (self.root / "src" / "data").mkdir()
@@ -76,6 +77,7 @@ class NoteFileTests(unittest.TestCase):
         self.assertEqual(response.json(), {"success": True, "copied": True})
         copied = self.root / "dst" / ".omicsbase" / "note-kernel"
         self.assertEqual((copied / "workspace.RData").read_bytes(), b"saved")
+        self.assertFalse((copied / "workspace.RData.bad-20261122-135246").exists())
         self.assertFalse((copied / "kernel.pid").exists())
         self.assertFalse((copied / "execute.lock").exists())
         self.assertTrue((self.root / "dst" / "data" / "counts.tsv").exists())
