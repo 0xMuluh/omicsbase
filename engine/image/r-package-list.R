@@ -45,6 +45,8 @@ cran_packages <- c(
   "metafor",
   "MicrobiomeStat",
   "missForest",
+  # caret no longer brings it (7.1.0 moved to yardstick); kept for notes that use it.
+  "ModelMetrics",
   "NbClust",
   "nullabor",
   "officer",

@@ -38,14 +38,16 @@ jobs:
         run: |
           docker image inspect --format '{{.Size}}' "$IMAGE" | numfmt --to=si --suffix=B
           df -h /
+      # The knowledge tests also read the repository's knowledge/ and scripts/.
       - name: Engine tests
         run: |
           failed=""
           for test in engine/tests/test_*.py; do
             echo "::group::$test"
             docker run --rm --user 0 -e PROJECTS_DIR=/tmp/projects \
-              -v "$PWD/engine/tests:/app/engine/tests:ro" --entrypoint sh "$IMAGE" -c \
-              "cd /app && pip install -q pytest && python3 -m pytest -q -p no:cacheprovider $test" \
+              -v "$PWD/engine/tests:/app/engine/tests:ro" -v "$PWD/knowledge:/app/knowledge:ro" \
+              -v "$PWD/scripts:/app/scripts:ro" --entrypoint sh "$IMAGE" -c \
+              "cd /app && pip install -q pytest httpx && python3 -m pytest -q -p no:cacheprovider $test" \
               || failed="$failed $test"
             echo "::endgroup::"
           done
