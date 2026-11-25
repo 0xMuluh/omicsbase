@@ -39,6 +39,8 @@ _ENV_PREFIXES = ("LC_", "R_", "BIOCONDUCTOR_")
 # Never passed, even when the name is allowed above (R_ also matches Kubernetes service
 # variables of a service whose name starts with "r-").
 _ENV_DENIED = re.compile("SECRET|TOKEN|KEY|PASSWORD|KUBERNETES|_SERVICE_|_PORT", re.IGNORECASE)
+# The engine image's Python (engine/Dockerfile), which reticulate uses.
+_VENV_PYTHON = "/opt/venv/bin/python"
 # Download caches the session may write to (shared between notes).
 _CACHE_VARS = ("EXPERIMENT_HUB_CACHE", "ANNOTATION_HUB_CACHE", "R_USER_CACHE_DIR", "XDG_CACHE_HOME")
 
@@ -119,6 +121,10 @@ def session_env(home: Path, tmp: Path) -> dict[str, str]:
         name: value for name, value in os.environ.items()
         if (name in _ENV_NAMES or name.startswith(_ENV_PREFIXES)) and not _ENV_DENIED.search(name)
     }
+    # Compose files written before the engine's Python moved to a venv set the system
+    # Python, which has no mofapy2; MOFA2 would then build a conda environment instead.
+    if env.get("RETICULATE_PYTHON") == "/usr/bin/python3" and os.path.exists(_VENV_PYTHON):
+        env["RETICULATE_PYTHON"] = _VENV_PYTHON
     env["HOME"] = str(home)
     env["TMPDIR"] = str(tmp)
     return env
