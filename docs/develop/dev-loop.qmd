@@ -156,9 +156,10 @@ Use the same Docker context for building and starting. A Docker *context* names 
    ```
 
 2. In `librechat/.env`, set `OMICSBASE_LIBRECHAT_IMAGE` to that tag.
-3. Build the engine. This builds `omicsbase-engine-base:dev` from `docker/engine-base/` first, then `omicsbase-engine:dev` from `engine/`:
+3. Build the engine. This builds `omicsbase-engine:dev` from `engine/Dockerfile`. The build needs the knowledge index `engine/knowledge/knowledge.db`, which is not in git, so copy it from the published image first:
 
    ```bash
+   python3 scripts/fetch_knowledge_db.py ghcr.io/0xmuluh/omicsbase-engine:latest
    python3 scripts/build_engine.py --context default
    ```
 
@@ -222,7 +223,7 @@ In this stack the Reports page says Reports is not set up, because no router run
 | A server file listed under `volumes` in `docker-compose.override.yml` (for example `api/server/routes/notes.js`) | Recreate the `api` service: add `up -d --force-recreate api` to the Compose command above. The file is mounted from your checkout, so no rebuild is needed. |
 | Python code in `engine/` | Restart the engine: `docker restart omicsbase-engine`. The folder is mounted into the container. |
 | Anything else in `librechat/` (`packages/`, `client/`) | Rebuild with `build_librechat.py`, set the new tag in `.env`, and recreate `api`. |
-| R packages in `docker/engine-base/` | Rebuild with `build_engine.py` and recreate `engine`. |
+| R packages in `engine/image/r-package-list.R` | Rebuild with `build_engine.py` and recreate `engine`. |
 
 ## Run the local install with your own images {#own-images}
 

@@ -11,8 +11,7 @@ Everything starts from one repository: [github.com/0xMuluh/omicsbase](https://gi
 | --- | --- |
 | `librechat/` | The notes app: our fork of LibreChat, included as a submodule. |
 | `openhands/` | The Reports interface: our fork of the OpenHands interface (Agent Canvas), included as a submodule. |
-| `engine/` | The notes engine: `server.py` (MCP tools and HTTP API), `access.py` (who may call it), `note_pods.py` (one pod per note on Kubernetes), `note_workers.py` (shared worker pods on Kubernetes), `kernel/` (R sessions, `session_memory.py` for their memory), `knowledge/` (the books index), `tests/`, its `Dockerfile` and `requirements.txt`. |
-| `docker/engine-base/` | The base image under the engine: Bioconductor, system libraries, Quarto and the R package lists (`backend/r-package-list.R`, `backend/r-package-list-extra.R`). |
+| `engine/` | The notes engine: `server.py` (MCP tools and HTTP API), `access.py` (who may call it), `note_pods.py` (one pod per note on Kubernetes), `note_workers.py` (shared worker pods on Kubernetes), `kernel/` (R sessions, `session_memory.py` for their memory), `knowledge/` (the books index), `tests/`, and the engine image: its `Dockerfile` (Bioconductor, system libraries, R packages, Quarto, the engine's Python packages), `requirements.txt` and `image/` (the R package list `r-package-list.R` and its installer `r-packages.R`). |
 | `docker/openhands/` | The Reports image: its `Dockerfile`, our gateway (`gateway/`: launch API, editor, report viewer) and `patch_entrypoint.py`, which adjusts upstream's start script while the image is built. |
 | `deployment/` | Settings for omicsbase.utu.fi. See the table below. |
 | `local/` | The local install: `docker-compose.yml`, `librechat.yaml`, `.env.example`, `reports-gate.Caddyfile`, `import_examples.js` (loads the example notes), and `engine-server/` for running notes on another server. |
@@ -21,7 +20,7 @@ Everything starts from one repository: [github.com/0xMuluh/omicsbase](https://gi
 | `knowledge/` | The list of books in the knowledge index (`sources.json`), their licences (`ATTRIBUTION.md`) and a README. |
 | `tests/` | Python tests for the Reports gateway, the router, the knowledge setup and the package-install guard. |
 | `docs/` | These docs, as a Quarto website. |
-| `.github/` | The docs workflow (`workflows/docs.yml`) and the pull request template. |
+| `.github/` | The workflows (`workflows/docs.yml` for these docs, `workflows/engine-image.yml` for the engine image) and the pull request template. |
 | `.env.example` | Settings template for running the full stack from source. See [Development loop](dev-loop.qmd#from-source). |
 | `LICENSE`, `licenses/`, `THIRD_PARTY_NOTICES.md` | Our MIT licence and the licences of the code we build on. |
 | `UPSTREAM.md` | Where the forks come from. |
@@ -46,7 +45,8 @@ The `projects/` folder holds note and report files at run time. Git ignores it.
 | Script | What it does |
 | --- | --- |
 | `build_librechat.py` | Builds the LibreChat image from `librechat/`. |
-| `build_engine.py` | Builds the engine base image, then the engine image. |
+| `build_engine.py` | Builds the engine image from `engine/Dockerfile`. |
+| `fetch_knowledge_db.py` | Copies `knowledge.db` out of a published engine image, for builds without `setup_knowledge.py`. |
 | `build_openhands.py` | Tests and builds the Reports interface from `openhands/`, then builds the Reports image. |
 | `setup_knowledge.py` | Downloads the books and writes `engine/knowledge/knowledge.db`. |
 | `build_package_knowledge.py` | Adds installed R package help to the knowledge index. |

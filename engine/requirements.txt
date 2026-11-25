@@ -4,4 +4,6 @@ fastapi>=0.110.0
 uvicorn>=0.30.0
 pydantic>=2.7.0
 pandas>=2.2.0
+pyyaml>=6.0
+# MOFA2 runs mofapy2 through reticulate, from this same environment.
 mofapy2>=0.7.0

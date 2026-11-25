@@ -12,8 +12,7 @@ ENV HOME=/app/home \
     EXPERIMENT_HUB_CACHE=/data/cache/ExperimentHub \
     ANNOTATION_HUB_CACHE=/data/cache/AnnotationHub \
     R_USER_CACHE_DIR=/data/cache/R \
-    XDG_CACHE_HOME=/data/cache/xdg \
-    RETICULATE_PYTHON=/usr/bin/python3
+    XDG_CACHE_HOME=/data/cache/xdg
 
 RUN mkdir -p /app/home /data/projects /data/cache \
     && chgrp -R 0 /app /data \

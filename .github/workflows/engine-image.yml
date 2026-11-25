@@ -1,0 +1,61 @@
+# Build the engine image on pull requests that change the engine, then run the engine
+# tests and a few checks inside it. Build only: nothing is pushed. Releases are still
+# built and pushed by hand (docs/develop/contributing.qmd).
+name: Engine image
+
+on:
+  pull_request:
+    paths: ["engine/**", "scripts/fetch_knowledge_db.py", ".github/workflows/engine-image.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: omicsbase-engine:ci
+  # knowledge.db is not in git; it is copied from this published image.
+  KNOWLEDGE_IMAGE: ghcr.io/0xmuluh/omicsbase-engine:2026.11.25
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      # The image is about 14 GB unpacked; a fresh runner has less free space than that.
+      - uses: jlumbroso/free-disk-space@v2.0.0
+        with:
+          preinstalled-runtimes: true
+      - uses: actions/checkout@v4
+      - name: Knowledge index
+        run: python3 scripts/fetch_knowledge_db.py "$KNOWLEDGE_IMAGE"
+      - name: Build
+        run: docker build --progress=plain -t "$IMAGE" engine
+      - name: Size and free space
+        run: |
+          docker image inspect --format '{{.Size}}' "$IMAGE" | numfmt --to=si --suffix=B
+          df -h /
+      - name: Engine tests
+        run: |
+          failed=""
+          for test in engine/tests/test_*.py; do
+            echo "::group::$test"
+            docker run --rm --user 0 -e PROJECTS_DIR=/tmp/projects \
+              -v "$PWD/engine/tests:/app/engine/tests:ro" --entrypoint sh "$IMAGE" -c \
+              "cd /app && pip install -q pytest && python3 -m pytest -q -p no:cacheprovider $test" \
+              || failed="$failed $test"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "Failed:$failed"; exit 1; fi
+      - name: Packages load as the random LUMI-K user
+        run: |
+          docker run --rm --user 1000770000:0 -e HOME=/tmp -e PROJECTS_DIR=/tmp/projects \
+            --entrypoint sh "$IMAGE" -c '
+              set -e
+              quarto --version
+              python3 -c "import engine.server, mofapy2"
+              Rscript -e "for (p in c(\"Seurat\", \"clusterProfiler\", \"MicrobiomeStat\", \"mia\", \"MOFA2\")) suppressPackageStartupMessages(library(p, character.only = TRUE))" \
+                -e "stopifnot(reticulate::py_module_available(\"mofapy2\"))"'

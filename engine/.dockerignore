@@ -9,3 +9,5 @@
 **/.git
 **/.pytest_cache
 **/*.log
+# Tests run against the built image with the folder mounted (.github/workflows/engine-image.yml).
+tests

@@ -115,7 +115,6 @@ services:
       - OMICSBASE_ENGINE_SECRET=${OMICSBASE_ENGINE_SECRET:-}
       - EXPERIMENT_HUB_CACHE=/app/cache/ExperimentHub
       - ANNOTATION_HUB_CACHE=/app/cache/AnnotationHub
-      - RETICULATE_PYTHON=/usr/bin/python3
     volumes:
       - ./data/projects:/app/projects
       - ./data/engine-cache:/app/cache
