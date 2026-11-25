@@ -47,7 +47,7 @@ The model reaches the engine through **MCP** (Model Context Protocol), a standar
    | `render_quarto_report` | Turns a report's Quarto files into a website. |
 
 5. For `execute_r_cell`, LibreChat does the work itself: it saves the cell, sends the code to the engine's `/api/execute` endpoint, and saves the result.
-6. The engine writes plots and tables into the note's folder, under `runs/`.
+6. The engine writes plots and tables into the note's folder, under `runs/`. The result lists them as `plots` (URLs) and `tables` (URL, size and a preview). It also lists, as `files`, the files the cell itself saved in the note's folder, such as a `write.csv()` table, a `ggsave()` figure or a `saveRDS()` object: `{"path": "results/alpha.csv", "bytes": 1234, "url": "…/projects/<note>/results/alpha.csv"}`, with the path relative to the note's folder and the URL percent-encoded. The engine lists the folder before and after the cell and keeps the files that are new or whose size or modification time changed, at most 50 sorted by path; `files_truncated: true` says there were more. It leaves out hidden files and folders (the R session's own files are in `.omicsbase/`), the top-level `runs/`, `_site/` and `_freeze/`, and symbolic links. A listing looks at no more than 5,000 entries (`NOTE_FILES_MAX_ENTRIES`), so in a larger folder some files may be missed.
 7. The browser loads them from `/omics-engine/projects/<note>/runs/…`. A cookie that LibreChat signed for that note lets it in.
 
 Because of step 5, the engine never calls LibreChat back. The engine can therefore run on a machine that cannot reach LibreChat.
