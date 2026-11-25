@@ -44,7 +44,6 @@ cran_packages <- c(
   "matrixStats",
   "metafor",
   "MicrobiomeStat",
-  "mikropml",
   "missForest",
   "NbClust",
   "nullabor",
@@ -202,6 +201,8 @@ bioc_packages <- c(
 
   # Microbiome
   "lefser",
+  # From CRAN, but it imports Bioconductor packages, so it installs in this stage.
+  "mikropml",
 
   # Gene sets and enrichment
   "clusterProfiler",
