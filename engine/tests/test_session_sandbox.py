@@ -121,5 +121,24 @@ class SessionSandboxTests(unittest.TestCase):
                 sandbox.allowed_paths(self.note.resolve(), sandbox.session_env(Path("/h"), Path("/t")))
 
 
+class ReticulatePythonTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.venv_python = Path(temp.name) / "python"
+        self.venv_python.touch()
+
+    def reticulate_python(self, value):
+        with patch.object(sandbox, "_VENV_PYTHON", str(self.venv_python)), \
+                patch.dict(os.environ, {"RETICULATE_PYTHON": value}):
+            return sandbox.session_env(Path("/h"), Path("/t"))["RETICULATE_PYTHON"]
+
+    def test_old_system_python_is_replaced_by_the_venv(self):
+        self.assertEqual(self.reticulate_python("/usr/bin/python3"), str(self.venv_python))
+
+    def test_other_values_are_left_alone(self):
+        self.assertEqual(self.reticulate_python("/srv/py/bin/python"), "/srv/py/bin/python")
+
+
 if __name__ == "__main__":
     unittest.main()

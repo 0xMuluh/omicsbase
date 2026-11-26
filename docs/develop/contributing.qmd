@@ -60,6 +60,10 @@ The pull request fails on a render error or a broken link. The same check runs o
 
 To catch problems before you push, preview the site locally; see [Preview these docs](dev-loop.qmd#docs).
 
+### The engine image check {#engine-ci}
+
+The workflow `.github/workflows/engine-image.yml` runs on every pull request that touches `engine/`. It copies `knowledge.db` from a published engine image with `scripts/fetch_knowledge_db.py`, builds the engine image, runs each file in `engine/tests` inside it, and loads a few R packages as a random user in group 0, as on LUMI-K. It pushes nothing. The run takes about 35 minutes.
+
 ## Make a release {#release}
 
 A release is three things with the same version name, for example `2026.11.22`:
