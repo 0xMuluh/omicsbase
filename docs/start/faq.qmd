@@ -37,7 +37,8 @@ The model runs at the company that provides it. In a note, that company receives
 - the code the agent writes,
 - what R prints back, such as the first rows of a table,
 - what the agent looks up in the Bioconductor books and the R help,
-- the names of your files, and pictures and short documents you attach.
+- the names of your files, and pictures and short documents you attach,
+- what the agent reads from GitHub, if you have [connected GitHub](github.qmd).
 
 Data files you upload stay on OmicsBase's servers at CSC. The model sees only what R prints about them. See [What the model sees of your files](your-data.qmd#what-the-model-sees).
 
@@ -84,8 +85,8 @@ Name OmicsBase and link to its code: [github.com/0xMuluh/omicsbase](https://gith
 
 ## Is it free? {#cost}
 
-Yes, to use at omicsbase.utu.fi. Models that OmicsBase pays for use a daily allowance of credits. If you use your own OpenRouter key, OpenRouter charges your account. See [Credits](models.qmd#credits).
+Yes, to use at omicsbase.utu.fi. Models that OmicsBase pays for use a daily allowance of credits. If you use your own key from Anthropic, OpenAI, Google or OpenRouter, that provider charges your account. See [Credits](models.qmd#credits) and [Use your own key](models.qmd#add-a-key).
 
 ## Can I use it without a University of Turku account? {#accounts}
 
-Yes. You can sign in with a Google account. See [Sign in](first-note.qmd#sign-in).
+Yes. You can sign in with an account from another Finnish university or research institute through Haka, from an institution in another country through eduGAIN, or with Google. See [Sign in](first-note.qmd#sign-in). The models you get depend on the sign-in; see [Models for your sign-in](models.qmd#models-by-sign-in).

@@ -13,7 +13,7 @@ This page is for maintainers of omicsbase.utu.fi. It describes the layout and th
 | `openhands.omicsbase.utu.fi` | Reports. It carries the tunnels from Reports sessions, the router's open and close links, and each user's requests to their own session. Without a Reports session it answers `404`. |
 | `admin.omicsbase.utu.fi` | The LibreChat admin panel. |
 
-Caddy serves all three with HTTPS, using HARICA certificates. Users sign in with University of Turku single sign-on (SAML) or Google.
+Caddy serves all three with HTTPS, using HARICA certificates. Users sign in with Google or with SAML through the Haka federation (University of Turku included) and eduGAIN. New SAML accounts from `utu.fi` get the `UTU` role and all others the `USER` role, which Google accounts also get. Each role's model list and settings are stored in MongoDB (`configs` collection) and override `librechat.yaml`. LibreChat verifies the Haka and eduGAIN metadata in a child process every 6 hours and caches the result under `data/saml-federation`.
 
 ## What runs where {#layout}
 

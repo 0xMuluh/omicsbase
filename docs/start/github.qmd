@@ -1,0 +1,67 @@
+---
+title: "Connect GitHub"
+description: "Connect your GitHub account to notes so the agent can read repositories, pull requests and issues, and write reviews, comments, branches and pull requests under your name."
+---
+
+With GitHub connected, the agent in a note can work with your repositories. For example, it can review a pull request and post the review on GitHub, or open an issue about a problem it found.
+
+You connect your GitHub account once, and you choose the repositories by installing the OmicsBase app on them.
+
+## What the agent can do {#what-it-can-do}
+
+- **Read** repositories and their files, pull requests and their changes, issues, and GitHub Actions runs.
+- **Write** reviews, comments, issues, branches, commits and pull requests.
+
+Everything it writes appears on GitHub under your GitHub name. The agent's instructions tell it to end each commit message with this line, which shows OmicsBase as co-author of the commit:
+
+```
+Co-authored-by: OmicsBase <361504995+omicsbase[bot]@users.noreply.github.com>
+```
+
+and to end each pull request, issue, review and comment with `Made with OmicsBase (https://omicsbase.utu.fi)`.
+
+The agent reaches only the repositories where the OmicsBase app is installed, and only those you can access yourself.
+
+## Connect your GitHub account {#connect}
+
+1. Open a note, or start one with **New note** in the sidebar.
+2. Click the **+** button in the message box (**Attach and tools**).
+   A list opens.
+3. Under **MCP Servers**, open **GitHub**.
+4. Click **Connect GitHub**.
+   A box titled **Connect GitHub** opens.
+
+   <!-- screenshot: github-connect — the "Connect GitHub" box with Continue with OAuth and the link field; highlight Continue with OAuth -->
+
+5. Click **Continue with OAuth**.
+   GitHub opens in a new tab and asks you to authorise OmicsBase.
+6. Authorise it on GitHub, then go back to the note.
+   The box closes when GitHub is connected.
+
+To sign in to GitHub on another device, copy the link from the box (**Copy link**) or scan its QR code.
+
+## Install the app on your repositories {#install}
+
+1. Open [github.com/apps/omicsbase](https://github.com/apps/omicsbase) and install the app.
+2. Choose your account or an organisation, then pick the repositories the agent may use, or all of them.
+
+To add or remove repositories later, open [github.com/settings/installations](https://github.com/settings/installations) and configure the OmicsBase app there.
+
+## Ask the agent {#ask}
+
+Name the repository, pull request or issue, or paste its GitHub link. For example:
+
+- `Review pull request 12 in <owner>/<repository> and post the review on GitHub.`
+- `Read the R scripts in <owner>/<repository> and list the steps of the analysis.`
+- `Open an issue in <owner>/<repository> about the missing seed in analysis.R.`
+
+What the agent reads from GitHub goes to the model only. To run a repository's code in the note, ask the agent to download the repository into the note with R. This works for public repositories.
+
+## What the model provider sees {#what-the-provider-sees}
+
+What the agent reads from GitHub, such as files, changes and issue text, is sent to the provider of the model you picked, like the rest of the note. See [What is sent to the model provider?](faq.qmd#what-leaves-the-server)
+
+## Disconnect {#disconnect}
+
+- To take the app off repositories, use [github.com/settings/installations](https://github.com/settings/installations).
+- To withdraw the sign-in you gave OmicsBase, use [github.com/settings/apps/authorizations](https://github.com/settings/apps/authorizations).
