@@ -3,16 +3,16 @@ title: "Syncing upstream"
 description: "Bring the LibreChat and OpenHands forks up to date with their upstream projects, see what we changed, and test the result."
 ---
 
-OmicsBase builds on two projects that keep moving: LibreChat and OpenHands. We call them *upstream*. Our forks carry our changes on top of upstream. Every so often we merge upstream's new work into the forks.
+OmicsBase builds on LibreChat and OpenHands, which we call *upstream*. Our forks carry our changes on top of upstream, and every so often we merge upstream's new work into them.
 
 ## How our changes are kept {#tracking}
 
 - Our changes are ordinary Git commits on the fork's working branch. There are no patch files.
 - The omicsbase repository stores the exact fork commit it uses (the submodule pointer).
 - We keep our features in our own files where we can (see [Where our code sits inside the forks](repository.qmd#fork-code)). Upstream files only get small hooks into them.
-- Two things are changed while the Reports image is built, not in the fork:
+- Two things are changed outside the fork, while the Reports image is built:
   - The Agent Canvas files come from upstream's image, `ghcr.io/openhands/agent-canvas:<version>`.
-  - Upstream's start script is adjusted by `docker/openhands/patch_entrypoint.py`, and for Roihu by `deployment/roihu/roihu_entrypoint.py`. Each change looks for an exact line of upstream's script. If upstream moved that line, the build stops with an error instead of producing a broken script.
+  - Upstream's start script is adjusted by `docker/openhands/patch_entrypoint.py`, and for Roihu by `deployment/roihu/roihu_entrypoint.py`. Each change looks for an exact line of upstream's script, and the build stops with an error when that anchor line is not found.
 
 ### See what we changed {#see-changes}
 
@@ -40,7 +40,7 @@ git diff --stat v1.41.0...HEAD
 
 ## Before you start {#prepare}
 
-Each submodule needs a second remote, `upstream`, that points at the original project. A *remote* is a named address of another copy of the repository.
+Each submodule needs a second remote, `upstream`, that points at the original project.
 
 1. Go into the submodule:
 

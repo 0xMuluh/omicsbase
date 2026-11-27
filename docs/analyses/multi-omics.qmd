@@ -2,13 +2,11 @@
 title: "Multi-omics"
 ---
 
-Multi-omics means looking at several kinds of data from the same people or samples together, for example microbes and metabolites, or RNA and protein. In a note you can line the data up, find links between them and relate them to outcomes such as survival.
+This page covers studies that measure several data types on the same people or samples, for example microbes and metabolites, or RNA and protein, and relate them to each other and to outcomes such as survival.
 
 ## Prompts to try
 
-Copy a prompt into a new note and send it. When the result is back, send the follow-up.
-
-1. Survival by cancer subtype. Send:
+1. Compare survival between cancer subtypes. Send:
 
    ```text
    Load miniACC from MultiAssayExperiment. Which clinical columns describe survival?
@@ -26,7 +24,7 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    Plot Kaplan-Meier curves for the C1A and C1B mRNA subtypes with the survival package.
    ```
 
-2. Shared patterns in microbes, metabolites and liver markers. Send:
+2. Inspect and filter a rat study with microbiota, metabolite and liver marker tables. Send:
 
    ```text
    Load HintikkaXOData from mia. What do the three experiments measure?
@@ -38,7 +36,7 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    Agglomerate the microbiota to genus and keep the most prevalent genera.
    ```
 
-3. Which species go with which active enzymes? Send:
+3. Subset linked metagenomes and metatranscriptomes to the first visit. Send:
 
    ```text
    Load ibdmdb from mia. How many participants and samples are there?
@@ -50,7 +48,7 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    Keep the first visit of each participant, the species-level rows of MGX and the unstratified enzyme rows of MTX.
    ```
 
-4. Four kinds of data from leukaemia patients:
+4. Inspect the four data views of a leukaemia cohort:
 
    ```text
    Load the CLL data from MOFAdata. What are the four views, and how many samples does each have?
@@ -58,16 +56,14 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
 
 ## What a note can do
 
-Notes keep linked data in a **MultiAssayExperiment**, one R object that ties several data tables to the same people or samples.
+Notes hold linked data in a MultiAssayExperiment, which ties several tables to the same people or samples, and follow the MOFA2 workflows and the multi-omics chapters of the OMA book.
 
-- **Get data.** Load miniACC, curatedTCGAData, HintikkaXOData, ibdmdb, MOFAdata, SingleCellMultiModal, depmap or HoloFood data, or combine your own tables.
-- **Line up samples.** Keep only the people or samples that appear in every table.
-- **Links between tables.** Correlate each feature in one table with each feature in another, for example species with enzymes.
+- **Get data.** Notes load miniACC, curatedTCGAData, HintikkaXOData, ibdmdb, MOFAdata, SingleCellMultiModal, depmap or HoloFood data, or combine your tables.
+- **Line up samples.** Notes keep the people or samples that appear in every table.
+- **Links between tables.** Each feature in one table is correlated with each feature in another, for example species with enzymes.
 - **Shared factors.** MOFA2 finds a few hidden factors that explain variation across all the tables at once. mixOmics offers related methods.
 - **One map for two tables.** A joint ordination places samples using two tables together.
-- **Outcomes.** Kaplan-Meier curves, log-rank tests and Cox models with the survival package.
-
-Notes follow the MOFA2 workflows and the multi-omics chapters of the OMA book.
+- **Outcomes.** The survival package fits Kaplan-Meier curves, log-rank tests and Cox models.
 
 ## Example notes
 
@@ -80,5 +76,5 @@ Notes follow the MOFA2 workflows and the multi-omics chapters of the OMA book.
 - [MOFA on microbes, metabolites and liver markers in rats](https://omicsbase.utu.fi/share/phsU5du5NnJz6mmIRepWc): three tables prepared for MOFA, and the factors they share.
 - [Multi-omics factor analysis of CLL patients](https://omicsbase.utu.fi/share/vDlL5aZyvPyTiN3ie4he4): drug response, methylation, RNA and mutations in one model.
 - [Species and their transcribed enzymes in IBD](https://omicsbase.utu.fi/share/Mk3_AcgjybZrVGQrVhnXx): links between metagenomes and metatranscriptomes.
-- [Joint ordination of metagenomes and metatranscriptomes](https://omicsbase.utu.fi/share/RNF7bVo41zSAZYVAk-ki5): one map from two linked tables.
+- [Joint ordination of metagenomes and metatranscriptomes](https://omicsbase.utu.fi/share/RNF7bVo41zSAZYVAk-ki5): one ordination from two linked tables.
 - [Salmon fatty acids and gut microbes from HoloFood](https://omicsbase.utu.fi/share/ew_By6CxC0zE7HepmSSvw): host measurements and gut microbes from a feeding trial.

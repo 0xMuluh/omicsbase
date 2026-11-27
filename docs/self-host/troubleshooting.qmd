@@ -5,7 +5,7 @@ description: "What each message from the OmicsBase installer means, and how to f
 
 Find the message you see on this page: press Ctrl+F (Cmd+F on a Mac) and paste part of it. Each message the installer can print has its own section, headed with the message text.
 
-- A line starting with `OmicsBase was not installed:` means the installer stopped. Fix the cause, then run the install command again. It is safe to run again; it keeps what is already there.
+- A line starting with `OmicsBase was not installed:` means the installer stopped. Fix the cause, then run the install command again. It keeps what is already there.
 - A line starting with `Note:` is a warning. The installer carries on.
 
 In the messages below, `~/omicsbase` stands for the folder you installed into.
@@ -117,11 +117,11 @@ If you set `OMICSBASE_REF` or `OMICSBASE_REPO`, check that the branch, tag or re
 OmicsBase was not installed: Docker already has a project called "omicsbase", from <folder>. Nothing was changed. Remove it first (cd <folder> && docker compose down), then run this again.
 ```
 
-Docker knows each install by its project name, `omicsbase`. Another OmicsBase is already set up in a different folder, for example an earlier install with a different `OMICSBASE_DIR`, or a copy of the repository started from its `local/` folder. The installer stops instead of taking it over.
+Docker knows each installation by its project name, `omicsbase`. Another OmicsBase is already set up in a different folder, for example an earlier installation with a different `OMICSBASE_DIR`, or a copy of the repository started from its `local/` folder. The installer stops and leaves it as it is.
 
 Choose one of these:
 
-- **Keep the other install.** Install into that folder instead, by setting `OMICSBASE_DIR` to the folder shown in the message. See [Install-time settings](settings.qmd#install-time).
+- **Keep the other installation.** Install into that folder instead, by setting `OMICSBASE_DIR` to the folder shown in the message. See [Install-time settings](settings.qmd#install-time).
 - **Replace it.** Stop the other one with the command in the message, then run the install command again:
 
   ```bash
@@ -136,7 +136,7 @@ Choose one of these:
 OmicsBase was not installed: the images could not be downloaded (see the message above). Check that Docker is still running, then run the install command again; it continues where it stopped.
 ```
 
-Docker's own message just above says why. Common causes:
+Docker's message just above says why. Common causes:
 
 - Docker stopped during the download. Start it again.
 - The internet connection dropped.
@@ -174,7 +174,7 @@ OmicsBase is installed and still starting.
     cd ~/omicsbase && docker compose logs api
 ```
 
-The install worked. The app took longer than 5 minutes to answer, so the installer stopped waiting, but the app keeps starting on its own. You do not need to run the install command again.
+OmicsBase is installed. The app took longer than 5 minutes to answer, so the installer stopped waiting, and the app keeps starting on its own. There is no need to run the install command again.
 
 1. Wait a minute or two, then open <http://localhost:3080>.
 2. If it does not open yet, check that every service is up:
@@ -229,7 +229,7 @@ The disk with your install folder is nearly full. Your accounts, notes and their
 Note: Docker may use 4 GB of memory; 8 GB or more is recommended. With Docker Desktop, raise it under Settings > Resources > Memory.
 ```
 
-This is the memory Docker may use, not the memory of your computer. OmicsBase uses about 3 GB when idle, and each R note that runs adds its own process.
+This is Docker's memory limit, which can be lower than your computer's memory. OmicsBase uses about 3 GB when idle, and each R note that runs adds its own process.
 
 ::: {.panel-tabset}
 
@@ -284,15 +284,13 @@ This appears on Linux only. Ollama accepts connections only from programs on thi
 
 After this, other computers on your network can also reach Ollama, unless a firewall blocks port 11434.
 
-If you do not use Ollama with OmicsBase, you can ignore this note.
-
 ### no files are released under …, so the current ones are used with the … images. {#no-release-files}
 
 ```text
 Note: no files are released under 2026.11.20, so the current ones are used with the 2026.11.20 images.
 ```
 
-You asked for a version with `OMICSBASE_VERSION`. The installer looks for the setup files released with that version and found none, so it uses the newest setup files with the images of your version. The install carries on. Check that you typed the version correctly.
+You asked for a version with `OMICSBASE_VERSION`. The installer looks for the setup files released with that version and found none, so it uses the newest setup files with the images of your version. The installer carries on. Check that you typed the version correctly.
 
 ### the example notes did not match their checksum and were skipped. {#examples-checksum}
 
@@ -345,7 +343,7 @@ The services are `api` (the app), `engine` (R for notes), `reports` and `reports
 
 3. Open <http://localhost:3080> on the same machine.
 
-OmicsBase is reachable only from the machine it runs on. Other computers on your network cannot open it.
+OmicsBase is reachable only from the machine it runs on; see [Who can reach it](install.qmd#who-can-reach-it).
 
 ### Sign-in or copying does not work {#use-localhost}
 
@@ -362,7 +360,7 @@ OmicsBase uses these ports on this machine:
 | 8001 | R for notes; your browser loads plots from it |
 | 3000 | The admin panel, only with `--profile admin` |
 
-If another program already uses one of them, `docker compose up -d` fails and the installer prints [the services did not start](#up-failed). The ports are fixed in `docker-compose.yml`, which is replaced on every update, so free the port instead: stop the other program and run `docker compose up -d` again.
+If another program already uses one of them, `docker compose up -d` fails and the installer prints [the services did not start](#up-failed). The ports are fixed in `docker-compose.yml`, which is replaced on every update. Free the port by stopping the other program, then run `docker compose up -d` again.
 
 To see whether another container holds the port, for example an older OmicsBase or LibreChat, list the running containers:
 
@@ -391,7 +389,7 @@ The images are built for Intel/AMD, so on an Apple-silicon Mac (and other ARM ma
 
 ### A model in Ollama is slow to answer {#ollama-slow}
 
-A model in Ollama runs on this computer: its first answer can take a minute while Ollama loads it, and replies are slower than with a hosted model.
+Ollama loads the model on the first question, which can take a minute. Because the model runs on this computer, later replies are also slower than from a hosted model.
 
 ### Could not reach the notes engine {#engine-unreachable}
 

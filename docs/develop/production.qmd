@@ -3,7 +3,7 @@ title: "Production deployment"
 description: "How omicsbase.utu.fi is laid out, how its images are built and rolled out, and how to roll back."
 ---
 
-This page is for maintainers of omicsbase.utu.fi. It describes the layout and the usual procedures. It names no addresses, accounts or keys; keep those in your own notes.
+This page is for maintainers of omicsbase.utu.fi. It describes the layout and the usual procedures. It names no addresses, accounts or keys; keep those in a private place.
 
 ## Hosts {#hosts}
 
@@ -28,7 +28,7 @@ Caddy serves all three with HTTPS, using HARICA certificates. Users sign in with
 
 **LUMI-K** runs the notes engine as a gateway, shared worker pods that host many notes' R sessions, and pods of their own for heavy notes. The manifest is `deployment/lumi-k/engine.yaml`; its comments explain the sizes.
 
-**Roihu** runs each user's Reports job, in that user's own CSC project.
+**Roihu** runs each user's Reports job, in that user's CSC project.
 
 For how requests flow between these, see [How OmicsBase fits together](architecture.qmd).
 
@@ -97,7 +97,7 @@ The LibreChat image is built on the VM. Several server files are not taken from 
    git -C librechat archive <commit> | tar -x -C <build folder>
    ```
 
-3. Start the build under systemd, the VM's service manager, so it keeps running if your SSH connection drops:
+3. Start the build under systemd, so it keeps running if your SSH connection drops:
 
    ```bash
    sudo systemd-run --unit=build-librechat --working-directory=<build folder> sh -c \
@@ -218,7 +218,7 @@ The router and the relay run as systemd services on the VM. The router keeps its
    deployment/roihu/publish_sif.sh <path to .sif> <tag>
    ```
 
-   It asks for a GitHub user and a token with `write:packages`, and ends with `Published oras://ghcr.io/0xmuluh/omicsbase-reports:<tag>-sif`. Each project's first launch then downloads this one file instead of converting the image.
+   It asks for a GitHub user and a token with `write:packages`, and ends with `Published oras://ghcr.io/0xmuluh/omicsbase-reports:<tag>-sif`. Each project's first launch then downloads this one file and skips the conversion.
 
 6. Set `ROIHU_IMAGE_TAG=<tag>` in `librechat/.env` and recreate `api`.
 
@@ -255,7 +255,7 @@ You need Quarto 1.11 or later, `gh`, `rsync`, and SSH access to the VM.
    OMICSBASE_VM=<user>@<host> scripts/publish_docs.sh <version>
    ```
 
-Set `OMICSBASE_SSH_KEY` to choose a key file. The script rebuilds the changelog, renders with the `publish` profile and stops if `llms.txt` is missing. It replaces the top level of `/docs/` and keeps the release copies. The release copies have no `sitemap.xml`, `robots.txt` or `llms.txt`, so search engines index only the current docs.
+Set `OMICSBASE_SSH_KEY` to choose a key file. The script rebuilds the changelog, renders with the `publish` profile and stops if `llms.txt` is missing. It replaces the top level of `/docs/` and keeps the release copies. The release copies have no `sitemap.xml`, `robots.txt` or `llms.txt`, so the docs sitemap lists only the current docs.
 
 ## Roll back {#rollback}
 

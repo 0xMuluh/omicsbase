@@ -3,13 +3,13 @@ title: "How OmicsBase fits together"
 description: "The parts of OmicsBase, how a note and a Reports session flow through them, and which secret guards each connection."
 ---
 
-OmicsBase has three parts:
+OmicsBase consists of:
 
-- **The notes app**: a fork of LibreChat in the `librechat/` folder. It serves the web pages, signs users in, stores notes in MongoDB and sends questions to the model providers. A *fork* is our own copy of another project's code, with our changes on top.
+- **The notes app**: a fork of LibreChat in the `librechat/` folder. It serves the web pages, signs users in, stores notes in MongoDB and sends questions to the model providers.
 - **The notes engine**: the `engine/` folder. It is a Python server that keeps one R session per note and gives the model its tools.
 - **Reports**: a fork of the OpenHands interface (called Agent Canvas) in the `openhands/` folder, plus our gateway in `docker/openhands/gateway/`. Each user's Reports agent runs in their own session: a job on CSC's Roihu supercomputer, or a computer of their own.
 
-In front of everything sits **Caddy**, a web server that handles HTTPS and passes each request to the right part.
+In front of everything sits **Caddy**, which handles HTTPS and passes each request to the right part.
 
 ```{mermaid}
 flowchart LR
@@ -30,7 +30,7 @@ flowchart LR
 
 ## A note, step by step {#note-flow}
 
-The model reaches the engine through **MCP** (Model Context Protocol), a standard way to give a model a set of tools it can call. The engine's MCP server is called `notethreads` and is configured in `librechat.yaml`.
+The model reaches the engine's tools through **MCP** (Model Context Protocol). The engine's MCP server is called `notethreads` and is configured in `librechat.yaml`.
 
 1. The user asks a question in a note.
 2. LibreChat sends the question to the chosen model, together with the `notethreads` tools.
@@ -44,11 +44,16 @@ The model reaches the engine through **MCP** (Model Context Protocol), a standar
    | `r_help` | Returns the help page of a function, for the installed package version. |
    | `list_datasets` | Lists the example datasets of an installed package. |
    | `list_thread_files` | Lists the files in the note's folder. |
-   | `render_quarto_report` | Turns a report's Quarto files into a website. |
+   | `render_quarto_report` | Renders a report's Quarto files as a website. |
 
 5. For `execute_r_cell`, LibreChat does the work itself: it saves the cell, sends the code to the engine's `/api/execute` endpoint, and saves the result.
-6. The engine writes plots and tables into the note's folder, under `runs/`. The result lists them as `plots` (URLs) and `tables` (URL, size and a preview). It also lists, as `files`, the files the cell itself saved in the note's folder, such as a `write.csv()` table, a `ggsave()` figure or a `saveRDS()` object: `{"path": "results/alpha.csv", "bytes": 1234, "url": "…/projects/<note>/results/alpha.csv"}`, with the path relative to the note's folder and the URL percent-encoded. The engine lists the folder before and after the cell and keeps the files that are new or whose size or modification time changed, at most 50 sorted by path; `files_truncated: true` says there were more. It leaves out hidden files and folders (the R session's own files are in `.omicsbase/`), the top-level `runs/`, `_site/` and `_freeze/`, and symbolic links. A listing looks at no more than 5,000 entries (`NOTE_FILES_MAX_ENTRIES`), so in a larger folder some files may be missed.
-7. The browser loads them from `/omics-engine/projects/<note>/runs/…`. A cookie that LibreChat signed for that note lets it in.
+6. The engine writes plots and tables into the note's folder, under `runs/`. The result lists them as `plots` (URLs) and `tables` (URL, size and a preview).
+
+   The result also lists, as `files`, the files the cell itself saved in the note's folder, such as a `write.csv()` table, a `ggsave()` figure or a `saveRDS()` object. An entry looks like `{"path": "results/alpha.csv", "bytes": 1234, "url": "…/projects/<note>/results/alpha.csv"}`, with the path relative to the note's folder and the URL percent-encoded.
+
+   To find these files, the engine lists the folder before and after the cell and keeps the files that are new or whose size or modification time changed. It returns at most 50, sorted by path; `files_truncated: true` says there were more. It leaves out hidden files and folders (the R session's own files are in `.omicsbase/`), the top-level `runs/`, `_site/` and `_freeze/`, and symbolic links. A listing looks at no more than 5,000 entries (`NOTE_FILES_MAX_ENTRIES`), so in a larger folder some files may be missed.
+
+7. The browser loads plots and tables from `/omics-engine/projects/<note>/runs/…`. A cookie that LibreChat signed for that note lets it in.
 
 Because of step 5, the engine never calls LibreChat back. The engine can therefore run on a machine that cannot reach LibreChat.
 
@@ -56,7 +61,7 @@ Uploads into a note, and copies of a note when someone continues a shared one, a
 
 ### Where notes run {#notes-placement}
 
-On **omicsbase.utu.fi**, notes run on CSC's LUMI-K, a Kubernetes platform. Kubernetes runs containers in units called *pods*.
+On **omicsbase.utu.fi**, notes run on CSC's LUMI-K, a Kubernetes platform.
 
 - The engine on LUMI-K is a gateway (`NOTE_RUNNER=workers`, see `engine/note_workers.py`). It runs no R itself.
 - Notes run in a few shared *worker* pods. Each worker is the same engine in local mode and hosts up to `NOTE_WORKER_SESSIONS` notes' R sessions, each its own R process. The gateway starts workers from its own pod spec, up to `NOTE_WORKERS`, keeps `NOTE_WORKERS_MIN` running, and deletes others that have hosted no note for `NOTE_IDLE_SECONDS`.
@@ -73,7 +78,13 @@ In a **local install**, notes run in the `engine` container on the same machine,
 
 ### How a note's R session is confined {#notes-sandbox}
 
-Wherever it runs, the engine starts each note's R session through `engine/kernel/sandbox.py`, and so also a Quarto render of a note (confined to that note's folder) and the `r_help` tool (confined to a throwaway folder). The file runs as a small launcher: a new process that applies the restrictions to itself and then becomes the command. R gets only the environment variables it needs (path, locale, time zone, R's own settings and the download caches), never the engine's secrets, and a private home and temporary folder inside the note's session folder. On Linux, the session is then confined with Landlock, the kernel's sandbox for unprivileged processes. It may read and write its own note folder and the shared download caches, read R, its packages and the system, and read `/proc`, where Landlock still hides the environment, memory and files of every process outside the session (only command lines and status show). Other notes' folders are out of reach, and with Landlock version 6 or later the session cannot signal processes outside itself. The session is also first in line for the kernel's out-of-memory killer, so a note that runs out of memory is stopped before the engine. `NOTE_SANDBOX` sets the policy: `auto` (the default) confines the session where the kernel offers Landlock and logs a warning where it does not, `required` refuses to start R without it, and `off` skips Landlock but still starts R with the minimal environment. The shared caches stay writable for every note.
+Wherever it runs, the engine starts each note's R session through `engine/kernel/sandbox.py`. The same goes for a Quarto render of a note (confined to that note's folder) and for the `r_help` tool (confined to a throwaway folder). The file runs as a small launcher: a new process that applies the restrictions to itself and then becomes the command.
+
+R gets only the environment variables it needs (path, locale, time zone, R's own settings and the download caches), never the engine's secrets. It also gets a private home and temporary folder inside the note's session folder.
+
+On Linux, the session is then confined with Landlock, the kernel's sandbox for unprivileged processes. The session may read and write its own note folder and the shared download caches, and read R, its packages and the system. It may also read `/proc`, where Landlock still hides the environment, memory and files of every process outside the session (only command lines and status show). Other notes' folders are out of reach, and with Landlock version 6 or later the session cannot signal processes outside itself. The session is also first in line for the kernel's out-of-memory killer, so a note that runs out of memory is stopped before the engine.
+
+`NOTE_SANDBOX` sets the policy. `auto` (the default) confines the session where the kernel offers Landlock and logs a warning where it does not. `required` refuses to start R without it. `off` skips Landlock but still starts R with the minimal environment. The shared caches stay writable for every note.
 
 ### The knowledge index {#knowledge}
 
@@ -88,9 +99,9 @@ The database is not stored in Git. The engine image includes it if it exists whe
 
 Each user has at most one Reports session at a time. The session serves all of that user's reports, each in its own folder under `/projects/`.
 
-Three tools make this work:
+Sessions are started and reached through these services:
 
-- **FirecREST** is CSC's web API for Roihu. It submits jobs and creates folders on the user's behalf, using the user's own CSC access token.
+- **FirecREST** is CSC's web API for Roihu. It submits jobs and creates folders on the user's behalf, using the user's CSC access token.
 - **The router** (`deployment/roihu/roihu_router.py`) keeps a list of *routes*. A route belongs to one session. It has a tunnel port on the VM, a credential that opens only that port, and a *session key* that the Reports agent asks for on every request.
 - **The relay** is a chisel server on the VM. Chisel makes a tunnel over HTTPS. The session dials out to the relay, so nothing needs to reach the session from outside.
 
@@ -100,7 +111,7 @@ Three tools make this work:
 2. LibreChat asks FirecREST whether the user belongs to that project.
 3. LibreChat creates `/scratch/<project>/omicsbase-reports/` on Roihu, with an `images/` folder and a private folder for the user.
 4. LibreChat asks the router for a new route.
-5. If the project has no image for the current release yet, LibreChat submits `deployment/roihu/pull_image.sbatch`. This job turns the published image into an Apptainer image. Apptainer runs containers on supercomputers.
+5. If the project has no image for the current release yet, LibreChat submits `deployment/roihu/pull_image.sbatch`. This job converts the published image into an Apptainer image.
 6. LibreChat submits `deployment/roihu/reports.sbatch`. The job runs under the user's own Roihu account.
 7. In the job, the agent and the gateway listen only on the compute node's loopback address. A chisel client dials out to the relay.
 8. To open Reports, LibreChat gets a one-time link from the router. The router swaps it for a signed `roihu_route` cookie on the Reports host.
@@ -122,13 +133,13 @@ On omicsbase.utu.fi, **Use my own computer** replaces the Roihu start:
 
 **Disconnect** removes the route and its credential.
 
-A local install cannot be reached from outside, so the direction is reversed:
+A local installation cannot be reached from outside, so the direction is reversed:
 
 1. The user's computer runs the same image with `serve`. It prints a pairing string.
 2. The user pastes the string on the Reports page.
-3. The install's `reports-link` service (the same router) keeps a tunnel open to that computer.
+3. The installation's `reports-link` service (the same router) keeps a tunnel open to that computer.
 
-A local install also has its own Reports container. It sits behind `reports-gate`, a small Caddy that lets a request through only with a valid OmicsBase ticket or the gateway's signed cookie.
+A local installation also has its own Reports container. It sits behind `reports-gate`, a small Caddy that lets a request through only with a valid OmicsBase ticket or the gateway's signed cookie.
 
 ## Secrets between the parts {#auth}
 

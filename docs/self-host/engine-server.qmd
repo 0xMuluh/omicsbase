@@ -1,22 +1,22 @@
 ---
 title: "Notes engine on a server"
-description: "Run the R of your notes on a bigger server while OmicsBase stays on your own machine."
+description: "Run your notes' R sessions on a bigger server while OmicsBase stays on your machine."
 ---
 
-A local install runs the R of your notes on the machine it is installed on. To use a bigger machine instead, start the notes engine on a server and point your install at it with `ENGINE_URL`.
+A local installation runs your notes' R sessions on the machine it is installed on. To use a bigger machine, start the notes engine on a server and point your installation at it with `ENGINE_URL`.
 
-The install connects to the server; nothing on the server needs to reach the install. Your install can therefore stay on a laptop behind a home router.
+Your installation connects to the server, and the server never connects back, so the installation can stay on a laptop behind a home router.
 
 This moves notes only. To run Reports on another machine, see [Reports on your own computer](../start/reports-own-computer.qmd).
 
 ## What you need {#requirements}
 
-- A working OmicsBase install. See [Install on your own machine](install.qmd).
+- A working OmicsBase installation. See [Install on your own machine](install.qmd).
 - A server with Docker and Compose v2.
 - A DNS name pointing at the server, for example `engine.example.org`.
 - Ports 80 and 443 open on the server, so it can get an HTTPS certificate and receive connections.
 
-The engine must be reached at a public HTTPS address. An engine on a private address, such as a machine on your local network, is refused by the install.
+The engine must be reached at a public HTTPS address. An engine on a private address, such as a machine on your local network, is refused by OmicsBase.
 
 ## 1. Set up the server {#server}
 
@@ -38,10 +38,10 @@ Open `.env` on the server and set:
 | Variable | Set it to |
 | --- | --- |
 | `ENGINE_DOMAIN` | The server's DNS name, for example `engine.example.org` |
-| `OMICSBASE_ENGINE_SECRET` | The value of `OMICSBASE_ENGINE_SECRET` in your install's `~/omicsbase/.env` |
-| `OMICSBASE_VERSION` | The image version, `latest` by default. If you pinned a version on the install, use the same one. |
+| `OMICSBASE_ENGINE_SECRET` | The value of `OMICSBASE_ENGINE_SECRET` in `~/omicsbase/.env` on your installation |
+| `OMICSBASE_VERSION` | The image version, `latest` by default. If you pinned a version on your installation, use the same one. |
 
-Copy the secret from your install's `.env`; do not generate a new one. The two must match.
+Copy the secret from `~/omicsbase/.env`; the two must match.
 
 ## 3. Start the engine {#server-start}
 
@@ -53,15 +53,15 @@ docker compose up -d
 
 This starts two containers: the engine, and Caddy in front of it. Caddy gets the HTTPS certificate for `ENGINE_DOMAIN` by itself.
 
-## 4. Point your install at the server {#point-install}
+## 4. Point OmicsBase at the server {#point-install}
 
-On the machine with your install, add this line to `~/omicsbase/.env`, with your server's name:
+On the machine where OmicsBase is installed, add this line to `~/omicsbase/.env`, with your server's name:
 
 ```text
 ENGINE_URL=https://engine.example.org
 ```
 
-Then restart the install:
+Then restart OmicsBase:
 
 ```bash
 cd ~/omicsbase && docker compose up -d
@@ -83,7 +83,7 @@ The cell keeps trying for about a minute. If the engine answers again, the cell 
 Could not reach the notes engine at engine.example.org. Check that the server is running and that ENGINE_URL in ~/omicsbase/.env is right, then run the cell again.
 ```
 
-The install also asks the engine once each time it starts. See the answer on the machine with your install:
+OmicsBase also checks the engine once each time it starts. To see the result, run this on the machine where OmicsBase is installed:
 
 ```bash
 cd ~/omicsbase && docker compose logs api | grep "notes engine"
@@ -110,7 +110,7 @@ To find the cause:
 
    Both containers must be running. Check also that the DNS name points at the server and that ports 80 and 443 are open.
 
-3. **If the health address answers but cells still fail,** check `ENGINE_URL` in `~/omicsbase/.env` on your install: it must be the same address, starting with `https://`. After a change, restart the install:
+3. **If the health address answers but cells still fail,** check `ENGINE_URL` in `~/omicsbase/.env` on your installation. It must be the same address, starting with `https://`. After a change, restart OmicsBase:
 
    ```bash
    cd ~/omicsbase && docker compose up -d
@@ -120,7 +120,7 @@ Then run the cell again.
 
 ## Where your data lives {#data}
 
-With `ENGINE_URL` set, the R of your notes, their files and their plots live on the server, in the `omicsbase-engine` folder:
+With `ENGINE_URL` set, your notes' R sessions, files and plots live on the server, in the `omicsbase-engine` folder:
 
 | Folder | What it holds |
 | --- | --- |
@@ -128,13 +128,13 @@ With `ENGINE_URL` set, the R of your notes, their files and their plots live on 
 | `data/engine-cache/` | Downloaded ExperimentHub and AnnotationHub data |
 | `data/caddy/` | Caddy's HTTPS certificate |
 
-Your accounts and the notes' messages stay in the install's `data/` on your own machine.
+Your accounts and the notes' messages stay in `~/omicsbase/data/` on your machine.
 
 ## Security {#security}
 
 - **The secret is the key to the server.** Anyone holding `OMICSBASE_ENGINE_SECRET` can run R on the engine. Keep `.env` private on both machines, and never share or commit it.
-- **The server is on the internet.** Caddy publishes the engine on ports 80 and 443 of the server's name. The engine's notes connection only accepts requests that carry the secret.
-- **One install per secret.** Give the server the secret of the install that uses it. If you think the secret has leaked, set a new value in the install's `.env` (from `openssl rand -hex 32`), copy it to the server's `.env`, and run `docker compose up -d` on both.
+- **The server is on the internet.** Caddy publishes the engine on ports 80 and 443 of the server's name. The engine runs R only for requests that carry the secret; its health address answers without one.
+- **One installation per secret.** Give the server the secret of the installation that uses it. If you think the secret has leaked, set a new value in `~/omicsbase/.env` (from `openssl rand -hex 32`), copy it to the server's `.env`, and run `docker compose up -d` on both.
 
 ## Update the server {#update}
 
@@ -145,7 +145,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Update the server when you update the install, so both run the same version. See [Updating and backups](updating.qmd).
+Update the server when you update OmicsBase, so both run the same version. See [Updating and backups](updating.qmd).
 
 ## Go back to the engine on your machine {#go-back}
 

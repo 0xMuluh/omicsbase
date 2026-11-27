@@ -58,7 +58,7 @@ The `projects/` folder holds note and report files at run time. Git ignores it.
 
 ## Submodules and forks {#submodules}
 
-A *submodule* is a Git repository inside another one. The outer repository stores only the exact commit of each submodule.
+The outer repository stores only the exact commit of each submodule.
 
 | Folder | Fork | Upstream project | Branch we work on |
 | --- | --- | --- | --- |

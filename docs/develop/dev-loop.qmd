@@ -3,7 +3,7 @@ title: "Development loop"
 description: "Set up OmicsBase for development, change the notes app or the engine, run the tests and preview these docs."
 ---
 
-This page shows three ways to work on OmicsBase. Pick the one that fits your change:
+The setup depends on what you change:
 
 - **Change the web pages only** (React components, styles, texts): run the page dev server against a local install. See [Work on the web pages](#ui).
 - **Change the server or the engine**: build the images and run the full stack from source. See [Run the full stack from source](#from-source).
@@ -16,7 +16,7 @@ This page shows three ways to work on OmicsBase. Pick the one that fits your cha
 - Node.js 24 and npm. The LibreChat fork names its version in `librechat/.nvmrc`.
 - Python 3.12 or later.
 - Quarto 1.11 or later, if you work on these docs.
-- Your own key for at least one model provider.
+- A key for at least one model provider.
 
 The images are built for Linux on Intel/AMD (amd64). The engine image installs a large R and Bioconductor stack, so its first build takes a long time and needs plenty of disk space.
 
@@ -84,7 +84,7 @@ The page dev server (Vite) serves the web pages from your source and reloads the
 
 <!-- screenshot: dev-server-notes — the notes app served by the Vite dev server on localhost:3090 -->
 
-Changes under `client/src/` show up in the browser when you save. Changes to the server (`api/`, `packages/api/`) do not: the server is the one in the install's image. For those, use the full stack below.
+Changes under `client/src/` show up in the browser when you save. Changes to the server (`api/`, `packages/api/`) do not: the server runs from the local installation's image. For those, use the full stack below.
 
 If you change a shared package (`packages/data-provider`, `packages/client`, …), run `npm run build:packages` again.
 
@@ -103,7 +103,7 @@ This runs the same Compose stack as production, with images you build yourself.
    ```
 
 2. Open `librechat/.env` in an editor.
-3. Set `UID` and `GID` to your own ids. `id -u` and `id -g` print them.
+3. Set `UID` and `GID` to your ids. `id -u` and `id -g` print them.
 4. Give each of these a different random value: `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_PANEL_SESSION_SECRET`, `MEILI_MASTER_KEY`, `OMICSBASE_AUTH_SECRET` and `CREDS_KEY`. This command prints one value each time you run it:
 
    ```bash
@@ -141,7 +141,7 @@ Keep `.env`, keys, databases and project files out of Git.
 
 ### 3. Build the images {#from-source-build}
 
-Use the same Docker context for building and starting. A Docker *context* names which Docker engine a command talks to; `default` is the one on your machine.
+Use the same Docker context for building and starting; `default` is the Docker engine on your machine.
 
 1. Build the LibreChat image:
 
@@ -227,7 +227,7 @@ In this stack the Reports page says Reports is not set up, because no router run
 
 ## Run the local install with your own images {#own-images}
 
-The local install takes its images from `ghcr.io/0xmuluh/` with the tag in `OMICSBASE_VERSION`. If an image with that name and tag exists on your machine, Compose uses it. Tag your builds `dev` to slip them in.
+The local install takes its images from `ghcr.io/0xmuluh/` with the tag in `OMICSBASE_VERSION`. If an image with that name and tag exists on your machine, Compose uses it. To use your builds, tag them `dev`, as below.
 
 1. Build the engine, as in [Build the images](#from-source-build).
 2. Build the Reports image. It is built on top of `omicsbase-engine:dev`:
@@ -251,7 +251,7 @@ The local install takes its images from `ghcr.io/0xmuluh/` with the tag in `OMIC
    docker tag omicsbase-librechat:<commit> ghcr.io/0xmuluh/omicsbase-librechat:dev
    ```
 
-5. In your install's `.env` (by default `~/omicsbase/.env`), set:
+5. In the local installation's `.env` (by default `~/omicsbase/.env`), set:
 
    ```text
    OMICSBASE_VERSION=dev
@@ -292,7 +292,7 @@ To go back to the published images, set `OMICSBASE_VERSION=latest` in the same `
 
 ### LibreChat fork tests {#tests-librechat}
 
-The fork uses Jest, a JavaScript test runner. Run these in `librechat/`, after `npm ci` and `npm run build:packages`.
+The fork's tests use Jest. Run these in `librechat/`, after `npm ci` and `npm run build:packages`.
 
 1. Test the server package, which holds the notes and Reports code:
 
@@ -329,7 +329,7 @@ npx jest src/projects/roihu.spec.ts
 
 ## Lint rules in the LibreChat fork {#lint}
 
-The fork checks its code and design rules with ESLint, a code checker. The rules are in `eslint.config.mjs`. These come up most often:
+The fork checks its code and design rules with ESLint. The rules are in `eslint.config.mjs`. These come up most often:
 
 - **No inline styles.** `style={{…}}` is reported, except for measured geometry such as `width`, `height`, `top`, `transform` and `zIndex`. Use theme classes.
 - **No arbitrary Tailwind values.** Classes such as `w-[37px]` or `text-[#333]` are reported, except for layout. Use the theme's scale.

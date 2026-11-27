@@ -3,7 +3,7 @@ title: "OmicsBase docs"
 toc: false
 ---
 
-OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. Ask a question in a **note** and get back R code that has already run, with its output and figures. For larger projects, **Reports** gives you your own analysis agent on the CSC Roihu supercomputer or on your own computer, from your data to a finished report.
+OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. In a **note**, an agent writes and runs R code for your question and shows the output and figures. **Reports** is for larger projects: an analysis agent works on the CSC Roihu supercomputer or on your computer and writes the results up as a Quarto report.
 
 Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi), or [run it on your own machine](self-host/install.qmd).
 

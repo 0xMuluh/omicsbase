@@ -25,7 +25,7 @@ Make your changes only in `.env`. The other files in `~/omicsbase`, such as `doc
 | --- | --- | --- |
 | `OMICSBASE_VERSION` | `latest` | Version of the OmicsBase images (`ghcr.io/0xmuluh/omicsbase-librechat`, `-engine` and `-reports`) |
 
-Change it to stay on one version instead of following the newest. The easiest way is the install command with `OMICSBASE_VERSION`; see [Pin a version](updating.qmd#pin).
+Set it to a version to stay on that version; `latest` follows the newest. To set it, run the install command with `OMICSBASE_VERSION`; see [Pin a version](updating.qmd#pin).
 
 ## Your user {#user}
 
@@ -34,7 +34,7 @@ Change it to stay on one version instead of following the newest. The easiest wa
 | `UID` | your user id | The user the containers run as, so files in `data/` stay yours |
 | `GID` | your group id | Your group. Reports runs as another user in this group, so it can write to `data/projects` and `data/reports`. |
 
-The installer fills these in with the output of `id -u` and `id -g`. Change them only if you move the install to another machine or user, where these ids differ. See [Move to another machine](updating.qmd#move).
+The installer fills these in with the output of `id -u` and `id -g`. Change them only if you move OmicsBase to another machine or user, where these ids differ. See [Move to another machine](updating.qmd#move).
 
 ## Secrets {#secrets}
 
@@ -45,23 +45,23 @@ The installer fills these in with the output of `id -u` and `id -g`. Change them
 | `OMICSBASE_LINK_SECRET` | Between the app and the service behind **Use my own computer** |
 | `MEILI_MASTER_KEY` | The search service |
 
-The installer generates each secret once, as 32 random bytes, and keeps it on later runs. If a newer version needs a new secret, the installer adds it to your `.env`. You do not need to set or change them.
+The installer generates each secret once, as 32 random bytes, and keeps it on later runs. If a newer version needs a new secret, the installer adds it to your `.env`.
 
-If you write `.env` by hand instead of running the installer, copy `.env.example` to `.env` and set each empty secret to the output of:
+To write `.env` by hand without the installer, copy `.env.example` to `.env` and set each empty secret to the output of:
 
 ```bash
 openssl rand -hex 32
 ```
 
-When you run notes on your own server, that server needs the same `OMICSBASE_ENGINE_SECRET`. See [Notes engine on a server](engine-server.qmd).
+When you run notes on a server, that server needs the same `OMICSBASE_ENGINE_SECRET`. See [Notes engine on a server](engine-server.qmd).
 
-The app also generates its own sign-in keys on first start. It keeps them in `data/app/`, not in `.env`.
+The app also generates its own sign-in keys on first start. It keeps them in `data/app/`.
 
 ## Notes engine {#engine}
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `ENGINE_URL` | not set: the engine on this machine | The HTTPS address of a notes engine on your own server |
+| `ENGINE_URL` | not set: the engine on this machine | The HTTPS address of a notes engine on a server |
 
 Set it to run notes' R on a bigger machine. See [Notes engine on a server](engine-server.qmd).
 
@@ -75,7 +75,7 @@ Set it to run notes' R on a bigger machine. See [Notes engine on a server](engin
 
 With `user_provided`, each user enters their own key in the browser when they pick a model, and it is stored encrypted for that user.
 
-To share one key with every account on the install, replace `user_provided` with the key, for example `OPENAI_API_KEY=<your-key>`. Every account then uses your key, and you pay for their use.
+To share one key with every account on this installation, replace `user_provided` with the key, for example `OPENAI_API_KEY=<your-key>`. Every account then uses your key, and you pay for their use.
 
 OpenRouter keys are always entered by each user in the browser. Ollama needs no key. See [Bring a model](install.qmd#step-model).
 

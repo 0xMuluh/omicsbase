@@ -25,9 +25,9 @@ The top of the cell has one status line. It says what is happening right now. Mo
 
 ### Output appears while the cell runs {#live-output}
 
-You do not have to wait until the end. The text that R prints shows up under the code while the cell runs. You see the last lines, and the box scrolls as new lines come.
+The text that R prints shows up under the code while the cell runs. The box shows the last lines and scrolls as new lines come.
 
-Sometimes one long step prints nothing until it is done. Then its text appears when that step ends.
+A long step that prints nothing until it is done shows its text when it ends.
 
 ## The time limit {#time-limit}
 
@@ -56,16 +56,14 @@ If a step needs more than 10 minutes, ask the agent to split it into smaller ste
 
 ## After a timeout or a cancel {#after-stop}
 
-To stop a cell, OmicsBase has to restart the note's R. This has one effect you should know about.
-
-R keeps the tables and results from earlier cells in its memory. These are called objects. OmicsBase saves them from time to time. After a restart, R loads the saved objects again. Objects made after the last save are gone.
+To stop a cell, OmicsBase restarts the note's R. It saves the note's R objects from time to time, and after a restart R loads the saved objects again. Objects made after the last save are gone.
 
 What to do:
 
 1. Run the earlier cells again, from the top, with the green play button on each cell. Or ask the agent: `Run the earlier steps again.`
 2. Then run the cell that was stopped, if you still want its result.
 
-Your note, its code, its old output and your files are not lost. Only R's memory is.
+The restart clears only R's memory. The note, its code, its earlier output and your files are unchanged.
 
 ## The "From the book" line {#book-badge}
 
@@ -75,7 +73,7 @@ When a cell has finished without an error, it can show one small grey line at th
 
 ### From the book · OMA › Alpha diversity {#from-the-book}
 
-This line means: the analysis functions in this cell are also used in that section of a book. Here the book is OMA and the section is "Alpha diversity".
+The analysis functions in this cell are also used in that section of a book, here the "Alpha diversity" section of OMA.
 
 - Click the line to open that section on the book's web page.
 - Click the arrow to see the other sections that use the same functions, one group per function, and the version of the book.
@@ -85,27 +83,27 @@ Use it to read how the book's authors use the method, and to check the cell agai
 ::: {.callout-important}
 ## What the line does not mean
 
-The line is not a mark of approval. It only says that the same functions appear in the book. It does **not** check:
+The line says only that the same functions appear in the book. It does not check:
 
 - that the analysis is right for your data,
 - that the arguments are right,
 - that the steps are in the right order.
 
-You still need to read the section and judge the result yourself.
+Read the section and judge the result yourself.
 :::
 
 ### Not in the books: LimROTS() {#not-in-the-books}
 
 This line names analysis functions in the cell that none of the indexed books uses. In this example it is `LimROTS()`.
 
-This is not an error. The cell ran, and the method may be a good one. It means the books cannot back it up, so check that method yourself: read its help page or its paper, or ask the agent why it chose it.
+The cell ran without error. The books do not cover the method, so check it in its help page or paper, or ask the agent why it chose it.
 
 ### No line at all {#no-badge}
 
 A cell shows no line when there is nothing to say about it:
 
 - it uses only base R, such as reading a file, making a table or drawing a plot,
-- it uses only accessors, the functions that take data out of an object or put it in, such as `assay()` or `colData()`,
+- it uses only accessors, such as `assay()` or `colData()`,
 - it uses a function that the cell itself defined. OmicsBase cannot see inside such a function, so it says nothing.
 
 A cell that failed shows no line either.

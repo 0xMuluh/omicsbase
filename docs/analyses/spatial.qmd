@@ -2,13 +2,11 @@
 title: "Spatial"
 ---
 
-Spatial methods measure genes and keep the place in the tissue where each one was found. In a note you can check data quality, find regions of a tissue, and see which cells sit next to each other.
+This page covers spatial transcriptomics and imaging mass cytometry. Notes start from the files the instrument software writes, such as Visium, Xenium or CosMx output, and keep each spot or cell at its position in the tissue.
 
 ## Prompts to try
 
-Copy a prompt into a new note and send it. When the result is back, send the follow-up.
-
-1. Find regions of a brain section. Send:
+1. Find spatial domains in a human DLPFC Visium section. Send:
 
    ```text
    Load Visium_humanDLPFC from STexampleData and keep the spots on the tissue.
@@ -26,7 +24,7 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    Cluster the spots into seven domains with nrep 1000 and a burn-in of 100, and set a seed.
    ```
 
-2. Cell types or tissue regions? Send:
+2. Cell types or tissue domains with BANKSY. Send:
 
    ```text
    Load the hippocampus VeraFISH data that comes with Banksy and put it in a SpatialExperiment.
@@ -38,7 +36,7 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    What does BANKSY's lambda parameter control?
    ```
 
-3. See which cells are neighbours in tumours. Send:
+3. Build a neighbourhood graph for tumour imaging mass cytometry data. Send:
 
    ```text
    Load the single-cell object from IMMUcan_2022_CancerExample in imcdatasets. Which columns hold the image, the cell type and the coordinates?
@@ -50,27 +48,25 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    Build a k-nearest-neighbour spatial graph within each image, using cell_x and cell_y as coordinates.
    ```
 
-4. Read the raw files from a Xenium machine:
+4. Read raw Xenium output. The XeniumOutput example in SFEData is a small set of raw output files from a 10x Xenium run:
 
    ```text
-   Download the XeniumOutput example from SFEData. It's a small set of raw output files from a 10x Xenium run.
+   Download the XeniumOutput example from SFEData.
    ```
 
 ## What a note can do
 
-Notes keep the data in a **SpatialExperiment** or **SpatialFeatureExperiment**, R objects that hold the counts together with the positions, images and cell outlines. They follow the OSTA book and the tidy spatial workshop.
+Notes hold the data in a SpatialExperiment or SpatialFeatureExperiment, which keep the counts together with positions, images and cell outlines, and draw it on the tissue with ggspavis. They follow the OSTA book and the tidy spatial workshop.
 
-- **Many platforms.** Visium, Slide-seq, the original Spatial Transcriptomics array, seqFISH, MERFISH and MERSCOPE, CosMx, Xenium, STARmap PLUS and imaging mass cytometry. Raw Xenium and CosMx output can be read into R.
-- **Quality control.** Find bad spots or cells, including local outliers and tissue damage with SpotSweeper.
+- **Many platforms.** Notes work with Visium, Slide-seq, the original Spatial Transcriptomics array, seqFISH, MERFISH and MERSCOPE, CosMx, Xenium, STARmap PLUS and imaging mass cytometry, and read raw Xenium and CosMx output into R.
+- **Quality control.** Notes flag low-quality spots or cells, and SpotSweeper finds local outliers and tissue damage.
 - **Spatially variable genes.** nnSVG finds genes whose level follows a pattern across the tissue.
 - **Tissue regions.** BayesSpace and BANKSY group spots or cells into regions, using their neighbours as well as their genes.
-- **Patterns in space.** Measures such as Moran's I and Getis-Ord show where a gene or score clusters (Voyager, spdep).
+- **Patterns in space.** Voyager and spdep compute measures such as Moran's I and Getis-Ord to show where a gene or score clusters.
 - **Neighbours.** hoodscanR, imcRtools and spicyR test which cell types sit together more often than by chance.
 - **Mixtures.** SPOTlight and spacexr estimate which cell types make up each spot.
 
-Notes start from the files the instrument's own software writes, such as Visium, Xenium or CosMx output, not from sequencing reads.
-
-Plots come from **ggspavis**, which draws the data on the tissue.
+[Reports on Roihu](../start/reports-roihu.qmd#bio-tools) lists the CSC tools for work on sequencing reads.
 
 ## Example notes
 
@@ -81,7 +77,7 @@ Plots come from **ggspavis**, which draws the data on the tissue.
 - [Spot-level quality control on Visium](https://omicsbase.utu.fi/share/b-oe97353amWb3WNNQJFF): which spots to remove, checked against the tissue.
 - [Spatially variable genes with nnSVG](https://omicsbase.utu.fi/share/adJFLovQMm3QLvfbUUxTg): genes with a pattern in space.
 - [Spatial domains with BayesSpace](https://omicsbase.utu.fi/share/LzwjVZ1Faxy22SBEz0oet): regions compared with the known brain layers.
-- [Cell types versus tissue domains with BANKSY](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX): how one setting switches between the two.
+- [Cell types versus tissue domains with BANKSY](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX): one parameter moves the clustering between the two.
 - [Which cells sit next to each other in tumours?](https://omicsbase.utu.fi/share/fWgVMZeI78N0hrDH6ORNJ): neighbour tests on imaging mass cytometry.
-- [From raw Xenium files to an object](https://omicsbase.utu.fi/share/7ble_tWWA1onOt__2sN-s): machine output to an R object with cell outlines.
+- [From raw Xenium files to an object](https://omicsbase.utu.fi/share/7ble_tWWA1onOt__2sN-s): instrument output read into an R object with cell outlines.
 - [Cell classes across slices of the hypothalamus](https://omicsbase.utu.fi/share/hJYFU7EbAvFR2pINPOefN): a MERFISH atlas across several slices.

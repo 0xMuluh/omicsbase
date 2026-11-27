@@ -2,16 +2,14 @@
 title: "Genomes and variants"
 ---
 
-This page is about DNA itself: sequences, small differences between them, and family trees of organisms. In a note you can work with sequences and trees, and follow single strains of bacteria with marker genes.
+This page covers DNA sequences, phylogenetic trees and bacterial strains tracked through marker genes.
 
 ## Prompts to try
 
-Copy a prompt into a new note and send it. When the result is back, send the follow-up.
-
-1. Find the germ behind an outbreak. Send:
+1. Check pathogen abundance against clinical tests. LomanNJ_2013 is stool from patients in the 2011 German Shiga-toxigenic E. coli outbreak. Send:
 
    ```text
-   Load LomanNJ_2013 from curatedMetagenomicData. It is stool from patients in the 2011 German Shiga-toxigenic E. coli outbreak.
+   Load LomanNJ_2013 from curatedMetagenomicData.
    ```
 
    Then:
@@ -20,32 +18,32 @@ Copy a prompt into a new note and send it. When the result is back, send the fol
    How abundant is Escherichia coli in each sample, and does it track the recorded count and ELISA result?
    ```
 
-2. Follow donor strains after a faecal transplant:
+2. Load species and marker abundances from a faecal transplant study. In LiSS_2016, men with metabolic syndrome received a faecal transplant and were followed to day 84:
 
    ```text
-   Load LiSS_2016 from curatedMetagenomicData as species and as marker abundances. Men with metabolic syndrome received a faecal transplant and were followed to day 84.
+   Load LiSS_2016 from curatedMetagenomicData as species and as marker abundances.
    ```
 
-3. Do babies share exact sequences with their own mothers?
+3. Count mother and infant pairs with samples from both. SprockettTHData comes from Tsimane mothers and infants:
 
    ```text
-   Load SprockettTHData from microbiomeDataSets. The Dyad column links Tsimane mothers and infants. How many dyads have faeces from both mother and infant?
+   Load SprockettTHData from microbiomeDataSets. Using the Dyad column, how many dyads have faeces from both mother and infant?
    ```
 
-4. Start from DADA2 output:
+4. Download DADA2 output from Zenodo. Record 15490674 has a DADA2 sequence table and taxonomy as RDS files, from stream water at 23 NEON sites:
 
    ```text
-   Download Zenodo record 15490674. It has a DADA2 sequence table and taxonomy as RDS files, from stream water at 23 NEON sites.
+   Download Zenodo record 15490674.
    ```
 
 ## What a note can do
 
-- **Sequences.** Biostrings reads and handles DNA sequences. DADA2 works with exact sequence variants (ASVs), the unique sequences found in amplicon data.
-- **Trees.** MAFFT lines up sequences (through ips), and phangorn or IQ-TREE build a family tree from them. ape draws and handles trees.
-- **Trees in microbiome data.** Use a tree for phylogenetic diversity and UniFrac, two measures that count how related the microbes are.
-- **Strains.** curatedMetagenomicData has marker gene abundances and presence for each sample, so you can follow a strain, not only a species.
+- **Sequences.** Biostrings reads and handles DNA sequences, and DADA2 works with amplicon sequence variants (ASVs).
+- **Trees.** MAFFT aligns sequences (through ips), phangorn or IQ-TREE build phylogenetic trees from the alignment, and ape draws and handles trees.
+- **Trees in microbiome data.** A tree gives phylogenetic diversity and UniFrac distances.
+- **Strains.** curatedMetagenomicData has marker gene abundance and presence for each sample, for following strains within a species.
 
-Work that starts from raw reads, such as assembling genomes or calling variants, runs in [Reports on Roihu](../start/reports-roihu.qmd#bio-tools). There, an agent works in your own project with the cores, memory and time you choose, and can use CSC tools such as bwa, SPAdes, Prokka, bcftools, GATK and PLINK.
+Genome assembly, variant calling and other work on raw reads run in [Reports on Roihu](../start/reports-roihu.qmd#bio-tools), where the agent can use CSC tools such as bwa, SPAdes, Prokka, bcftools, GATK and PLINK.
 
 ## Example notes
 
@@ -54,4 +52,4 @@ Work that starts from raw reads, such as assembling genomes or calling variants,
 - [Fusobacterium in cancer stool at marker level](https://omicsbase.utu.fi/share/8mW2lfuQPnx5PxTf9KkCp): from one species to the marker genes behind it.
 - [Do infants share ASVs with their own mothers?](https://omicsbase.utu.fi/share/WoTodZ_4maNe454C5JNuE): exact sequences shared within families, compared with strangers.
 - [Zenodo: from DADA2 output to a TreeSE in NEON streams](https://omicsbase.utu.fi/share/ioEZ4A9i1dwzPxRhhiCqD): a DADA2 table with its sequences, made ready for analysis.
-- [What does UniFrac measure?](https://omicsbase.utu.fi/share/-Y0tUO_KappuVkocspSoF): a tree-based distance on three small samples.
+- [What does UniFrac measure?](https://omicsbase.utu.fi/share/-Y0tUO_KappuVkocspSoF): the tree-based distance worked through on three small samples.

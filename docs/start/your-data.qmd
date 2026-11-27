@@ -3,7 +3,7 @@ title: "Add your own data"
 description: "Upload files to a note, start from public data that is built in, and find where a note keeps its files."
 ---
 
-You can work on your own files, or start from public data that OmicsBase can load for you.
+A note can work on files you upload or on public data that OmicsBase loads for you.
 
 ## Upload a file to a note {#upload}
 
@@ -45,7 +45,7 @@ Many other data files work too.
 
 **Limits:** up to 10 files in one message, and up to 512 MB for one file or for all files in one message together.
 
-If OmicsBase says **Unsupported file type for endpoint:**, put the file in a `.zip` archive and upload that instead. If it says **File size limit exceeded for endpoint:**, upload a smaller file. For example, filter the data on your computer first, or split it into parts.
+If OmicsBase says **Unsupported file type for endpoint:**, upload the file in a `.zip` archive. If it says **File size limit exceeded for endpoint:**, upload a smaller file, for example by filtering the data on your computer first or splitting it into parts.
 
 ::: {.callout-note}
 Notes work in R. Raw sequencing reads (FASTQ files) are processed in [Reports on Roihu](reports-roihu.qmd#bio-tools), then the results come back to a note.
@@ -65,15 +65,15 @@ When someone continues a note you shared, they get a copy of the note's folder. 
 
 ## What the model sees of your files {#what-the-model-sees}
 
-The model is the AI that writes the code. It runs at the company you picked in the [model list](models.qmd).
+The model you picked in the [model list](models.qmd) runs at the company that provides it.
 
 - **Data files** stay on the OmicsBase server. These are tables, R data files, archives, sequence files and other data formats, and most files larger than 50 KB. The model is told only the file's name and where it is, such as `data/samples.csv`.
 - **Pictures and short documents**, such as an image or a short text file, may be sent to the model so it can read them.
-- **What R prints is sent to the model.** When a cell shows the first rows of your table, the model sees those rows too. That is how it knows what your data looks like.
+- **What R prints** is sent to the model. When a cell shows the first rows of your table, the model sees those rows too. That is how it knows what your data looks like.
 
 ## Start from public data {#public-data}
 
-You do not need your own files to try OmicsBase. These public sources are built in:
+To try OmicsBase without your data, start from these built-in public sources:
 
 | Source | What it has |
 | --- | --- |
@@ -101,7 +101,7 @@ You do not need your own files to try OmicsBase. These public sources are built 
 
 ### Ask for public data by name {#ask-by-name}
 
-You can also just ask in a note. Name the source and what you want, for example:
+In a note, name the source and what you want, for example:
 
 - `Which example datasets does the scRNAseq package have?`
 - `Load a study from curatedMetagenomicData and show the sample information.`
@@ -110,8 +110,8 @@ You can also just ask in a note. Name the source and what you want, for example:
 
 Replace the parts in angle brackets, such as `<study accession>`, with the real study number.
 
-The agent has a tool that lists the datasets inside any installed R package, so it can find real example data instead of making some up. Data from MGnify and Zenodo is downloaded while the note runs.
+The agent has a tool that lists the datasets inside any installed R package and uses it to find example data. Data from MGnify and Zenodo is downloaded while the note runs.
 
 ::: {.callout-tip}
-Whole MGnify studies can take longer to download than a cell is allowed to run (10 minutes). Ask for the sample information first, then for a small set of samples.
+Whole MGnify studies can take longer to download than a cell is allowed to run ([10 minutes](cells.qmd#time-limit)). Ask for the sample information first, then for a small set of samples.
 :::
