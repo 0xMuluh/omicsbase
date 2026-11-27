@@ -9,9 +9,9 @@ The older internal catalog had inaccurate license labels. This manifest records 
 ## Orchestrating Single-Cell Analysis with Bioconductor
 
 - Book: https://bioconductor.org/books/release/OSCA/
-- Source and author/contributor information: https://github.com/OSCA-source/OSCA/tree/01b7457f1974dbf7dbd5784390630b0513520c48
-- Pinned revision: `01b7457f1974dbf7dbd5784390630b0513520c48`
-- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/OSCA-source/OSCA/blob/01b7457f1974dbf7dbd5784390630b0513520c48/DESCRIPTION)
+- Source and author/contributor information: https://github.com/OSCA-source/OSCA/tree/b1d002f82d1d17286a889c08b31f36c19bd83c15
+- Pinned revision: `b1d002f82d1d17286a889c08b31f36c19bd83c15`
+- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/OSCA-source/OSCA/blob/b1d002f82d1d17286a889c08b31f36c19bd83c15/DESCRIPTION)
 
 ## Orchestrating Spatial Transcriptomics Analysis with Bioconductor
 

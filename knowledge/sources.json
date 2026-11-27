@@ -7,7 +7,7 @@
       "title": "Orchestrating Single-Cell Analysis with Bioconductor",
       "short": "OSCA",
       "repository": "https://github.com/OSCA-source/OSCA",
-      "commit": "01b7457f1974dbf7dbd5784390630b0513520c48",
+      "commit": "b1d002f82d1d17286a889c08b31f36c19bd83c15",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA",
       "book_url": "https://bioconductor.org/books/release/OSCA/",
@@ -23,7 +23,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA/blob/01b7457f1974dbf7dbd5784390630b0513520c48/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA/blob/b1d002f82d1d17286a889c08b31f36c19bd83c15/DESCRIPTION"
         }
       ]
     },
@@ -137,7 +137,7 @@
       "title": "Orchestrating Single-Cell Analysis: Basics",
       "short": "OSCA Basics",
       "repository": "https://github.com/OSCA-source/OSCA.basic",
-      "commit": "77283356cb765320b425a02bf5debe6466144ff6",
+      "commit": "71cb54c7f1d513bc199771af86ed1b94f359e276",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA.basic",
       "book_url": "https://bioconductor.org/books/release/OSCA.basic/",
@@ -153,7 +153,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.basic/blob/77283356cb765320b425a02bf5debe6466144ff6/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.basic/blob/71cb54c7f1d513bc199771af86ed1b94f359e276/DESCRIPTION"
         }
       ]
     },
@@ -162,7 +162,7 @@
       "title": "Orchestrating Single-Cell Analysis: Advanced",
       "short": "OSCA Advanced",
       "repository": "https://github.com/OSCA-source/OSCA.advanced",
-      "commit": "c5abc597e6ac88c3e4b58f522275c3f2fff20f0d",
+      "commit": "6fde3a71b6300c5fcdb254ab280e47521c18e0c2",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA.advanced",
       "book_url": "https://bioconductor.org/books/release/OSCA.advanced/",
@@ -178,7 +178,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/c5abc597e6ac88c3e4b58f522275c3f2fff20f0d/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/6fde3a71b6300c5fcdb254ab280e47521c18e0c2/DESCRIPTION"
         }
       ]
     },
