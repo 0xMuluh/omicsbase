@@ -62,7 +62,7 @@ To catch problems before you push, preview the site locally; see [Preview these 
 
 ### The engine image check {#engine-ci}
 
-The workflow `.github/workflows/engine-image.yml` runs on every pull request that touches `engine/`. It copies `knowledge.db` from a published engine image with `scripts/fetch_knowledge_db.py`, builds the engine image, runs each file in `engine/tests` inside it, and loads a few R packages as a random user in group 0, as on LUMI-K. It also extracts the help pages, vignettes and exports of the image's R packages with `scripts/build_package_knowledge.py` and uploads them as the `package-knowledge` artifact; when the R packages change, commit its two files to `engine/knowledge/`. It pushes nothing. The run takes about 35 minutes.
+The workflow `.github/workflows/engine-image.yml` runs on every pull request that touches `engine/` or `knowledge/`, and on every release tag. It builds `knowledge.db` from the pinned books in `knowledge/sources.json` and the committed help pages in `engine/knowledge/package_docs.json`, builds the engine image, runs each file in `engine/tests` inside it, and loads a few R packages as a random user in group 0, as on LUMI-K. It also extracts the help pages, vignettes and exports of the image's R packages with `scripts/build_package_knowledge.py` and uploads them as the `package-knowledge` artifact; when the R packages change, commit its two files to `engine/knowledge/`. On a pull request it pushes nothing; on a release tag it pushes the engine image (see [Make a release](#release)). The run takes about 35 minutes.
 
 ## Make a release {#release}
 
@@ -83,10 +83,9 @@ Local installs take their images by this name: `OMICSBASE_VERSION` in their `.en
    git submodule update --init --recursive
    ```
 
-2. Build the three images, as in [Build the images](dev-loop.qmd#from-source-build) and [Run the local install with your own images](dev-loop.qmd#own-images):
+2. Build the Reports and LibreChat images, as in [Build the images](dev-loop.qmd#from-source-build) and [Run the local install with your own images](dev-loop.qmd#own-images). The engine image is built in CI when you push the tag in step 3.
 
    ```bash
-   python3 scripts/build_engine.py --context default
    python3 scripts/build_openhands.py --context default
    python3 scripts/build_librechat.py --context default
    ```
@@ -101,16 +100,16 @@ Local installs take their images by this name: `OMICSBASE_VERSION` in their `.en
    docker login ghcr.io
    ```
 
-2. Tag and push each image with the version and with `latest`. For the engine:
+2. Tag and push each image with the version and with `latest`. For Reports:
 
    ```bash
-   docker tag omicsbase-engine:dev ghcr.io/0xmuluh/omicsbase-engine:<version>
-   docker tag omicsbase-engine:dev ghcr.io/0xmuluh/omicsbase-engine:latest
-   docker push ghcr.io/0xmuluh/omicsbase-engine:<version>
-   docker push ghcr.io/0xmuluh/omicsbase-engine:latest
+   docker tag omicsbase-openhands:dev ghcr.io/0xmuluh/omicsbase-reports:<version>
+   docker tag omicsbase-openhands:dev ghcr.io/0xmuluh/omicsbase-reports:latest
+   docker push ghcr.io/0xmuluh/omicsbase-reports:<version>
+   docker push ghcr.io/0xmuluh/omicsbase-reports:latest
    ```
 
-3. Do the same for `omicsbase-openhands:dev` as `ghcr.io/0xmuluh/omicsbase-reports`, and for `omicsbase-librechat:<commit>` as `ghcr.io/0xmuluh/omicsbase-librechat`.
+3. Do the same for `omicsbase-librechat:<commit>` as `ghcr.io/0xmuluh/omicsbase-librechat`.
 
 ### 3. Tag and publish the release {#release-tag}
 
@@ -128,6 +127,8 @@ Local installs take their images by this name: `OMICSBASE_VERSION` in their `.en
    ```
 
    `gh` prints the address of the new release.
+
+3. The tag starts the Engine image workflow, which builds, tests and pushes `ghcr.io/0xmuluh/omicsbase-engine:<version>` and `latest` in about 35 minutes. Check it with `gh run list --workflow engine-image.yml --limit 1`.
 
 ### 4. Publish the docs {#release-docs}
 

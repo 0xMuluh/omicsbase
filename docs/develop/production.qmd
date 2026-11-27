@@ -137,26 +137,39 @@ Do not run `git pull` on the VM checkout as a deployment step. Move it to an exa
 
 ## Notes engine on LUMI-K {#engine}
 
-The LUMI-K image must run as a random non-root user. It is the engine image with `deployment/rahti/Dockerfile` on top. The plain engine image fails there.
+The LUMI-K image must run as a random non-root user. It is the released engine image with `deployment/rahti/Dockerfile` on top. The plain engine image fails there.
 
-1. Build the engine image on the VM with `python3 scripts/build_engine.py --tag omicsbase-engine:<tag>`. Engine builds are long; run them under systemd, as for LibreChat.
-2. Build the LUMI-K image on top of it:
-
-   ```bash
-   docker build -f deployment/rahti/Dockerfile --build-arg ENGINE_IMAGE=omicsbase-engine:<tag> \
-     -t <registry>/omicsbase-engine:<lumi-k tag> deployment/rahti
-   ```
-
-3. Test it as a random user in group 0 before you roll it out:
+1. Make the release, so that CI has pushed `ghcr.io/0xmuluh/omicsbase-engine:<version>` ([Make a release](contributing.qmd#release)).
+2. On the VM, sign in to LUMI-K with `oc login`, then sign root's Docker in to the LUMI-K registry:
 
    ```bash
-   docker run --rm --user <random uid>:0 <registry>/omicsbase-engine:<lumi-k tag>
+   sudo docker login -u "$(oc whoami)" -p "$(oc whoami -t)" registry.apps.v1.lumi-k.eu
    ```
 
-   It should start and print `Starting NoteThreads MCP & Execution Server …`. Stop it with Ctrl+C.
+3. Build, test and push the LUMI-K image from the VM checkout:
 
-4. Push it to the LUMI-K registry.
-5. Set the new image in `deployment/lumi-k/engine.yaml` and apply it with `oc apply -f deployment/lumi-k/engine.yaml`. `oc` is the command-line tool for CSC's Kubernetes platforms.
+   ```bash
+   sudo scripts/push_engine_lumik.sh <version>
+   ```
+
+   It pulls the release, adds the LUMI-K layer, starts it as a random user in group 0, pushes it and prints its name, `registry.apps.v1.lumi-k.eu/omicsbase-utu/omicsbase-engine:lumik-<version>`.
+
+4. Switch the engine to it and wait for the rollout:
+
+   ```bash
+   oc set image deploy/omicsbase-engine engine=<printed name>
+   oc rollout status deploy/omicsbase-engine --timeout=15m
+   ```
+
+5. Delete the note workers. The gateway starts new ones from its own image:
+
+   ```bash
+   oc delete pod -l omicsbase-worker=true
+   ```
+
+   Open notes restart their R session once and restore their saved objects.
+
+To roll back, set the previous image in step 4 and delete the workers again.
 
 The engine's secret on LUMI-K is a Kubernetes secret, created separately (see the header of `engine.yaml`). If you change `OMICSBASE_ENGINE_SECRET`, change it on both sides.
 
