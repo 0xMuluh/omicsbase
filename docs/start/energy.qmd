@@ -1,9 +1,9 @@
 ---
 title: "Energy use of a note"
-description: "See roughly how much electricity and carbon the AI model used for a note, and what that estimate does and does not include."
+description: "See roughly how much electricity and carbon the AI model used for a note, and what the estimate covers."
 ---
 
-Every answer in a note is written by an AI model, and the model runs on computers that use electricity. OmicsBase shows you an estimate of how much.
+OmicsBase estimates how much electricity the AI model used to write the answers in a note, and the carbon emissions that go with it.
 
 ## Where to see it {#where}
 
@@ -15,9 +15,7 @@ Open the usage card of the note. It is the card that shows the note's tokens and
 
 <!-- screenshot: note-usage-energy — the usage card of a note with the line "This note: about 2–6 Wh, 1–3 g CO₂e (estimate)"; highlight the line -->
 
-- **Wh** is watt-hours, a measure of electricity. One Wh runs a 10-watt LED lamp for six minutes.
-- **g CO₂e** is grams of carbon dioxide equivalent, a measure of the effect on the climate.
-- The two numbers, such as 2–6, are a range. The real value is likely to be somewhere between them. See [Why a range](#ranges).
+Electricity is in watt-hours (Wh); one Wh runs a 10-watt LED lamp for six minutes. Carbon is in grams of carbon dioxide equivalent (g CO₂e). Each figure is a range, such as 2–6, and the real value is likely to lie within it; see [Why a range](#ranges).
 
 The line counts everything the model did for the note: the answers, the look-ups and other steps in between, the summaries and the note's title.
 
@@ -33,13 +31,13 @@ The line counts everything the model did for the note: the answers, the look-ups
 
 ### When it says "partial" {#partial}
 
-For some models there is no estimate, for example free models and very new ones. If a note used such a model, the line says **partial**. The numbers then cover only the part of the note that could be estimated. The real total is higher.
+Some models, such as free models and very new ones, have no estimate. If a note used such a model, the line says **partial** and the numbers cover only the part of the note that could be estimated, so the real total is higher.
 
 ## What the numbers are {#method}
 
-The numbers are **estimates, not measurements**. Nobody puts a meter on the computer that writes your answer. OmicsBase works the numbers out with the method of [EcoLogits](https://ecologits.ai/latest/), an open-source project that estimates the environmental footprint of AI models. The EcoLogits methodology is published under the CC BY-SA 4.0 licence.
+The numbers are estimates made with the method of [EcoLogits](https://ecologits.ai/latest/), an open-source project that estimates the environmental footprint of AI models.
 
-For each answer, the method looks at which model wrote it, how much text it wrote and how long that took.
+For each answer, the method uses the model that wrote it, how much text it wrote and how long that took.
 
 ### What is counted {#counted}
 
@@ -51,20 +49,20 @@ For each answer, the method looks at which model wrote it, how much text it wrot
 
 - Training the model.
 - Sending data over the network.
-- Your own computer or phone.
-- **The R code.** Running the R cells of a note also uses electricity. It is not in these numbers.
+- Your computer or phone.
+- Running the R cells of the note, which also uses electricity.
 
 ### Why a range {#ranges}
 
-The companies behind models such as Claude, Gemini and GPT do not say how big their models are. The size of these models is a guess, so the method gives a low and a high value instead of one number.
+The companies behind models such as Claude, Gemini and GPT do not publish the size of their models. The method estimates their size and gives a low and a high value.
 
-For open models the size is known. The range is narrower there.
+For open models the size is known, so the range is narrower.
 
 ### Why the carbon figure is rough {#carbon}
 
-How much carbon one Wh causes depends on where the electricity is made. OmicsBase does not know which data centre answered your request. The method uses an average for the provider or for the world. It does not use Finland's electricity: the models do not run in Finland.
+How much carbon one Wh causes depends on where the electricity is made. OmicsBase does not know which data centre answered your request, so the method uses an average for the provider or, where there is none, for the world.
 
-For one single request, the carbon figure can be several times too high or too low. Totals over many notes are steadier than the figure for one note.
+For a single request, the carbon figure can be several times too high or too low. Totals over many notes are steadier than the figure for one note.
 
 ### Other effects {#other-impacts}
 
@@ -72,7 +70,7 @@ The EcoLogits method also estimates water use, primary energy and the use of min
 
 ## How to use the numbers {#use}
 
-- Compare, do not quote. The numbers are good for seeing that one note used about ten times more than another. They are not exact enough to report as measured values.
+- Use the numbers to compare notes, for example to see that one note used about ten times more than another. They are too uncertain to report as measured values.
 - A smaller model usually uses less. See [Choose a model](models.qmd).
 
 ## Reference

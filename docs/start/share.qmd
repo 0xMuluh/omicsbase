@@ -3,7 +3,7 @@ title: "Share a note"
 description: "Make a link to a note, see what viewers get, continue someone else's note, and stop sharing."
 ---
 
-You can share a note with a link. Anyone who has the link can read the note, with its R code, output and figures. They can also continue it in their own OmicsBase. You choose whether their copy includes the note's data.
+You can share a note with a link. Anyone who has the link can read the note, with its R code, output and figures. They can also continue it in their account. You choose whether their copy includes the note's data.
 
 ## Share a note {#share-a-note}
 
@@ -25,10 +25,10 @@ You can share a note with a link. Anyone who has the link can read the note, wit
    <!-- screenshot: share-dialog — the "Share link to note" box after the link is made, with the link, the QR code and the Copy link button; highlight Copy link -->
    ![](../images/screens/share-dialog.webp){.screenshot fig-alt="The 'Share link to note' box after the link is made, with the link, the QR code and the Copy link button."}
 
-After you share, a small dot appears on the **...** button. It tells you that this note has a link.
+After you share, a small dot on the **...** button shows that the note has a link.
 
 ::: {.callout-important}
-Share only what you are happy for anyone to see. Anyone who gets the link can open it. Your name is not shown to viewers.
+Anyone who gets the link can open it, so share only what anyone may see. Viewers do not see your name.
 :::
 
 ## What a viewer sees {#what-viewers-see}
@@ -39,7 +39,7 @@ A viewer opens the link in a web browser. They see the note as it was when you m
 - every R cell with its code, status, output, tables and figures,
 - the files and images in the note, if **Include the note's files and data** was on.
 
-A viewer cannot change or run the cells. They can copy the code.
+A viewer can copy the code but cannot change or run the cells.
 
 Messages you add to the note after sharing stay private until you [update the link](#update-the-link).
 
@@ -52,7 +52,7 @@ Messages you add to the note after sharing stay private until you [update the li
    The shared note opens.
 2. Click **Continue this note**.
    If you are not signed in, the sign-in page opens first. After you sign in, you come back to the note.
-3. A copy of the note opens in your own OmicsBase.
+3. A copy of the note opens in your account.
    It has the messages, the R cells with their output, and the note's files.
 4. Type your next question in the message box and press **Enter**.
    The agent carries on from where the note ended.
@@ -64,7 +64,7 @@ The copy is yours. It is listed under **Note History** in your sidebar. What you
 When someone clicks **Continue this note** on your link, what they get depends on the switch **Include the note's files and data**:
 
 - **On:** a copy of everything in the note's folder, including the data files you uploaded and the note's saved R session. They can rerun the code and carry on straight away.
-- **Off:** the messages, the R code, the results and the figures, but not the files you uploaded or the saved R session. To rerun the code, they add their own copy of the data.
+- **Off:** the messages, the R code, the results and the figures, but not the files you uploaded or the saved R session. To rerun the code, they add the data themselves.
 
 To change the choice for a link you already made, open **Share** again, flip the switch and click **Update link**.
 

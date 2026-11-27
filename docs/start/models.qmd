@@ -3,7 +3,7 @@ title: "Choose a model"
 description: "Pick the AI model for a note, understand the labels, use your own OpenRouter key and check your credits."
 ---
 
-A **model** is the AI that reads your question and writes the R code. Different models come from different companies. Some are faster, some are better at long analyses. You can change the model at any time.
+A **model** is the AI that reads your question and writes the R code. Models come from different companies; some are faster, and some handle long analyses better. You can change the model at any time.
 
 ## Pick a model {#pick-a-model}
 
@@ -48,9 +48,7 @@ Read the description under each name in the list. It says what the model is good
 
 ## Use your own OpenRouter key {#add-a-key}
 
-OpenRouter is a service that gives one key for models from many companies. If you have an OpenRouter account, you can use the models marked **(your OpenRouter key)**. The cost goes to your OpenRouter account.
-
-You need a key from your OpenRouter account. A key is a long line of letters and numbers. Keep it secret, like a password.
+OpenRouter gives one API key for models from many companies. With a key from your OpenRouter account you can use the models marked **(your OpenRouter key)**, and the cost goes to that account.
 
 1. Click the model button at the top of the note.
    The model list opens.
@@ -107,4 +105,4 @@ If a message needs more credits than you have, the note says **You do not have e
 
 ## What the model provider sees {#what-the-provider-sees}
 
-The company that runs the model you picked receives what the model needs to answer: your messages, the code it writes and what R prints back. For files you upload, see [What the model sees of your files](your-data.qmd#what-the-model-sees).
+The company that runs the model you picked receives what the model needs to answer: your messages, the code it writes and what R prints back. If the model comes through OpenRouter, OpenRouter passes the request on to that company. The provider's terms decide how long it keeps what it receives. For files you upload, see [What the model sees of your files](your-data.qmd#what-the-model-sees); for personal data, see [What is sent to the model provider?](faq.qmd#what-leaves-the-server)

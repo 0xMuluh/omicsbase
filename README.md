@@ -7,7 +7,7 @@
 </h3>
 
 <p align="center">
-  Notes that run your R. Your own analysis agent on a supercomputer.
+  An agent that writes and runs R in notes, and works on CSC's Roihu supercomputer in Reports.
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
 
 <hr>
 
-OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. Ask a question in a **note** and get back R code that has already run, with its output and figures, ready to check, share or continue. For larger projects, **Reports** turns it into your own analysis team on the CSC Roihu supercomputer, taking raw data all the way to a finished report.
+OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. In a **note**, the agent answers your question with R code that has already run, and the note keeps the code with its output and figures. For larger projects, **Reports** runs an agent in a job on the CSC Roihu supercomputer, with command-line tools for raw sequencing data and Quarto for the report.
 
 Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of Turku or Google account.
 
@@ -44,9 +44,9 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 | [**📚 Grounded in the books**](knowledge/README.md) | Searches the Bioconductor books and R help before it writes code |
 | [**🦠 Every omics**](#what-you-can-analyse) | Microbiome, single-cell, spatial, bulk RNA-seq, proteomics, metabolomics |
 | [**🗂️ Public data built in**](#examples) | curatedMetagenomicData, MGnify, Zenodo, Bioconductor data packages |
-| [**🖥️ Raw data to report**](#reports-on-roihu) | QC, alignment and assembly with fastp, bowtie2, SPAdes and more, run by your own agent on the CSC Roihu supercomputer |
+| [**🖥️ Raw data to report**](#reports-on-roihu) | QC, alignment and assembly with fastp, bowtie2, SPAdes and more, run by the Reports agent on the CSC Roihu supercomputer |
 | [**✅ Checks your design first**](#what-you-can-analyse) | Matches samples to files and metadata, flags small groups and confounding before testing |
-| [**🔗 Share and continue**](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX) | Anyone can open a note and continue it in their own workspace |
+| [**🔗 Share and continue**](https://omicsbase.utu.fi/share/2ST5k-dbtSjCisr-XhIeX) | Anyone with the link can open a note and continue it in their workspace |
 | [**🤖 Any model, any agent**](#reports-on-roihu) | Pick the model per note; OpenHands, Claude Code, Codex, Gemini, Pi or OpenCode in Reports |
 
 ## Examples
@@ -80,13 +80,13 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 
 | | |
 | --- | --- |
-| **🔒 Runs as you** | Your own job, in your own CSC project; nobody else sees your files |
-| **⚡ Real compute** | Pick cores, memory and time, up to 36 hours |
-| **🧰 Full toolbox** | R 4.6, Bioconductor 3.23 and Quarto, plus CSC's bio-apps collection (about 300 tools) and CSC's reference databases |
+| **🔒 Runs as you** | A job under your CSC account, in your CSC project; other users can't open your files, and the agent sends what it reads to your model provider |
+| **⚡ Compute** | Pick cores, memory and time, up to 36 hours |
+| **🧰 Software** | R 4.6, Bioconductor 3.23 and Quarto, plus CSC's bio-apps collection (about 300 tools) and CSC's reference databases |
 | **📦 Reproducible runs** | Every session runs in the same pinned container image |
-| **🤖 Your agent** | OpenHands, Claude Code, Codex, Gemini CLI, Pi or OpenCode, with your own key |
+| **🤖 Your agent** | OpenHands, Claude Code, Codex, Gemini CLI, Pi or OpenCode, with your API key |
 
-Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent, with R, Bioconductor and Quarto but without the command-line tools of Roihu. It connects out to OmicsBase, so it needs no open ports, and your files stay on it.
+Needs a CSC account and a project with Roihu access. Without Roihu, choose **Use my own computer** on the Reports page. Any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent, with R, Bioconductor and Quarto but without the command-line tools of Roihu. It connects out to OmicsBase, so it needs no open ports, and the files are stored on it.
 
 ## Getting started
 
@@ -102,12 +102,12 @@ curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh |
 
 On Linux or a Mac, paste it into a terminal; on Windows, into an Ubuntu (WSL) terminal, with Docker Desktop's WSL integration turned on. The images are built for Intel/AMD, so Apple-silicon Macs run them emulated, which is slow.
 
-The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and results go only to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. Neither has the command-line tools of Reports on Roihu: they run R, Bioconductor and Quarto, plus MAFFT and IQ-TREE 2 in notes. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and what R prints go to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. Neither has the command-line tools of Reports on Roihu: they run R, Bioconductor and Quarto, plus MAFFT and IQ-TREE 2 in notes. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
 
 Either half can run on a bigger machine while the install stays on your laptop:
 
 - **Notes:** start the engine on a server and set `ENGINE_URL` in `~/omicsbase/.env`; see [local/engine-server](local/engine-server/README.md).
-- **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine. On your own install the connection runs the other way than on omicsbase.utu.fi: the install connects to that machine, so it must accept connections from the install on port 8443. Paste the pairing string it prints, and Reports runs there.
+- **Reports:** choose **Use my own computer** on the Reports page. It shows one `docker run` command for the other machine. On a local install the connection runs the other way than on omicsbase.utu.fi: the install connects to that machine, so it must accept connections from the install on port 8443. Paste the pairing string it prints, and Reports runs there.
 
 Guides for using, running and developing OmicsBase: [omicsbase.utu.fi/docs](https://omicsbase.utu.fi/docs/). To work on OmicsBase itself, start with [How OmicsBase fits together](https://omicsbase.utu.fi/docs/develop/architecture.html).
 
@@ -129,8 +129,8 @@ OmicsBase builds on open-source AI and bioinformatics projects. See [UPSTREAM.md
 | Project | Role in OmicsBase |
 | --- | --- |
 | [**LibreChat**](https://github.com/LibreChat-AI/LibreChat) | Workspace UI, model routing and the notes that run R |
-| [**OpenHands**](https://github.com/OpenHands/OpenHands) | The Reports agent and Agent Canvas, run in your own Roihu job |
-| [**Bioconductor**](https://bioconductor.org) | R packages, reference datasets, and books powering the knowledge base |
+| [**OpenHands**](https://github.com/OpenHands/OpenHands) | The Reports agent and Agent Canvas, run in your Roihu job |
+| [**Bioconductor**](https://bioconductor.org) | R packages, reference datasets, and the books the agent searches |
 | [**Quarto**](https://quarto.org) | Multi-page HTML, PDF, and Word report rendering |
 
 ## Licence

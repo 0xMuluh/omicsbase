@@ -3,7 +3,7 @@ title: "Install on your own machine"
 description: "Run OmicsBase notes and Reports on your own computer with one command."
 ---
 
-You can run OmicsBase on your own computer. You get notes and Reports, as on [omicsbase.utu.fi](https://omicsbase.utu.fi), and you use your own model. Both run the R stack only: R, Bioconductor and their packages, without command-line bioinformatics tools such as fastp, Kraken 2, read aligners or assemblers. For those, use [Reports on Roihu](../start/reports-roihu.qmd#bio-tools) on omicsbase.utu.fi.
+You can run OmicsBase on your own computer. You get notes and Reports, as on [omicsbase.utu.fi](https://omicsbase.utu.fi), with a model you bring. Both run the R stack only: R, Bioconductor and their packages, without command-line bioinformatics tools such as fastp, Kraken 2, read aligners or assemblers. For those, use [Reports on Roihu](../start/reports-roihu.qmd#bio-tools) on omicsbase.utu.fi.
 
 ## What you need {#what-you-need}
 
@@ -17,7 +17,7 @@ You can run OmicsBase on your own computer. You get notes and Reports, as on [om
 
 ### 1. Get Docker {#step-docker}
 
-Docker is a program that runs OmicsBase in sealed boxes, called containers, so you do not have to install R or anything else yourself.
+Docker runs OmicsBase in containers that include R and everything else it needs.
 
 ::: {.panel-tabset}
 
@@ -42,7 +42,7 @@ WSL (Windows Subsystem for Linux) lets Windows run Linux. OmicsBase runs in its 
 
 :::
 
-**You see:** Docker is installed. On a Mac or Windows, the Docker Desktop window says Docker is running.
+On a Mac or Windows, the Docker Desktop window then says Docker is running.
 
 ### 2. Give Docker enough memory {#step-memory}
 
@@ -68,11 +68,7 @@ Docker Desktop has its own memory limit. Open Docker Desktop, go to **Settings >
 
 :::
 
-**You see:** the memory setting shows 8 GB or more.
-
 ### 3. Open a terminal {#step-terminal}
-
-A terminal is a window where you type commands.
 
 ::: {.panel-tabset}
 
@@ -89,8 +85,6 @@ Open the **Terminal** app. It is in Applications > Utilities.
 Open **Ubuntu** from the Start menu. Use this window for every command on these pages, not PowerShell.
 
 :::
-
-**You see:** a window with a blinking cursor, waiting for you to type.
 
 ### 4. Run the install command {#step-command}
 
@@ -117,7 +111,7 @@ OmicsBase is running: http://localhost:3080
   Update:  run the install command again
 ```
 
-Lines that start with `Note:` are warnings; the install carries on. If you see `OmicsBase was not installed:`, it stopped. Look up the message in [Troubleshooting](troubleshooting.qmd).
+Lines that start with `Note:` are warnings; the installer carries on. If you see `OmicsBase was not installed:`, it stopped. Look up the message in [Troubleshooting](troubleshooting.qmd).
 
 ### 5. Create your account {#step-account}
 
@@ -126,7 +120,7 @@ Open <http://localhost:3080> in your web browser. Click **Sign up**, fill in **F
 <!-- screenshot: local-sign-up-page — the browser at http://localhost:3080 showing the OmicsBase sign-up form -->
 ![](../images/screens/local-sign-up-page.webp){.screenshot fig-alt="The browser at http://localhost:3080 showing the OmicsBase sign-up form."}
 
-The first account on your install becomes the admin.
+The first account becomes the admin.
 
 <!-- screenshot: local-first-account — OmicsBase just after the first account was created, showing the landing page with the example notes -->
 
@@ -139,7 +133,7 @@ Notes need a model. Pick one in the model picker:
 - **With a key:** choose OpenRouter, OpenAI, Anthropic or Google, and paste your key when asked. Each person enters their own key, and it is stored encrypted for them.
 - **With Ollama:** models you have already pulled in [Ollama](https://ollama.com) on this computer appear under **Ollama**, with no key. Pick one that supports tool calls; notes need them.
 
-**You see:** the model's name in the picker. Ask your first question; see [Your first note](../start/first-note.qmd). For which models work well, see [Pick a model](../start/models.qmd).
+Then ask your first question; see [Your first note](../start/first-note.qmd). For which models work well, see [Pick a model](../start/models.qmd).
 
 ## Stop and start {#stop-start}
 
@@ -163,13 +157,13 @@ To update, run the install command again. See [Updating and backups](updating.qm
 
 ### Who can reach it {#who-can-reach-it}
 
-OmicsBase opens at <http://localhost:3080> and only on this computer. Other computers on your network cannot open it.
+OmicsBase opens at <http://localhost:3080>, and only this computer can reach it.
 
-Anyone who can open the address on this computer can create an account. Each account has its own notes, but Reports runs in one shared container, so accounts on the same install can reach each other's reports.
+Anyone who can open the address on this computer can create an account. Each account has its own notes, but Reports runs in one shared container, so accounts on the same installation can reach each other's reports.
 
 ### What leaves your computer {#what-leaves}
 
-Notes and Reports run on your computer. Your questions, code and results go only to the model provider you chose. Apart from that, OmicsBase downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts.
+Notes and Reports run on your computer. Your questions, code and what R prints go to the model provider you chose. Apart from that, OmicsBase downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts.
 
 ### Ollama on Linux {#ollama-linux}
 
@@ -212,7 +206,7 @@ Inside `data/`:
 
 To install into another folder, or a particular version, see [Install-time settings](settings.qmd#install-time).
 
-### Use more powerful machines {#bigger-machines}
+### Use bigger machines {#bigger-machines}
 
 OmicsBase can stay on your laptop while the heavy work runs elsewhere:
 

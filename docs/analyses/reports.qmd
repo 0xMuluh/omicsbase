@@ -2,7 +2,7 @@
 title: "Writing reports"
 ---
 
-A report tells the story of your analysis: what you asked, what you did, what you found. OmicsBase writes reports with **Quarto**, a tool that turns text and R code into web pages or documents. You can make a report from a single note, or hand a whole project to **Reports**.
+OmicsBase writes reports in Quarto, either from a single note or, for a whole project, in Reports.
 
 ## From a note
 
@@ -20,21 +20,21 @@ The file has your questions as headings, the note's answers as text, and every R
 
 ### Ask the note to render a report
 
-A note can also build its work into a small Quarto website and give you a link to look at it. Ask for it at the end of your analysis. If there is no Quarto project yet, the note starts a simple one for you.
+At the end of an analysis, ask the note to render its work as a small Quarto website; it replies with a link to the site. If there is no Quarto project yet, the note creates a simple one.
 
 ## In Reports
 
-For a bigger project, use Reports. You get your own analysis agent that works on your data from start to finish and delivers a finished report. Reports runs on the CSC Roihu supercomputer, with the cores, memory and time you choose. See [Reports on Roihu](../start/reports-roihu.qmd) to set it up. No Roihu account? Choose **Use my own computer** on the Reports page to run the agent on any machine with Docker.
+For a larger project, use Reports, where an analysis agent works through the project on your data and writes the report. On omicsbase.utu.fi it runs on CSC's Roihu supercomputer; [Reports on Roihu](../start/reports-roihu.qmd) explains the setup. Without a Roihu account, choose **Use my own computer** on the Reports page to run the agent on any machine with Docker.
 
 <!-- screenshot: reports-rendered-site — a finished multi-page report open in Reports, with the file list and the agent beside it -->
 
 A report from Reports is a multi-page Quarto website:
 
-- **Pages you can click through.** The agent picks the chapters from your study and keeps the menu in step with the pages.
-- **Code you can open.** Every page shows its R code folded away, ready to unfold, with a table of contents at the side.
-- **Checked numbers.** The agent renders the site, looks at the pages, figures and tables, and checks the numbers against the R output before it says it is done.
-- **Findings with context.** The first page starts with the study question and what the data support. Results are tied to the question, the evidence, what they mean and their limits.
-- **Reproducible.** The report ends with `sessionInfo()`, a list of R and every package version used. Every session runs in the same fixed container image.
+- The agent picks the chapters from your study and keeps the site menu in step with the pages.
+- Each page has its R code folded and a table of contents at the side.
+- As its last step, the agent renders the site, looks at the pages, figures and tables, and checks the numbers in the text against the R output.
+- The first page starts with the study question and what the data support. Each result is linked to the question, the evidence, its interpretation and its limits.
+- The report ends with `sessionInfo()`, which lists R and every package version used. Every session runs in the same fixed container image.
 
 You can also ask for:
 
@@ -44,5 +44,5 @@ You can also ask for:
 
 ## Tips
 
-- Tell the agent about your study design and your plan. It picks the chapters and the methods from them.
-- Reports does all its analysis in R and Quarto, not Python.
+- Describe your study design and analysis plan to the agent; it chooses the chapters and methods from them.
+- Reports does all its analysis in R and Quarto.

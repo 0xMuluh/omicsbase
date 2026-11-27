@@ -1,86 +1,81 @@
 ---
 title: "Reports on Roihu"
-description: "Start your own Reports agent on CSC's Roihu supercomputer: what you need, the launch form, the session, your files and what it costs."
+description: "Start a Reports agent on CSC's Roihu supercomputer: requirements, the launch form, the session, file storage and costs."
 ---
 
-Reports is where an AI agent writes, runs and renders a report of your analysis. On omicsbase.utu.fi the agent runs on Roihu, the supercomputer of CSC (Finland's centre for scientific computing). It runs as you, so nobody else can see your files. Besides R and Bioconductor, a session on Roihu can use about 300 bioinformatics tools from CSC, such as fastp, Kraken 2, MetaPhlAn, minimap2 and SPAdes, so it can start from raw sequencing reads. See [Bioinformatics tools on Roihu](#bio-tools).
+In Reports, an AI agent writes and runs the code for a report of your analysis. On omicsbase.utu.fi the agent runs on Roihu, the supercomputer of CSC (Finland's centre for scientific computing). It runs in a job under your CSC account, reads and runs the files in your workspace, and sends what it reads or prints to the model provider of your key ([what is sent](faq.qmd#what-leaves-the-server)). Besides R and Bioconductor, a session on Roihu can use about 300 bioinformatics tools from CSC, such as fastp, Kraken 2, MetaPhlAn, minimap2 and SPAdes, so an analysis can start from raw sequencing reads (FASTQ files). See [Bioinformatics tools on Roihu](#bio-tools).
 
-No CSC account? Use [your own computer](reports-own-computer.qmd) instead.
+If you have no CSC account, run Reports on [your own computer](reports-own-computer.qmd).
 
 ## What you need {#what-you-need}
 
-- [ ] **A CSC account**: your login for CSC's computers. [How to get one](#csc-account).
-- [ ] **A CSC project with Roihu**: the shared account of your research group that pays for computing time. [How to join or create one](#csc-project).
-- [ ] **A CSC access token**: a password that lasts one day and lets OmicsBase start Roihu for you. Get a new one each time you start. [How to get one](#access-token).
-- [ ] **Your own model key**, from the provider of the AI model the agent uses. See [Models](models.qmd).
+- [ ] **A CSC account**. [How to get one](#csc-account).
+- [ ] **A CSC project with Roihu**, which pays for computing time. [How to join or create one](#csc-project).
+- [ ] **A CSC access token**, valid for one day, which OmicsBase uses to start Roihu for you. Get a new one each time you start. [How to get one](#access-token).
+- [ ] **Your own model key** for the model the agent uses. See [Models](models.qmd).
 
 ## Start a session {#start}
 
-1. **Sign in at [omicsbase.utu.fi](https://omicsbase.utu.fi).**
-   OmicsBase opens, with the sidebar on the left.
+1. Sign in at [omicsbase.utu.fi](https://omicsbase.utu.fi).
 
-2. **Choose Reports in the sidebar.**
-   You see your reports and a **New report** button.
+2. Choose **Reports** in the sidebar.
 
    <!-- screenshot: reports-page — the Reports list in the sidebar and main area; highlight the Reports item and the New report button -->
    ![](../images/screens/reports-page.webp){.screenshot fig-alt="The Reports list in the sidebar and main area."}
 
-3. **Open a report.** To make one, choose **New report**, type a **Report name** and choose **Create report**.
-   The report opens, with a **Notes** tab and a **Workspace** tab at the top.
+3. Open a report. To make one, choose **New report**, type a **Report name** and choose **Create report**.
 
-4. **Choose the Workspace tab.**
+4. Choose the **Workspace** tab at the top of the report.
    A form opens: **Start a Reports session on Roihu**.
 
-5. **Fill in the form.** Type your **CSC project**, keep the suggested **CPU cores**, **Memory (GiB)** and **Time (hours)**, and paste your token into **CSC access token**. [What each field means](#launch).
-   All fields show values and no red messages.
+5. Type your **CSC project**, keep the suggested **CPU cores**, **Memory (GiB)** and **Time (hours)**, and paste your token into **CSC access token**. [What each field means](#launch).
 
    <!-- screenshot: launch-form-filled — the Roihu form with project_1234567, 2 cores, 8 GiB, 4 hours and a masked token; highlight the Get a token from MyCSC link and the Launch button -->
    ![](../images/screens/launch-form-filled.webp){.screenshot fig-alt="The Roihu form with project_1234567, 2 cores, 8 GiB, 4 hours and a masked token."}
 
-6. **Choose Launch.**
-   A card shows what Roihu is doing. The first time in a project it says **Preparing Reports for project_1234567** for about 5 minutes. Then **Waiting for a Roihu node** and **Starting your agent**. Keep the page open.
+6. Choose **Launch**.
+   A card shows what Roihu is doing. The [first time in a project](#first-launch) it says **Preparing Reports for project_1234567** for about 5 minutes. Then it shows **Waiting for a Roihu node** and **Starting your agent**. Keep the page open.
 
    <!-- screenshot: preparing-card — the card "Preparing Reports for project_1234567" with its spinner and the Stop session button -->
 
-7. **Wait until the bar appears.**
+7. Wait until the bar appears.
    A bar at the top says **Roihu session running**, with your project, cores and memory. Below it is your workspace: the agent, your files and the report preview. It may take a few seconds before the workspace responds.
 
    <!-- screenshot: session-bar — the green "Roihu session running" bar with project, cores, memory and end time; highlight the Stop session button on the right -->
 
-8. **Choose an agent and add your model key.** [How](#agent-and-model).
-   The agent is ready for your first request.
+8. Choose an agent and add your model key. [How](#agent-and-model).
 
    <!-- screenshot: workspace — the running workspace with the agent panel, the file tree and the agent menu open on Switch Agent Engine -->
 
-One session serves all your reports: start it once, then open any report's **Workspace** tab.
+One session serves all your reports. Start it once, then open any report's **Workspace** tab.
 
 When you are done, [stop the session](#stop).
 
 ## The form {#launch}
 
-**All fields are required.**
+All fields are required.
 
 | Field | What to enter | Allowed |
 | --- | --- | --- |
-| **CSC project** | Your project's ID, such as `project_1234567`. Find it under *Projects* in [MyCSC](https://my.csc.fi). **Billing units are charged to this project.** | `project_` and seven digits |
+| **CSC project** | Your project's ID, such as `project_1234567`. Find it under *Projects* in [MyCSC](https://my.csc.fi). The session's billing units are charged to this project. | `project_` and seven digits |
 | **CPU cores** | How many processors the agent and its R code use. Suggested: 2. | 1 to 8 |
 | **Memory (GiB)** | How much memory. Suggested: 8. Give more for big data, such as assemblies or large single-cell data. | 2 to 64 |
 | **Time (hours)** | How long the session may run. Suggested: 4. | 1 to 36 |
-| **CSC access token** | The token from MyCSC. The link **Get a token from MyCSC** under the field opens the page. | Any token |
+| **CSC access token** | The token from MyCSC. The **Get a token from MyCSC** link under the field opens the token page. | Any token |
 
 More cores, memory and hours cost more of your project's billing units; see [What it costs](#charges).
 
 ### The first launch in a project {#first-launch}
 
-The first time anyone in a project launches Reports, Roihu downloads the Reports software once, which takes about 5 minutes. After that, launches by you and your colleagues in that project start faster. A new version of OmicsBase downloads it once more.
+The first time anyone in a project launches Reports, Roihu downloads the Reports software into the project. Later launches by any member of that project reuse it and start faster. After a new version of OmicsBase, the software is downloaded once more.
 
 ## Choose an agent and add your key {#agent-and-model}
 
 1. In the workspace header, open the agent menu. Its tooltip says **Agent:** and the agent's name.
 2. Under **Switch Agent Engine**, choose **Default OpenHands**, **Codex Agent**, **Claude Code**, **Gemini CLI**, **Pi** or **OpenCode**. Switching starts a new conversation with the agent.
-3. **Model keys go in the agent's own settings.** Open the agent's settings in the workspace and paste the key from your model provider.
+3. Open the agent's settings in the workspace and paste the key from your model provider.
 
-The agent sends its requests from Roihu straight to your model provider, with your key. The models you use in notes do not apply here. [Getting a key](models.qmd).
+The agent sends its requests from Roihu straight to your model provider, with your key. The requests carry what the agent reads and prints, including the contents of files it opens. The models you use in notes do not apply here. [Getting a key](models.qmd).
 
 ## The session bar {#session-bar}
 
@@ -93,13 +88,13 @@ If you see **This browser could not connect to your session.**, choose **Try aga
 1. Choose **Stop session** in the bar.
 2. Confirm the question **Stop your Reports session on Roihu? Your files stay in your project folder.**
 
-You see **Your session was stopped.** and the form again. Stop when you are done: your project pays only for the time the session runs.
+You see **Your session was stopped.** and the form again. Your project pays only for the time the session runs, so stop it when you are done.
 
-When the time you chose runs out, the session stops by itself and you see **Your session reached its time limit.** Your files stay.
+When the time you chose runs out, the session stops by itself and you see **Your session reached its time limit.**
 
 ## Bioinformatics tools on Roihu {#bio-tools}
 
-A session on Roihu has R and Bioconductor, like a note. It can also use CSC's collection of biology tools on Roihu: about 300 command-line programs. So the agent can start from raw sequencing reads (FASTQ files), not only from tables.
+A session on Roihu has R and Bioconductor, like a note, and can use CSC's collection of about 300 command-line biology tools.
 
 Some of the tools, by step:
 
@@ -117,17 +112,17 @@ Some of the tools, by step:
 | Handle alignments and find variants | samtools, bcftools, GATK, freebayes |
 | Genome-wide association (GWAS) | PLINK |
 
-CSC also keeps ready-made reference databases on Roihu, so you do not have to download them: Kraken 2 and MetaPhlAn databases, and databases for BLAST and DIAMOND. Kraken 2 and MetaPhlAn are set up to find their databases.
+CSC keeps reference databases on Roihu for Kraken 2, MetaPhlAn, BLAST and DIAMOND. Kraken 2 and MetaPhlAn are set up to find theirs.
 
-You do not install or switch on anything yourself. The agent loads a tool with `module load` when a step needs it, for example `module load bio-apps/v202603` and then `module load fastp/1.3.6`. It loads only what the step needs, because some tools need a particular version of another tool. To use a tool, name it in your request:
+The agent loads a tool with `module load` when a step needs it, for example `module load bio-apps/v202603` and then `module load fastp/1.3.6`. It loads only what the step needs, because some tools need a particular version of another tool. To use a tool, name it in your request:
 
 ```text
 The paired FASTQ files in data/reads are stool metagenomes. Trim them with fastp, classify the reads with Kraken 2 and estimate species abundances with Bracken. Then load the Bracken tables into a TreeSummarizedExperiment.
 ```
 
-Big steps, such as assembly, need more memory; choose it in [the form](#launch). The results, such as count tables and profiles, can also go into a note: upload them there and the note analyses them in R.
+Steps such as assembly need more memory; set it in [the form](#launch). Count tables and profiles from these steps can be uploaded to a note and analysed there in R.
 
-Every tool, with its versions and how to use it, is in CSC's [list of biology tools](https://docs.csc.fi/apps/bio-apps/). [Reports on your own computer](reports-own-computer.qmd) does not have these tools.
+Every tool, with its versions and how to use it, is in CSC's [list of biology tools](https://docs.csc.fi/apps/bio-apps/). [Reports on your own computer](reports-own-computer.qmd) has R and Bioconductor only.
 
 ## Get ready with CSC {#csc-setup}
 
@@ -141,11 +136,11 @@ If you work at a Finnish university, university of applied sciences or research 
 2. Choose *Haka* (universities and research institutes) or *Virtu* (government agencies), and sign in with your work account.
 3. Fill in the sign-up page, set your CSC password from the email CSC sends, and set up a login code app on your phone when asked.
 
-No Haka or Virtu, for example if you work abroad? Ask the manager of your group's CSC project to contact the CSC Service Desk. CSC's guide: [How to create a new CSC user account](https://docs.csc.fi/accounts/how-to-create-new-user-account/).
+If you have no Haka or Virtu login, for example because you work abroad, ask the manager of your group's CSC project to contact the CSC Service Desk. CSC's guide: [How to create a new CSC user account](https://docs.csc.fi/accounts/how-to-create-new-user-account/).
 
 ### Join or create a CSC project {#csc-project}
 
-A CSC project is your group's shared account at CSC: it holds the billing units that pay for your sessions. Its ID looks like `project_1234567`.
+A CSC project holds your group's billing units, which pay for your sessions. Its ID looks like `project_1234567`.
 
 #### Join your group's project {#join-project}
 
@@ -153,38 +148,38 @@ Ask your group's project manager to add you in MyCSC, or to send you the project
 
 #### Create your own project {#create-project}
 
-Staff of Finnish universities and state research institutes can create one: in [MyCSC](https://my.csc.fi), choose *Projects*, then *+ New project*, choose *Academic*, fill in the form, tick Roihu among the services and accept the terms. CSC's guide: [Creating a new project](https://docs.csc.fi/accounts/how-to-create-new-project/).
+Staff of Finnish universities and state research institutes can create one. In [MyCSC](https://my.csc.fi), choose *Projects*, then *+ New project*, choose *Academic*, fill in the form, tick Roihu among the services and accept the terms. CSC's guide: [Creating a new project](https://docs.csc.fi/accounts/how-to-create-new-project/).
 
 #### Turn on Roihu for yourself {#roihu-access}
 
-The project manager turns Roihu on for the project. Then you accept it for yourself:
+After the project manager turns Roihu on for the project, each member accepts it:
 
 1. In [MyCSC](https://my.csc.fi), choose *Projects* and open the project.
-2. Under *Services*, choose Roihu. It has a bell symbol.
+2. Under *Services*, choose Roihu, marked with a bell symbol.
 3. Accept the terms of use.
 
 CSC's guide: [Adding service access for a project](https://docs.csc.fi/accounts/how-to-add-service-access-for-project/).
 
 ### Billing units {#billing-units}
 
-Billing units are CSC's credits for computing time and storage. For academic research and teaching at Finnish universities and research institutes they are free: you pay no money, but your project needs credits left. You see how many your project has under *Projects* in [MyCSC](https://my.csc.fi), in the project's *Resources*, and ask for more under *Resource Applications*. If they run out, Roihu does not start new sessions. CSC's guides: [Billing](https://docs.csc.fi/accounts/billing/) and [Applying for billing units](https://docs.csc.fi/accounts/how-to-apply-for-billing-units/).
+Billing units are CSC's credits for computing time and storage. For academic research and teaching at Finnish universities and research institutes they cost no money, but the project needs units left. You see how many it has under *Projects* in [MyCSC](https://my.csc.fi), in the project's *Resources*, and ask for more under *Resource Applications*. If they run out, Roihu does not start new sessions. CSC's guides: [Billing](https://docs.csc.fi/accounts/billing/) and [Applying for billing units](https://docs.csc.fi/accounts/how-to-apply-for-billing-units/).
 
 ### Get a CSC access token {#access-token}
 
-A token is a password that lasts 24 hours. It lets OmicsBase start, check and stop your session on Roihu, and nothing else.
+The access token works like a password and is valid for 24 hours. OmicsBase uses it to start, check and stop your session on Roihu.
 
-1. Open CSC's [token page](https://my.csc.fi/firecrest-token). In the form, the link **Get a token from MyCSC** goes there too.
+1. Open CSC's [token page](https://my.csc.fi/firecrest-token), or choose **Get a token from MyCSC** under the form's token field.
 2. Sign in with your CSC account.
 3. Copy the token and paste it into **CSC access token**.
 
-Keep a token private, like a password: anyone who has it can use Roihu as you. If you think someone saw it, cancel it as CSC explains in [Revoking a personal access token](https://docs.csc.fi/supercomputing/firecrest/connecting/#revoking-a-personal-access-token).
+Anyone who has the token can use Roihu as you, so keep it private. If you think someone saw it, cancel it as CSC explains in [Revoking a personal access token](https://docs.csc.fi/supercomputing/firecrest/connecting/#revoking-a-personal-access-token).
 
 ## More detail {#more}
 
 ::: {#files .callout-note collapse="true"}
 ## Where your files are
 
-Your files stay in your CSC project on Roihu, in the project's scratch folder (CSC's fast working storage):
+Your files are stored in your CSC project's scratch folder on Roihu:
 
 ```text
 /scratch/project_1234567/omicsbase-reports/
@@ -195,20 +190,20 @@ Your files stay in your CSC project on Roihu, in the project's scratch folder (C
     └── logs/               what the job printed, useful when something fails
 ```
 
-Only you can read your own folder. Your reports, agent settings and conversations are still there next time.
+Other members of the project cannot read your folder. The agent can, while your session runs. Your reports, agent settings and conversations are kept between sessions.
 
 To download or upload files without a session, use the file browser of the [Roihu web interface](https://docs.csc.fi/supercomputing/webinterface/) at [www.roihu.csc.fi](https://www.roihu.csc.fi).
 
-CSC deletes files in scratch that nobody has opened or changed for 180 days (90 days in projects with 5 TiB of scratch or more), and warns at least a month before. Copy reports you want to keep somewhere safe. See CSC's [disk cleaning policy](https://docs.csc.fi/supercomputing/usage-policy/#disk-cleaning).
+CSC deletes files in scratch that nobody has opened or changed for 180 days (90 days in projects with 5 TiB of scratch or more), and warns at least a month before. Copy reports you want to keep to other storage. See CSC's [disk cleaning policy](https://docs.csc.fi/supercomputing/usage-policy/#disk-cleaning).
 :::
 
 ::: {#charges .callout-note collapse="true"}
 ## What it costs
 
-Your session uses billing units from the project you typed in the form, only while it runs. Waiting in the queue is free.
+A session uses billing units from the project in the form while it runs. Time waiting in the queue is not charged.
 
 - **Each hour of a session** costs 0.75 billing units per core or 0.375 per GiB of memory, whichever is larger. The suggested 2 cores and 8 GiB cost 3 units an hour; 8 cores and 64 GiB cost 24 an hour.
-- **The first launch in a project** also runs a short download job with 8 cores and 64 GiB: 24 units an hour, so about 2 units for its 5 minutes or so.
+- **The first launch in a project** also runs a short download job with 8 cores and 64 GiB: 24 units an hour, about 2 units in total.
 - **Files** in scratch, including the shared Reports software, cost 6 units per TiB per hour.
 
 CSC's full rules: [Roihu billing](https://docs.csc.fi/supercomputing/hpc-billing/). Your model provider bills you separately for the agent's use of your key.
@@ -234,9 +229,9 @@ To stop it earlier:
 | Message | What to do |
 | --- | --- |
 | **Enter a CSC project in the form project_1234567.** | Type the whole ID: `project_` and seven digits. |
-| **Enter a whole number from 1 to 8.** | **CPU cores** must be a whole number from 1 to 8. |
-| **Enter a whole number from 2 to 64.** | **Memory (GiB)** must be a whole number from 2 to 64. |
-| **Enter a whole number from 1 to 36.** | **Time (hours)** must be a whole number from 1 to 36. |
+| **Enter a whole number from 1 to 8.** | Correct **CPU cores**. The suggested value is 2. |
+| **Enter a whole number from 2 to 64.** | Correct **Memory (GiB)**. The suggested value is 8. |
+| **Enter a whole number from 1 to 36.** | Correct **Time (hours)**. The suggested value is 4. |
 | **Paste your CSC access token.** | The token field is empty. [Get a token](#access-token). |
 
 ### Messages after Launch {#launch-errors}
@@ -247,9 +242,9 @@ To stop it earlier:
 | **Your CSC account is not a member of project_1234567. Check the project in MyCSC.** | Check the ID for typos, or ask the project manager to [add you](#join-project). |
 | **Could not create … on Roihu. Check that project_1234567 has scratch space.** | Check that you have [turned on Roihu](#roihu-access) and that the project has [billing units](#billing-units) left. |
 | **Roihu did not accept the job. Check the project and try again.** | Check that you have [turned on Roihu](#roihu-access) and that the project has [billing units](#billing-units) left. |
-| **Roihu did not answer. Try again in a moment.** | Roihu did not respond. Try again later. |
-| **No free Reports slot right now. Try again later.** | OmicsBase cannot take another session just now. Try again later. |
-| **You already have a Reports session. Stop it first.** | You can run one session at a time, on Roihu or on [your own computer](reports-own-computer.qmd). Stop the other one first. |
+| **Roihu did not answer. Try again in a moment.** | Wait a few minutes and choose **Launch** again. |
+| **No free Reports slot right now. Try again later.** | OmicsBase cannot connect another session at the moment. Choose **Launch** again in a few minutes. |
+| **You already have a Reports session. Stop it first.** | One session runs at a time, on Roihu or on [your own computer](reports-own-computer.qmd). Stop the other one first. |
 | **Reports on Roihu is not set up on this server.** | This OmicsBase does not offer Roihu. Use [your own computer](reports-own-computer.qmd). |
 | **Something went wrong. Try again in a moment.** | Try again. If it keeps happening, report it with the time. |
 
@@ -259,7 +254,7 @@ To stop it earlier:
 | --- | --- |
 | [**Preparing the Reports image failed; stop and try again.**]{#failed-preparation} | The download failed, often because of a short network problem. If there is no **Stop session** button: in the [Roihu web interface](https://www.roihu.csc.fi), choose *Jobs*, then *Active jobs*, delete the waiting `omicsbase-reports` job, reload OmicsBase and choose **Launch** again. |
 | **Your session ended (out_of_memory).** | The session needed more memory. Launch again with more **Memory (GiB)**. |
-| **Your session ended (…)** with another reason | Roihu ended the job, for example because a computer failed. Launch again; your files are still there. The `logs/` folder in [your files](#files) shows what happened. |
+| **Your session ended (…)** with another reason | Roihu ended the job, for example because a computer failed. Launch again. The `logs/` folder in [your files](#files) shows what happened. |
 | **Your session reached its time limit.** | Launch again, and choose more **Time (hours)** next time. |
 | **Your CSC access token has expired, so OmicsBase can no longer check or stop this session.** | The session runs until its time is up. To stop it earlier, see [Sessions longer than 24 hours](#long-sessions). |
 | **Your CSC access token has expired, so the job could not be cancelled from here. It ends at its time limit, or cancel it in the Roihu web interface.** | See [Sessions longer than 24 hours](#long-sessions). |

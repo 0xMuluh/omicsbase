@@ -24,7 +24,7 @@ The example notes are downloaded only if they are missing.
 
 ## Pin a version {#pin}
 
-By default, an install follows `latest`, the newest version. To stay on one version, run the install command with that version in front of `sh`, for example:
+By default, OmicsBase follows `latest`, the newest version. To stay on one version, run the install command with that version in front of `sh`, for example:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | OMICSBASE_VERSION=2026.11.20 sh
@@ -40,11 +40,11 @@ To follow the newest version again:
 curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh | OMICSBASE_VERSION=latest sh
 ```
 
-If you run notes on your own server, set the same version in the server's `.env`. See [Notes engine on a server](engine-server.qmd#update).
+If you run notes on a server, set the same version in the server's `.env`. See [Notes engine on a server](engine-server.qmd#update).
 
 ## Back up {#backup}
 
-Everything that is yours is in two places in the install folder:
+Your data and settings are in two places in the install folder:
 
 | Path | What it holds |
 | --- | --- |
@@ -62,7 +62,7 @@ tar czf ~/omicsbase-backup.tgz data .env
 docker compose up -d
 ```
 
-The backup contains your secrets and everyone's notes. Keep it as private as the install itself.
+The backup contains your secrets and everyone's notes, so keep it private.
 
 Some files in `data/projects/` and `data/reports/` are written by Reports, which runs as another user in your group. If `tar` reports `Permission denied` for some of them on Linux, run the `tar` command with `sudo`.
 
@@ -86,7 +86,7 @@ tar czf ~/omicsbase-backup.tgz --exclude=data/engine-cache data .env
 
 ## Move to another machine {#move}
 
-The installer keeps any `data/` and `.env` it finds in the install folder, so you can move an install by copying them.
+The installer keeps any `data/` and `.env` it finds in the install folder, so you can move OmicsBase by copying them.
 
 1. On the old machine, make a [backup](#backup).
 2. Copy `omicsbase-backup.tgz` to the new machine.
@@ -99,7 +99,7 @@ The installer keeps any `data/` and `.env` it finds in the install folder, so yo
 4. Check your user and group id on the new machine with `id -u` and `id -g`. If they differ from `UID` and `GID` in `~/omicsbase/.env`, change them there.
 5. Run the install command. It keeps the copied `data/` and `.env`, downloads the rest and starts OmicsBase.
 
-If you run notes on your own server, the server keeps working with the moved install, because `.env` keeps the same `ENGINE_URL` and secret.
+If you run notes on a server, it keeps working after the move, because `.env` keeps the same `ENGINE_URL` and secret.
 
 ## Uninstall {#uninstall}
 
@@ -117,12 +117,12 @@ cd ~/omicsbase && docker compose down
 cd ~/omicsbase && docker compose down --rmi all
 ```
 
-**3. Also delete your data.** This permanently deletes every account, note, uploaded file and report on this install, and your settings and secrets. It cannot be undone. Make a [backup](#backup) first if you may want any of it.
+**3. Also delete your data.** This permanently deletes every account, note, uploaded file and report on this installation, and your settings and secrets. It cannot be undone. Make a [backup](#backup) first if you may want any of it.
 
 ```bash
 rm -rf ~/omicsbase
 ```
 
-Some files in `data/projects/` and `data/reports/` are written by Reports, which runs as another user in your group. If `rm` reports `Permission denied` for some of them on Linux, run the same command with `sudo`.
+On Linux, if `rm` reports `Permission denied` for files that Reports wrote, run the same command with `sudo` (see [Back up](#backup)).
 
-If you ran notes on your own server, remove it there too, in its `omicsbase-engine` folder: `docker compose down --rmi all`, then delete the folder. Its `data/` holds the files of notes that ran there.
+If you ran notes on a server, remove it there too, in its `omicsbase-engine` folder: `docker compose down --rmi all`, then delete the folder. Its `data/` holds the files of notes that ran there.

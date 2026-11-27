@@ -3,7 +3,7 @@ title: "Your first note"
 description: "Sign in, ask a question in a note and read the R code, output and figures that come back."
 ---
 
-A **note** is where you ask OmicsBase a question about your data. An AI helper, called the agent, writes R code, runs it for you and shows the results in the note. R is the programming language that most biology data tools are written in.
+A **note** is where you ask OmicsBase a question about your data. An AI agent writes R code, runs it and shows the results in the note.
 
 This page takes you from signing in to your first result.
 
@@ -51,9 +51,9 @@ You need a University of Turku account or a Google account.
 The start page is what you see before you sign in. It has:
 
 - **Ask me anything**: the box where you type a question.
-- A button at the top left that shows the model's name. A model is the AI that writes the code. You can pick a different one here; see [Pick a model](models.qmd).
-- **Examples**: finished notes on published data. Click a card's **Explore** button to read the whole note. Cards with **Read report** show a finished Report.
-- **Datasets**: data you can start from right away. **Built in** lists datasets that are already installed. **Open studies** lists public microbiome studies from MGnify and Zenodo.
+- A button at the top left that shows the model's name. Click it to pick a different one; see [Pick a model](models.qmd).
+- **Examples**: recorded notes on published data. Click a card's **Explore** button to read the whole note. Cards with **Read report** show a Report.
+- **Datasets**: data you can load in a new note. **Built in** lists datasets that are already installed. **Open studies** lists public microbiome studies from MGnify and Zenodo.
 - **Search examples and datasets**: a search box for both lists.
 
    <!-- screenshot: landing-examples — the Examples section of the start page with field filters and example cards; highlight one card's Explore button -->
@@ -87,7 +87,7 @@ Your notes are listed under **Note History** in the sidebar. Click one to open i
    <!-- screenshot: model-picker-open — the open model list with descriptions; highlight the button at the top that opens it -->
    ![](../images/screens/model-picker-open.webp){.screenshot fig-alt="The open model list with descriptions."}
 
-[Choose a model](models.qmd) explains what the labels mean and how to use your own key.
+[Choose a model](models.qmd) explains what the labels mean and how to use your OpenRouter key.
 
 ## What you get back {#what-comes-back}
 
@@ -96,7 +96,7 @@ The agent works in small steps. In each reply it usually:
 1. Looks up how to do the task in the Bioconductor books and in the R help pages. You may see these look-ups listed in the reply.
 2. Writes a few lines of R code in an **R cell** and runs it.
 3. Reads the result and tells you in plain words what it found.
-4. Stops and suggests the next step, so you stay in charge.
+4. Stops and suggests the next step.
 
 Each R cell shows:
 
@@ -109,16 +109,16 @@ Each R cell shows:
 <!-- screenshot: r-cell-result — a completed R cell with its code, the "Completed" status, Execution Output and a plot; highlight the Copy R code and Download plot buttons -->
 ![](../images/screens/r-cell-result.webp){.screenshot fig-alt="A completed R cell with its code, the 'Completed' status, Execution Output and a plot."}
 
-The code has really run. The numbers and figures come from your data, not from the agent's imagination. The agent is told never to make up data or results. If a step fails, it reads the error, fixes the code and tries once more. If it fails again, it stops and explains.
+Every number and figure comes from code that ran in the note. If a step fails, the agent reads the error, fixes the code and tries once more; after a second failure it stops and explains.
 
 ## Keep going {#continue}
 
 Type your next request in the message box, for example `Now compare the groups` or `Make the plot bigger and colour by sample type`.
 
-Each note keeps its own R session. A session is R's memory: the tables and results made in earlier cells stay there, so the next step can use them.
+Each note keeps its own R session, so the next step can use the tables and results made in earlier cells.
 
 - **The agent stopped in the middle.** In one reply the agent can only take about ten actions, look-ups included. Type `continue` and send it.
-- **You come back later.** OmicsBase saves the note's R memory when you leave it alone for a while. When you return and run something, it is loaded again. The output then starts with a line saying the R session was restarted and how many saved objects were restored.
+- **You come back later.** OmicsBase saves the note's R session when the note has been idle for a while, and loads it again when you next run something. The output then starts with a line saying the R session was restarted and how many saved objects were restored.
 
 ## Change a cell and run it again {#rerun-a-cell}
 
@@ -139,7 +139,7 @@ You can fix or change code that the agent wrote and run it yourself.
 To see earlier runs of the same cell, click the clock button (**Execution history**) and pick a run from the list.
 
 ::: {.callout-note}
-A cell stops after 10 minutes of R time, whether you or the agent runs it. The clock starts when R starts running the code. When time runs out, R is restarted and you may need to run the earlier cells again; see [The time limit](cells.qmd#time-limit). Ask the agent to split the work into smaller steps or to use a smaller part of the data.
+A cell stops after 10 minutes of R time, whether you or the agent runs it; see [The time limit](cells.qmd#time-limit).
 :::
 
 ## Stop the agent {#stop}
