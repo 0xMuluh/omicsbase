@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "release_branch": "RELEASE_3_23",
+  "release_branch": "RELEASE_3_24",
   "books": [
     {
       "slug": "osca",
       "title": "Orchestrating Single-Cell Analysis with Bioconductor",
       "short": "OSCA",
       "repository": "https://github.com/OSCA-source/OSCA",
-      "commit": "b1d002f82d1d17286a889c08b31f36c19bd83c15",
+      "commit": "01b7457f1974dbf7dbd5784390630b0513520c48",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA",
       "book_url": "https://bioconductor.org/books/release/OSCA/",
@@ -23,7 +23,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA/blob/b1d002f82d1d17286a889c08b31f36c19bd83c15/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA/blob/01b7457f1974dbf7dbd5784390630b0513520c48/DESCRIPTION"
         }
       ]
     },
@@ -32,7 +32,7 @@
       "title": "Orchestrating Spatial Transcriptomics Analysis with Bioconductor",
       "short": "OSTA",
       "repository": "https://github.com/lmweber/OSTA",
-      "commit": "de4d0c826c43ceddcaed58dda37868dbcf512d80",
+      "commit": "7f159e51507ad003de8f2f243d55db1e6f14b295",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSTA",
       "book_url": "https://bioconductor.org/books/release/OSTA/",
@@ -48,7 +48,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/lmweber/OSTA/blob/de4d0c826c43ceddcaed58dda37868dbcf512d80/DESCRIPTION"
+          "url": "https://github.com/lmweber/OSTA/blob/7f159e51507ad003de8f2f243d55db1e6f14b295/DESCRIPTION"
         }
       ]
     },
@@ -57,7 +57,7 @@
       "title": "Orchestrating Microbiome Analysis with Bioconductor",
       "short": "OMA",
       "repository": "https://github.com/microbiome/OMA",
-      "commit": "7b65ff7024f4b4b0764cd91b0a8b3f12511484cf",
+      "commit": "f199a29346e8a642f79c8afd3d88aed5ed97cd93",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OMA",
       "book_url": "https://bioconductor.org/books/release/OMA/",
@@ -73,12 +73,12 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY-NC-SA 4.0",
-          "url": "https://github.com/microbiome/OMA/blob/7b65ff7024f4b4b0764cd91b0a8b3f12511484cf/DESCRIPTION"
+          "url": "https://github.com/microbiome/OMA/blob/f199a29346e8a642f79c8afd3d88aed5ed97cd93/DESCRIPTION"
         },
         {
           "path": "inst/index.qmd",
           "statement": "CC BY-NC 3.0 US (book text; differs from package metadata)",
-          "url": "https://github.com/microbiome/OMA/blob/7b65ff7024f4b4b0764cd91b0a8b3f12511484cf/inst/index.qmd"
+          "url": "https://github.com/microbiome/OMA/blob/f199a29346e8a642f79c8afd3d88aed5ed97cd93/inst/index.qmd"
         }
       ]
     },
@@ -137,7 +137,7 @@
       "title": "Orchestrating Single-Cell Analysis: Basics",
       "short": "OSCA Basics",
       "repository": "https://github.com/OSCA-source/OSCA.basic",
-      "commit": "71cb54c7f1d513bc199771af86ed1b94f359e276",
+      "commit": "77283356cb765320b425a02bf5debe6466144ff6",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA.basic",
       "book_url": "https://bioconductor.org/books/release/OSCA.basic/",
@@ -153,7 +153,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.basic/blob/71cb54c7f1d513bc199771af86ed1b94f359e276/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.basic/blob/77283356cb765320b425a02bf5debe6466144ff6/DESCRIPTION"
         }
       ]
     },
@@ -162,7 +162,7 @@
       "title": "Orchestrating Single-Cell Analysis: Advanced",
       "short": "OSCA Advanced",
       "repository": "https://github.com/OSCA-source/OSCA.advanced",
-      "commit": "6fde3a71b6300c5fcdb254ab280e47521c18e0c2",
+      "commit": "c5abc597e6ac88c3e4b58f522275c3f2fff20f0d",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/OSCA.advanced",
       "book_url": "https://bioconductor.org/books/release/OSCA.advanced/",
@@ -178,7 +178,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "CC BY 4.0",
-          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/6fde3a71b6300c5fcdb254ab280e47521c18e0c2/DESCRIPTION"
+          "url": "https://github.com/OSCA-source/OSCA.advanced/blob/c5abc597e6ac88c3e4b58f522275c3f2fff20f0d/DESCRIPTION"
         }
       ]
     },
@@ -187,7 +187,7 @@
       "title": "RNA-Seq Workflow: Gene-Level Exploratory Analysis & Differential Expression",
       "short": "rnaseqGene",
       "repository": "https://github.com/thelovelab/rnaseqGene",
-      "commit": "19d2ab9e6a801bb8a7f22b250cf69d9023ac965b",
+      "commit": "d0c63c734fd7b889b0199da3b57436ff0f520476",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/rnaseqGene",
       "book_url": "https://www.bioconductor.org/packages/rnaseqGene",
@@ -200,7 +200,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "GPL (>= 2)",
-          "url": "https://github.com/thelovelab/rnaseqGene/blob/19d2ab9e6a801bb8a7f22b250cf69d9023ac965b/DESCRIPTION"
+          "url": "https://github.com/thelovelab/rnaseqGene/blob/d0c63c734fd7b889b0199da3b57436ff0f520476/DESCRIPTION"
         }
       ]
     },
@@ -230,7 +230,7 @@
       "title": "Multi-Omics Factor Analysis (MOFA2) Workflows",
       "short": "MOFA2",
       "repository": "https://github.com/biofam/MOFA2",
-      "commit": "6f1b319824205a1ef20fac25717f0df394f69311",
+      "commit": "6bf0836ba9834d24f61e965f2e5718909c28860f",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/MOFA2",
       "book_url": "https://biofam.github.io/MOFA2/",
@@ -243,7 +243,7 @@
         {
           "path": "DESCRIPTION",
           "statement": "GPL-3",
-          "url": "https://github.com/biofam/MOFA2/blob/6f1b319824205a1ef20fac25717f0df394f69311/DESCRIPTION"
+          "url": "https://github.com/biofam/MOFA2/blob/6bf0836ba9834d24f61e965f2e5718909c28860f/DESCRIPTION"
         }
       ]
     },
@@ -252,7 +252,7 @@
       "title": "Single-cell RNA-seq analyses with scrapper",
       "short": "scrapbook",
       "repository": "https://github.com/libscran/scrapbook",
-      "commit": "362f100cd92d307d00ddef38c905aa9394fa92aa",
+      "commit": "6fd5658b7d93fc0601a4b784e86bf3e4c6b36507",
       "branch": "release",
       "fetch_repository": "https://git.bioconductor.org/packages/scrapbook",
       "book_url": "https://bioconductor.org/books/release/scrapbook/",
@@ -268,7 +268,7 @@
         {
           "path": "LICENSE",
           "statement": "MIT",
-          "url": "https://github.com/libscran/scrapbook/blob/362f100cd92d307d00ddef38c905aa9394fa92aa/LICENSE"
+          "url": "https://github.com/libscran/scrapbook/blob/6fd5658b7d93fc0601a4b784e86bf3e4c6b36507/LICENSE"
         }
       ]
     },

@@ -1,7 +1,10 @@
+# Bioconductor packages come as binaries for this Ubuntu from Posit Package Manager's
+# Bioconductor mirror; Bioconductor's own container binaries are not published for 3.24.
 options(
   Ncpus = min(4L, max(1L, parallel::detectCores(logical = TRUE) - 1L)),
-  BIOCONDUCTOR_USE_CONTAINER_REPOSITORY = TRUE,
-  repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/latest")
+  BIOCONDUCTOR_USE_CONTAINER_REPOSITORY = FALSE,
+  BioC_mirror = "https://packagemanager.posit.co/bioconductor/__linux__/resolute/latest",
+  repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/resolute/latest")
 )
 
 script_args <- commandArgs(trailingOnly = FALSE)
@@ -25,7 +28,7 @@ package_present <- function(pkg) {
 }
 
 runtime_dependencies <- NA
-cran_repo <- "https://packagemanager.posit.co/cran/__linux__/noble/latest"
+cran_repo <- "https://packagemanager.posit.co/cran/__linux__/resolute/latest"
 
 missing_packages <- function(packages) {
   packages[!vapply(packages, package_present, logical(1))]

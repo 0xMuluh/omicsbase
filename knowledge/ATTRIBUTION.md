@@ -9,16 +9,16 @@ The older internal catalog had inaccurate license labels. This manifest records 
 ## Orchestrating Single-Cell Analysis with Bioconductor
 
 - Book: https://bioconductor.org/books/release/OSCA/
-- Source and author/contributor information: https://github.com/OSCA-source/OSCA/tree/b1d002f82d1d17286a889c08b31f36c19bd83c15
-- Pinned revision: `b1d002f82d1d17286a889c08b31f36c19bd83c15`
-- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/OSCA-source/OSCA/blob/b1d002f82d1d17286a889c08b31f36c19bd83c15/DESCRIPTION)
+- Source and author/contributor information: https://github.com/OSCA-source/OSCA/tree/01b7457f1974dbf7dbd5784390630b0513520c48
+- Pinned revision: `01b7457f1974dbf7dbd5784390630b0513520c48`
+- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/OSCA-source/OSCA/blob/01b7457f1974dbf7dbd5784390630b0513520c48/DESCRIPTION)
 
 ## Orchestrating Spatial Transcriptomics Analysis with Bioconductor
 
 - Book: https://bioconductor.org/books/release/OSTA/
-- Source and author/contributor information: https://github.com/lmweber/OSTA/tree/de4d0c826c43ceddcaed58dda37868dbcf512d80
-- Pinned revision: `de4d0c826c43ceddcaed58dda37868dbcf512d80`
-- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/lmweber/OSTA/blob/de4d0c826c43ceddcaed58dda37868dbcf512d80/DESCRIPTION)
+- Source and author/contributor information: https://github.com/lmweber/OSTA/tree/7f159e51507ad003de8f2f243d55db1e6f14b295
+- Pinned revision: `7f159e51507ad003de8f2f243d55db1e6f14b295`
+- CC BY 4.0: [source notice in DESCRIPTION](https://github.com/lmweber/OSTA/blob/7f159e51507ad003de8f2f243d55db1e6f14b295/DESCRIPTION)
 
 ## Orchestrating Microbiome Analysis with Bioconductor
 
@@ -81,9 +81,9 @@ The older internal catalog had inaccurate license labels. This manifest records 
 ## Single-cell RNA-seq Analyses with Scrapper (Scrapbook)
 
 - Book: https://bioconductor.org/books/release/scrapbook/
-- Source and author/contributor information: https://github.com/libscran/scrapbook/tree/362f100cd92d307d00ddef38c905aa9394fa92aa
-- Pinned revision: `362f100cd92d307d00ddef38c905aa9394fa92aa`
-- MIT: [source notice in LICENSE](https://github.com/libscran/scrapbook/blob/362f100cd92d307d00ddef38c905aa9394fa92aa/LICENSE)
+- Source and author/contributor information: https://github.com/libscran/scrapbook/tree/6fd5658b7d93fc0601a4b784e86bf3e4c6b36507
+- Pinned revision: `6fd5658b7d93fc0601a4b784e86bf3e4c6b36507`
+- MIT: [source notice in LICENSE](https://github.com/libscran/scrapbook/blob/6fd5658b7d93fc0601a4b784e86bf3e4c6b36507/LICENSE)
 
 ## Workshop Materials for Tidy Spatial Analysis
 
