@@ -36,7 +36,7 @@
 
 OmicsBase is an open-source AI workspace for omics analysis in R and Bioconductor. In a **note**, the agent answers your question with R code that has already run, and the note keeps the code with its output and figures. For larger projects, **Reports** runs an agent in a job on the CSC Roihu supercomputer, with command-line tools for raw sequencing data and Quarto for the report.
 
-Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of Turku or Google account.
+Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with a university account through Haka or eduGAIN, or with Google.
 
 | | |
 | --- | --- |
@@ -90,7 +90,7 @@ Needs a CSC account and a project with Roihu access. Without Roihu, choose **Use
 
 ## Getting started
 
-Open **[omicsbase.utu.fi](https://omicsbase.utu.fi)** and sign in with your University of Turku account or Google. The [guides](https://omicsbase.utu.fi/docs/) walk you through your first note, adding data, sharing and Reports.
+Open **[omicsbase.utu.fi](https://omicsbase.utu.fi)** and sign in with your university account through Haka or eduGAIN, or with Google. The [guides](https://omicsbase.utu.fi/docs/) walk you through your first note, adding data, sharing and Reports.
 
 ### On your own machine
 

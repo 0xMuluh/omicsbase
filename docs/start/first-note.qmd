@@ -31,20 +31,26 @@ Read [What you get back](#what-comes-back) to understand the reply.
 
 ## Sign in {#sign-in}
 
-You need a University of Turku account or a Google account.
+You can sign in with a university or research institute account, or with a Google account.
 
 1. On the start page, click **Log in** at the top right.
    A page opens with the sign-in choices.
-2. Click **University of Turku (UTU SSO)** if you have a University of Turku account, or **Continue with Google** to use a Google account.
-   The sign-in page of your university or of Google opens.
+2. Click the button that matches your account:
+   - **University sign-in (Haka)** for the University of Turku and the other Finnish universities, universities of applied sciences and research institutes in the Haka federation. A Haka page opens. Under **Select the organisation you are affiliated with**, pick yours, for example **University of Turku**, and click **SELECT**.
+   - **Institution outside Finland (eduGAIN)** for universities and institutes in other countries. A page titled **Find Your Institution** opens. Type the name of your organisation and pick it.
+   - **Continue with Google** for a Google account.
 
-   <!-- screenshot: sign-in-choices — the sign-in page with the two buttons "University of Turku (UTU SSO)" and "Continue with Google"; highlight both -->
-   ![](../images/screens/sign-in-choices.webp){.screenshot fig-alt="The sign-in page with the two buttons 'University of Turku (UTU SSO)' and 'Continue with Google'."}
+   <!-- screenshot: sign-in-choices — the sign-in page with the three buttons "Continue with Google", "University sign-in (Haka)" and "Institution outside Finland (eduGAIN)"; highlight all three -->
+   ![](../images/screens/sign-in-choices.webp){.screenshot fig-alt="The sign-in page with the buttons 'Continue with Google', 'University sign-in (Haka)' and 'Institution outside Finland (eduGAIN)'."}
 
-3. Sign in there as you normally do.
+3. Sign in on your organisation's page, or Google's, as you normally do.
    OmicsBase opens a new, empty note.
 
 **Sign up for free** on the start page leads to the same sign-in choices.
+
+Your account belongs to the organisation and the sign-in you first used, so sign in the same way each time. If an email address already has an account made with another sign-in, OmicsBase says **Authentication failed. Please check your login method and try again.**
+
+Which models you get depends on how you signed in; see [Models for your sign-in](models.qmd#models-by-sign-in).
 
 ## What is on the start page {#start-page}
 
@@ -87,7 +93,7 @@ Your notes are listed under **Note History** in the sidebar. Click one to open i
    <!-- screenshot: model-picker-open — the open model list with descriptions; highlight the button at the top that opens it -->
    ![](../images/screens/model-picker-open.webp){.screenshot fig-alt="The open model list with descriptions."}
 
-[Choose a model](models.qmd) explains what the labels mean and how to use your OpenRouter key.
+[Choose a model](models.qmd) explains what the labels mean, which models your sign-in gives you and how to use your own key.
 
 ## What you get back {#what-comes-back}
 
@@ -105,11 +111,12 @@ Each R cell shows:
 - **Execution Output**: the text that R printed.
 - **Table Preview**: the first rows of a table, with its size, such as "(120 rows × 8 cols)". The download button saves the table.
 - **Plot #1**, **Plot #2** and so on: the figures. Click the download button (**Download plot**) to save one.
+- **Files the cell saved**, such as a table written with `write.csv()` or a figure saved with `ggsave()`, as download links under the cell. Click one to download the file.
 
 <!-- screenshot: r-cell-result — a completed R cell with its code, the "Completed" status, Execution Output and a plot; highlight the Copy R code and Download plot buttons -->
 ![](../images/screens/r-cell-result.webp){.screenshot fig-alt="A completed R cell with its code, the 'Completed' status, Execution Output and a plot."}
 
-Every number and figure comes from code that ran in the note. If a step fails, the agent reads the error, fixes the code and tries once more; after a second failure it stops and explains.
+Every number and figure comes from code that ran in the note. A cell stops at the first line that fails. If a step fails, the agent reads the error, fixes the code and tries once more; after a second failure it stops and explains.
 
 ## Keep going {#continue}
 
@@ -117,7 +124,7 @@ Type your next request in the message box, for example `Now compare the groups` 
 
 Each note keeps its own R session, so the next step can use the tables and results made in earlier cells.
 
-- **The agent stopped in the middle.** In one reply the agent can only take about ten actions, look-ups included. Type `continue` and send it.
+- **The agent stopped in the middle.** In one reply the agent can take about 20 actions, look-ups included. Type `continue` and send it.
 - **You come back later.** OmicsBase saves the note's R session when the note has been idle for a while, and loads it again when you next run something. The output then starts with a line saying the R session was restarted and how many saved objects were restored.
 
 ## Change a cell and run it again {#rerun-a-cell}
@@ -153,4 +160,6 @@ A cell stops after 10 minutes of R time, whether you or the agent runs it; see [
 - [Add your own data](your-data.qmd)
 - [Share a note](share.qmd)
 - [What a cell shows](cells.qmd)
+- [Skills and artifacts](skills.qmd)
+- [Connect GitHub](github.qmd)
 - [Prompts to try for each kind of data](../analyses/index.qmd)

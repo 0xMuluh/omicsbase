@@ -1,0 +1,59 @@
+---
+title: "Skills and artifacts"
+description: "Use the skills for R package development and review that every note has, and open interactive outputs in a panel beside the note."
+---
+
+Every note has two extras that are on from the start: **skills**, written instructions the agent loads for a kind of task, and **artifacts**, interactive outputs that open beside the note.
+
+## Skills {#skills}
+
+A skill is a set of instructions for one kind of task, such as reviewing a pull request or preparing a package for Bioconductor. The agent reads the name and description of each skill. When your request matches one, it loads that skill and follows it.
+
+While it loads a skill, the reply shows **Loading** and the skill's name, then **Loaded** and the name.
+
+### Which skills there are {#which-skills}
+
+Every note has 25 skills for developing and reviewing R packages.
+
+From Bioconductor's [ai-agent-skills](https://github.com/Bioconductor/ai-agent-skills):
+
+| Skill | For |
+| --- | --- |
+| `bioc-pkg-review` | Reviewing your R package against the rubric and checklist that Bioconductor's agent-assisted reviewer uses, before you submit |
+| `bioc-pkg-dev` | Taking an R package or a set of analysis scripts through Bioconductor submission and maintenance |
+| `build-check-bioccheck` | Running and reading `R CMD build`, `R CMD check` and BiocCheck for a Bioconductor package |
+| `bioc-pkg-finder` | Finding the R and Bioconductor packages that suit a task |
+
+From [package-development-skills](https://github.com/0xMuluh/package-development-skills), 21 skills for changing packages one step at a time. Among them are `review-a-pull-request`, `fix-one-bug`, `evolve-public-apis`, `deprecate-and-replace`, `test-at-the-behavioral-boundary`, `document-a-real-workflow`, `prepare-a-bioconductor-ready-package` and `validate-a-package-change`.
+
+### Pick a skill yourself {#pick-a-skill}
+
+1. Click the **+** button in the message box (**Attach and tools**).
+2. Under **Skills**, pick the skill.
+   It appears in the message box beside your text.
+3. Type your request and send it.
+
+   <!-- screenshot: skills-menu — the "Attach and tools" list with the Skills section open; highlight one skill -->
+
+The search box at the top of the list (**Search tools, skills and servers**) finds a skill by name.
+
+## Artifacts {#artifacts}
+
+An artifact is an interactive output that the agent writes in its reply: a web page, a React component, an SVG picture, a Markdown document or a Mermaid diagram. It opens in a panel beside the note.
+
+Ask for one in plain words, for example:
+
+- `Make an interactive table of the 20 most abundant genera as an artifact.`
+- `Draw the analysis steps so far as a diagram.`
+
+In the reply, the artifact shows as a card. Click it (**Click to open**) to open the panel.
+
+<!-- screenshot: artifact-panel — a note with an artifact open in the side panel, showing the Code and Preview tabs and Download Artifact; highlight the tabs -->
+
+In the panel:
+
+- **Preview** shows the artifact, and **Code** shows its source.
+- **Download Artifact** saves it as a file.
+- When the agent changes an artifact, the panel keeps the earlier versions. Pick one with **Change Version**.
+
+The model writes the artifact's code itself, and R does not run it. Numbers in an artifact are the ones the model put there, so check them against the R cells. To build the preview of a React or HTML artifact, your browser loads code from CodeSandbox's service.

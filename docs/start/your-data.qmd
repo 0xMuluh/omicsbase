@@ -36,6 +36,7 @@ Tell the agent what each file holds: which file is the count table, which is the
 | What | Examples |
 | --- | --- |
 | Tables and other text files | `.csv`, `.tsv`, `.txt` |
+| Spreadsheets | `.xlsx`, `.xls`, `.ods` |
 | R data files | `.rds` |
 | Other data formats | Parquet, HDF5, JSON, XML |
 | Archives | `.zip`, `.tar`, `.gz` |
@@ -53,9 +54,9 @@ Notes work in R. Raw sequencing reads (FASTQ files) are processed in [Reports on
 
 ## Where your files are kept {#where-files-live}
 
-Each note has its own folder on the OmicsBase server. Your uploads go into a folder inside it called `data`. A file named `samples.csv` is found at `data/samples.csv`. The agent uses that path in its R code.
+Each note has its own folder on the OmicsBase server. Your uploads go into a folder inside it called `data`. A file named `samples.csv` is found at `data/samples.csv`. Every cell starts in the note's folder, so the agent uses that path in its R code.
 
-Files that the R code writes, such as tables and figures, are saved in the note's folder too.
+Files that the R code writes, such as tables and figures, are saved in the note's folder too. The files a cell creates or changes appear as download links under that cell, up to 50 per cell. When a cell writes more, it says **Showing 50 files. The run wrote more.**
 
 To see everything in the folder, ask the agent: `Which files are in this note?`
 

@@ -149,7 +149,7 @@ export const shots = [
     name: 'sign-in-choices',
     public: true,
     path: '/login',
-    highlight: ['[data-testid="saml"]', '[data-testid="google"]'],
+    highlight: ['[data-testid="google"]', '[data-testid="saml"]', '[data-testid="saml-edugain"]'],
   },
   {
     name: 'landing-examples',
