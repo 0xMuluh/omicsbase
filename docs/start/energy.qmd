@@ -62,7 +62,7 @@ For open models the size is known. The range is narrower there.
 
 ### Why the carbon figure is rough {#carbon}
 
-How much carbon one Wh causes depends on where the electricity is made. OmicsBase does not know which data centre answered your request. The method uses an average for the provider or for the world. It does not use Finland's electricity: the models do not run in Finland.
+How much carbon one Wh causes depends on where the electricity is made. OmicsBase does not know which data centre answered your request. The method uses an average for the provider or, where there is none, for the world.
 
 For one single request, the carbon figure can be several times too high or too low. Totals over many notes are steadier than the figure for one note.
 

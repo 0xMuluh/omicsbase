@@ -3,7 +3,7 @@ title: "Reports on your own computer"
 description: "Run your Reports agent on any computer with Docker: pair it with OmicsBase, work in the workspace, keep your files on it, and disconnect."
 ---
 
-Reports can run on a computer of your own instead of on Roihu: a laptop, a lab workstation or a cloud server. It gets R, Bioconductor and your choice of agent. The computer connects out to OmicsBase, so you open no ports, and your files stay on it. You do not need a CSC account.
+Reports can run on a computer of your own instead of on Roihu: a laptop, a lab workstation or a cloud server. It gets R, Bioconductor and your choice of agent. The computer connects out to OmicsBase, so you open no ports. Files are stored on that computer; what the agent reads or prints goes to the model provider of your key, and what the workspace shows passes through OmicsBase. You do not need a CSC account.
 
 ::: {.callout-important}
 ## R and Bioconductor only
@@ -77,7 +77,7 @@ If you ran a command whose code had already expired, the container says so in it
 1. In the workspace header, open the agent menu and choose an agent under **Switch Agent Engine**.
 2. **Model keys go in the agent's own settings.** Paste your key there.
 
-The agent sends its requests from your computer straight to your model provider, with your key. [Getting a key](models.qmd).
+The agent sends its requests from your computer straight to your model provider, with your key. The requests carry what the agent reads and prints, including the contents of files it opens. [Getting a key](models.qmd).
 
 ## Disconnect {#disconnect}
 

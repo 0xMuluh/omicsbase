@@ -169,7 +169,7 @@ Anyone who can open the address on this computer can create an account. Each acc
 
 ### What leaves your computer {#what-leaves}
 
-Notes and Reports run on your computer. Your questions, code and results go only to the model provider you chose. Apart from that, OmicsBase downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts.
+Notes and Reports run on your computer. Your questions, code and what R prints go to the model provider you chose. Apart from that, OmicsBase downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts.
 
 ### Ollama on Linux {#ollama-linux}
 

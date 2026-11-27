@@ -80,13 +80,13 @@ Use it at [omicsbase.utu.fi](https://omicsbase.utu.fi) with your University of T
 
 | | |
 | --- | --- |
-| **🔒 Runs as you** | Your own job, in your own CSC project; nobody else sees your files |
+| **🔒 Runs as you** | A job under your CSC account, in your CSC project; other users can't open your files, and the agent sends what it reads to your model provider |
 | **⚡ Real compute** | Pick cores, memory and time, up to 36 hours |
 | **🧰 Full toolbox** | R 4.6, Bioconductor 3.23 and Quarto, plus CSC's bio-apps collection (about 300 tools) and CSC's reference databases |
 | **📦 Reproducible runs** | Every session runs in the same pinned container image |
 | **🤖 Your agent** | OpenHands, Claude Code, Codex, Gemini CLI, Pi or OpenCode, with your own key |
 
-Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent, with R, Bioconductor and Quarto but without the command-line tools of Roihu. It connects out to OmicsBase, so it needs no open ports, and your files stay on it.
+Needs a CSC account and a project with Roihu access. No Roihu? Choose **Use my own computer** on the Reports page instead: any machine with Docker (a laptop, a lab workstation, a cloud server) runs your Reports agent, with R, Bioconductor and Quarto but without the command-line tools of Roihu. It connects out to OmicsBase, so it needs no open ports, and the files are stored on it.
 
 ## Getting started
 
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/0xMuluh/omicsbase/main/install.sh |
 
 On Linux or a Mac, paste it into a terminal; on Windows, into an Ubuntu (WSL) terminal, with Docker Desktop's WSL integration turned on. The images are built for Intel/AMD, so Apple-silicon Macs run them emulated, which is slow.
 
-The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and results go only to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. Neither has the command-line tools of Reports on Roihu: they run R, Bioconductor and Quarto, plus MAFFT and IQ-TREE 2 in notes. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
+The first account you create is the admin. Bring a model: paste a key from OpenRouter, OpenAI, Anthropic or Google when you pick one, or use a model running in Ollama. Notes and Reports run on your machine. Your questions, code and what R prints go to the model provider you chose; apart from that, it downloads what it needs (the images, the example notes, and the R packages and public data you ask for), and the Reports page loads its font from Google Fonts. Neither has the command-line tools of Reports on Roihu: they run R, Bioconductor and Quarto, plus MAFFT and IQ-TREE 2 in notes. It needs about 30 GB of disk and 8 GB of memory, and comes with 18 example notes. To update, run the same command again.
 
 Either half can run on a bigger machine while the install stays on your laptop:
 

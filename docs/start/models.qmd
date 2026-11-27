@@ -107,4 +107,4 @@ If a message needs more credits than you have, the note says **You do not have e
 
 ## What the model provider sees {#what-the-provider-sees}
 
-The company that runs the model you picked receives what the model needs to answer: your messages, the code it writes and what R prints back. For files you upload, see [What the model sees of your files](your-data.qmd#what-the-model-sees).
+The company that runs the model you picked receives what the model needs to answer: your messages, the code it writes and what R prints back. If the model comes through OpenRouter, OpenRouter passes the request on to that company. The provider's terms decide how long it keeps what it receives. For files you upload, see [What the model sees of your files](your-data.qmd#what-the-model-sees); for personal data, see [What is sent to the model provider?](faq.qmd#what-leaves-the-server)

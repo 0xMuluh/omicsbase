@@ -25,23 +25,27 @@ You ask a question in a **note**. An AI helper, the agent, writes R code, runs i
 
 ## Where does my code run? {#where-code-runs}
 
-On the OmicsBase servers, not on your computer. Each note has its own R session and its own folder for files.
+On OmicsBase's servers at CSC in Finland. Each note has its own R session and folder.
 
 You can also [run OmicsBase on your own computer](../self-host/install.qmd). Then notes run there.
 
 ## What is sent to the model provider? {#what-leaves-the-server}
 
-The model is the AI that writes the code. It runs at the company that provides it. That company receives:
+The model runs at the company that provides it. In a note, that company receives:
 
 - the messages you type,
 - the code the agent writes,
 - what R prints back, such as the first rows of a table,
 - what the agent looks up in the Bioconductor books and the R help,
-- pictures and short documents you attach.
+- the names of your files, and pictures and short documents you attach.
 
-Data files you upload stay on the OmicsBase server. The model gets only their names, plus whatever R prints about them. See [What the model sees of your files](your-data.qmd#what-the-model-sees).
+Data files you upload stay on OmicsBase's servers at CSC. The model sees only what R prints about them. See [What the model sees of your files](your-data.qmd#what-the-model-sees).
 
-Which company receives it depends on the model you pick. See [Choose a model](models.qmd).
+In Reports the agent works in your files directly, so whatever it opens, runs or prints goes to the provider of your key.
+
+When a model comes through OpenRouter, OpenRouter passes each request to the company that runs the model. Each provider's terms decide how long it keeps what it receives and whether it trains on it. See [Choose a model](models.qmd).
+
+Code and public data are fine to send. Personal data, such as patient records, should go only to a provider your organisation has approved for it.
 
 ## Which R and Bioconductor versions does it use? {#versions}
 

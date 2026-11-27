@@ -109,7 +109,7 @@ Each R cell shows:
 <!-- screenshot: r-cell-result — a completed R cell with its code, the "Completed" status, Execution Output and a plot; highlight the Copy R code and Download plot buttons -->
 ![](../images/screens/r-cell-result.webp){.screenshot fig-alt="A completed R cell with its code, the 'Completed' status, Execution Output and a plot."}
 
-The code has really run. The numbers and figures come from your data, not from the agent's imagination. The agent is told never to make up data or results. If a step fails, it reads the error, fixes the code and tries once more. If it fails again, it stops and explains.
+Every number and figure comes from code that ran in the note. If a step fails, it reads the error, fixes the code and tries once more. If it fails again, it stops and explains.
 
 ## Keep going {#continue}
 

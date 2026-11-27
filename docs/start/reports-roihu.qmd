@@ -3,7 +3,7 @@ title: "Reports on Roihu"
 description: "Start your own Reports agent on CSC's Roihu supercomputer: what you need, the launch form, the session, your files and what it costs."
 ---
 
-Reports is where an AI agent writes, runs and renders a report of your analysis. On omicsbase.utu.fi the agent runs on Roihu, the supercomputer of CSC (Finland's centre for scientific computing). It runs as you, so nobody else can see your files. Besides R and Bioconductor, a session on Roihu can use about 300 bioinformatics tools from CSC, such as fastp, Kraken 2, MetaPhlAn, minimap2 and SPAdes, so it can start from raw sequencing reads. See [Bioinformatics tools on Roihu](#bio-tools).
+Reports is where an AI agent writes, runs and renders a report of your analysis. On omicsbase.utu.fi the agent runs on Roihu, the supercomputer of CSC (Finland's centre for scientific computing). It runs in a job under your CSC account, reads and runs the files in your workspace, and sends what it reads or prints to the model provider of your key ([what is sent](faq.qmd#what-leaves-the-server)). Besides R and Bioconductor, a session on Roihu can use about 300 bioinformatics tools from CSC, such as fastp, Kraken 2, MetaPhlAn, minimap2 and SPAdes, so it can start from raw sequencing reads. See [Bioinformatics tools on Roihu](#bio-tools).
 
 No CSC account? Use [your own computer](reports-own-computer.qmd) instead.
 
@@ -80,7 +80,7 @@ The first time anyone in a project launches Reports, Roihu downloads the Reports
 2. Under **Switch Agent Engine**, choose **Default OpenHands**, **Codex Agent**, **Claude Code**, **Gemini CLI**, **Pi** or **OpenCode**. Switching starts a new conversation with the agent.
 3. **Model keys go in the agent's own settings.** Open the agent's settings in the workspace and paste the key from your model provider.
 
-The agent sends its requests from Roihu straight to your model provider, with your key. The models you use in notes do not apply here. [Getting a key](models.qmd).
+The agent sends its requests from Roihu straight to your model provider, with your key. The requests carry what the agent reads and prints, including the contents of files it opens. The models you use in notes do not apply here. [Getting a key](models.qmd).
 
 ## The session bar {#session-bar}
 
@@ -171,7 +171,7 @@ Billing units are CSC's credits for computing time and storage. For academic res
 
 ### Get a CSC access token {#access-token}
 
-A token is a password that lasts 24 hours. It lets OmicsBase start, check and stop your session on Roihu, and nothing else.
+A token is a password that lasts 24 hours. OmicsBase uses it to start, check and stop your session on Roihu.
 
 1. Open CSC's [token page](https://my.csc.fi/firecrest-token). In the form, the link **Get a token from MyCSC** goes there too.
 2. Sign in with your CSC account.
@@ -195,7 +195,7 @@ Your files stay in your CSC project on Roihu, in the project's scratch folder (C
     └── logs/               what the job printed, useful when something fails
 ```
 
-Only you can read your own folder. Your reports, agent settings and conversations are still there next time.
+Other members of the project cannot read your folder. The agent can, while your session runs. Your reports, agent settings and conversations are still there next time.
 
 To download or upload files without a session, use the file browser of the [Roihu web interface](https://docs.csc.fi/supercomputing/webinterface/) at [www.roihu.csc.fi](https://www.roihu.csc.fi).
 
