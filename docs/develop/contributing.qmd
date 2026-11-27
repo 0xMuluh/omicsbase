@@ -62,7 +62,7 @@ To catch problems before you push, preview the site locally; see [Preview these 
 
 ### The engine image check {#engine-ci}
 
-The workflow `.github/workflows/engine-image.yml` runs on every pull request that touches `engine/`. It copies `knowledge.db` from a published engine image with `scripts/fetch_knowledge_db.py`, builds the engine image, runs each file in `engine/tests` inside it, and loads a few R packages as a random user in group 0, as on LUMI-K. It pushes nothing. The run takes about 35 minutes.
+The workflow `.github/workflows/engine-image.yml` runs on every pull request that touches `engine/`. It copies `knowledge.db` from a published engine image with `scripts/fetch_knowledge_db.py`, builds the engine image, runs each file in `engine/tests` inside it, and loads a few R packages as a random user in group 0, as on LUMI-K. It also extracts the help pages, vignettes and exports of the image's R packages with `scripts/build_package_knowledge.py` and uploads them as the `package-knowledge` artifact; when the R packages change, commit its two files to `engine/knowledge/`. It pushes nothing. The run takes about 35 minutes.
 
 ## Make a release {#release}
 

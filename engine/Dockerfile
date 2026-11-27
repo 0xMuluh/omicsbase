@@ -6,7 +6,7 @@
 # The build needs engine/knowledge/knowledge.db, which is not in git: build it with
 # scripts/setup_knowledge.py, or copy it from a published image with
 # scripts/fetch_knowledge_db.py.
-ARG BASE_IMAGE=bioconductor/bioconductor_docker:RELEASE_3_23
+ARG BASE_IMAGE=bioconductor/bioconductor_docker:RELEASE_3_24
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \

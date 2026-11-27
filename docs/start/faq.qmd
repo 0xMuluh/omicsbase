@@ -49,7 +49,7 @@ Code and public data are fine to send. Personal data, such as patient records, s
 
 ## Which R and Bioconductor versions does it use? {#versions}
 
-Bioconductor 3.23, with the R version that goes with it. To see the exact versions in a note, ask the agent: `Run sessionInfo()`. It lists R and every loaded package with its version.
+Bioconductor 3.24, with the R version that goes with it. To see the exact versions in a note, ask the agent: `Run sessionInfo()`. It lists R and every loaded package with its version.
 
 ## Which packages are installed? {#packages}
 

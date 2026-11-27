@@ -62,3 +62,20 @@ jobs:
               Rscript -e "for (p in c(\"Seurat\", \"clusterProfiler\", \"MicrobiomeStat\", \"mia\", \"MOFA2\", \"IlluminaHumanMethylation450kanno.ilmn12.hg19\")) suppressPackageStartupMessages(library(p, character.only = TRUE))" \
                 -e "stopifnot(reticulate::py_module_available(\"mofapy2\"))" \
                 -e "stopifnot(nrow(getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)) > 400000)"'
+      # Help pages, vignettes and exports of the packages in this image, for
+      # engine/knowledge/package_docs.json and package_exports.json. Commit them from the
+      # artifact when the R packages change.
+      - name: Package knowledge
+        continue-on-error: true
+        run: |
+          mkdir -p package-knowledge
+          docker run --rm --user 0 -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/package-knowledge:/out" \
+            --entrypoint sh "$IMAGE" -c \
+            "cp /app/engine/knowledge/knowledge.db /tmp/knowledge.db && cd /app && python3 scripts/build_package_knowledge.py \
+               --db /tmp/knowledge.db --output-json /out/package_docs.json --exports-json /out/package_exports.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-knowledge
+          path: package-knowledge/
+          if-no-files-found: ignore

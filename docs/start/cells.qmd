@@ -120,7 +120,7 @@ A cell that failed shows no line either.
 - **MOFA2**: multi-omics factor analysis
 - **tidyomics** and **tidy spatial**: tidy-style analysis of omics and spatial data
 
-The Bioconductor books (OMA, OSCA, OSTA, the two OSCA parts, scrapbook, rnaseqGene, MOFA2) are their Bioconductor 3.23 release editions; the others are the versions on their own websites. Package help pages and vignettes do not count as "the book".
+The Bioconductor books (OMA, OSCA, OSTA, the two OSCA parts, scrapbook, rnaseqGene, MOFA2) are their Bioconductor 3.24 release editions; the others are the versions on their own websites. Package help pages and vignettes do not count as "the book".
 
 ## Next steps
 
