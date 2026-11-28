@@ -163,7 +163,7 @@ local({{
     assign(name, fns[[name]], envir = env)
     if (locked) lockBinding(name, env)
   }}
-}}, error = function(e) cat('[note] could not disarm', pkg, 'installers:', conditionMessage(e), '\n'))
+}}, error = function(e) base::cat('[note] could not disarm', pkg, 'installers:', conditionMessage(e), '\n'))
 for (.note_p in names(.note_installers)) {{
   if (isNamespaceLoaded(.note_p)) .note_disarm(.note_p)
   else setHook(packageEvent(.note_p, 'onLoad'), local({{
@@ -190,7 +190,7 @@ if (file.exists(.note_ws)) .note_restore_msg <- tryCatch({{
   # Move the unreadable file aside so later sessions start clean instead of failing again.
   .note_bad <- paste0(.note_ws, {bad_suffix_q}, format(Sys.time(), '%Y%m%d-%H%M%S'))
   .note_moved <- file.rename(.note_ws, .note_bad)
-  cat('[note] workspace load failed:', conditionMessage(e),
+  base::cat('[note] workspace load failed:', conditionMessage(e),
     if (.note_moved) paste('; moved to', .note_bad) else '; could not move it aside', '\n')
   paste0('[note] This note\'s R session was restarted and its saved objects could not be restored: ',
     conditionMessage(e), if (.note_moved) paste0('\n[note] The unreadable file was kept as ',
@@ -220,7 +220,7 @@ for (.note_p in .note_attached) tryCatch(
     .note_state$truncated <- TRUE
   }}
   .note_state$bytes <- .note_state$bytes + nchar(x, type = 'bytes')
-  cat(x, file = .note_state$con, sep = '')
+  base::cat(x, file = .note_state$con, sep = '')
   # Flushed after each write, so the output can be read while the cell runs.
   flush(.note_state$con)
   x
@@ -236,7 +236,7 @@ for (.note_p in .note_attached) tryCatch(
   if (!is.null(.path)) rec$path <- .path
   if (!is.null(.rows)) rec$rows <- .rows
   if (!is.null(.cols)) rec$cols <- .cols
-  writeLines(jsonlite::toJSON(rec, auto_unbox = TRUE, null = 'null'), .note_state$ev_con)
+  base::writeLines(jsonlite::toJSON(rec, auto_unbox = TRUE, null = 'null'), .note_state$ev_con)
   flush(.note_state$ev_con)
   invisible(NULL)
 }}
@@ -252,10 +252,29 @@ for (.note_p in .note_attached) tryCatch(
     base::print(x, ...)
   }}
 }}
-# Cells' print() calls are rewritten to .note_display(), so it alone is reachable from
+# Cells' top-level print() calls are rewritten to .note_display(), so it is reachable from
 # cells, on the search path rather than in .GlobalEnv.
-assign('.note_display', .note_display,
-  envir = attach(NULL, name = 'omicsbase:note', warn.conflicts = FALSE))
+.note_search <- attach(NULL, name = 'omicsbase:note', warn.conflicts = FALSE)
+assign('.note_display', .note_display, envir = .note_search)
+# evaluate() holds printed text until the expression ends, so a loop's print(), cat() and
+# writeLines() pass theirs on at once and it shows while the cell runs. Messages and warnings
+# are passed on at once already.
+assign('print', function(x, ...) {{
+  base::print(x, ...)
+  evaluate::flush_console()
+  invisible(x)
+}}, envir = .note_search)
+assign('cat', function(...) {{
+  base::cat(...)
+  evaluate::flush_console()
+  invisible(NULL)
+}}, envir = .note_search)
+assign('writeLines', function(...) {{
+  base::writeLines(...)
+  evaluate::flush_console()
+  invisible(NULL)
+}}, envir = .note_search)
+rm(.note_search)
 
 # Book badge: lists the functions the cell called and the package each one lives in, looked up
 # after the cell ran so its library() calls count. Never lets a failure reach the cell.
@@ -275,7 +294,11 @@ assign('.note_display', .note_display,
       if (key %in% seen) next
       seen <- c(seen, key)
       f <- if (is.na(ns)) {{
-        get0(name, envir = .GlobalEnv, mode = 'function')
+        found <- get0(name, envir = .GlobalEnv, mode = 'function')
+        # The note's own print(), cat() and writeLines() stand in for base's.
+        if (identical(found, get0(name, envir = as.environment('omicsbase:note'), inherits = FALSE))) {{
+          get0(name, envir = baseenv(), mode = 'function')
+        }} else found
       }} else if (isNamespaceLoaded(ns)) {{
         get0(name, envir = asNamespace(ns), mode = 'function')
       }} else NULL
@@ -296,7 +319,7 @@ assign('.note_display', .note_display,
       if (!is.na(pkg)) rec$package <- pkg
       calls[[length(calls) + 1L]] <- rec
     }}
-    writeLines(jsonlite::toJSON(list(calls = calls, attached = I(.packages())), auto_unbox = TRUE),
+    base::writeLines(jsonlite::toJSON(list(calls = calls, attached = I(.packages())), auto_unbox = TRUE),
       file.path(run_dir, 'calls.json'))
   }}, error = function(e) NULL)
   invisible(NULL)
@@ -361,7 +384,7 @@ assign('.note_display', .note_display,
             if (is.data.frame(x) && ncol(x) > 0L) {{
               .note_display(x)
             }} else {{
-              .note_text(paste0(paste0(capture.output(print(x)), collapse = '\n'), '\n'))
+              .note_text(paste0(paste0(capture.output(base::print(x)), collapse = '\n'), '\n'))
             }}
             invisible(NULL)
           }},
@@ -398,7 +421,7 @@ assign('.note_display', .note_display,
       eval_seconds = (proc.time() - .note_t1)[['elapsed']],
       save_seconds = 0)
     tryCatch(
-      writeLines(jsonlite::toJSON(.note_timing, auto_unbox = TRUE, digits = 6),
+      base::writeLines(jsonlite::toJSON(.note_timing, auto_unbox = TRUE, digits = 6),
         file.path(run_dir, 'timing.json')),
       error = function(e) NULL)
   }})
@@ -412,8 +435,8 @@ assign('.note_display', .note_display,
     save.image(file = paste0(.note_ws, '.tmp'))
     file.rename(paste0(.note_ws, '.tmp'), .note_ws)
     dir.create(dirname(.note_objects_file), showWarnings = FALSE, recursive = TRUE)
-    writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), .note_objects_file)
-  }}, error = function(e) cat('[note] workspace save failed:', conditionMessage(e), '\n'))
+    base::writeLines(sort(ls(.GlobalEnv, all.names = TRUE)), .note_objects_file)
+  }}, error = function(e) base::cat('[note] workspace save failed:', conditionMessage(e), '\n'))
   # In .GlobalEnv only while it is saved.
   suppressWarnings(rm('.note_attached_packages', envir = .GlobalEnv))
 }}
@@ -433,9 +456,9 @@ repeat {{
   }}
   .note_t_cell <- proc.time()
   tryCatch(.note_run(.note_req$run_dir, .note_req$source),
-    error = function(e) cat('[note] kernel request failed:', conditionMessage(e), '\n'))
+    error = function(e) base::cat('[note] kernel request failed:', conditionMessage(e), '\n'))
   tryCatch(
-    writeLines(jsonlite::toJSON(list(id = .note_id, status = 'ok'), auto_unbox = TRUE),
+    base::writeLines(jsonlite::toJSON(list(id = .note_id, status = 'ok'), auto_unbox = TRUE),
       file.path(.note_done_dir, paste0({done_prefix_q}, .note_id, '.json'))),
     error = function(e) NULL)
   # After the cell has answered: the request asks for this only while the saved workspace is small.

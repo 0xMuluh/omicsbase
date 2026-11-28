@@ -1,8 +1,10 @@
 """How a cell runs: it stops at its first error, and package installers neither install nor
 refuse a whole cell. With real R; no model API calls."""
 import asyncio
+import json
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from engine import server
@@ -52,6 +54,29 @@ class NoteCellTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.to_thread(self.run_cell, 'print(exists("after"))')
         self.assertTrue(result["success"])
         self.assertEqual(result["stdout"].strip(), "[1] FALSE")
+
+    async def test_text_printed_in_a_loop_shows_while_the_cell_runs(self):
+        code = ('print.step <- function(x, ...) cat("step method\\n")\n'
+                'for (i in 1:2) {\n  print(i)\n  cat("cat", i, "\\n")\n  writeLines("line")\n'
+                '  print(structure(i, class = "step"))\n  Sys.sleep(5)\n}\nx <- print(3)\nx')
+        run = asyncio.create_task(asyncio.to_thread(self.run_cell, code, "note", RUN))
+        output = ""
+        for _ in range(300):
+            await asyncio.sleep(0.1)
+            status = server._execution_status("note", RUN, 0)
+            if status and "step method" in status["output"]:
+                output = status["output"]
+                break
+        # The loop's first step is shown before the loop, and so the expression, has ended.
+        self.assertFalse(status["done"])
+        self.assertEqual(output, "[1] 1\ncat 1 \nline\nstep method\n")
+        result = await run
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["stdout"], "[1] 1\ncat 1 \nline\nstep method\n"
+                         "[1] 2\ncat 2 \nline\nstep method\n[1] 3\n[1] 3\n")
+        calls = json.loads((Path(self.temp.name) / "note" / result["run_dir"] / "calls.json").read_text())
+        packages = {c["name"]: c.get("package") for c in calls["calls"]}
+        self.assertEqual([packages[n] for n in ("print", "cat", "writeLines")], ["base"] * 3)
 
     async def test_install_guard_for_an_installed_package_runs(self):
         await self.require("BiocManager")
