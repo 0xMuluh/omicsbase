@@ -44,7 +44,9 @@ jobs:
           python3 scripts/setup_knowledge.py
           python3 scripts/build_package_knowledge.py --skip-extract --db engine/knowledge/knowledge.db
       - name: Build
-        run: docker build --progress=plain -t "$IMAGE" engine
+        env:
+          GITHUB_PAT: ${{ github.token }}
+        run: docker build --progress=plain --secret id=github_pat,env=GITHUB_PAT -t "$IMAGE" engine
       - name: Size and free space
         run: |
           docker image inspect --format '{{.Size}}' "$IMAGE" | numfmt --to=si --suffix=B
