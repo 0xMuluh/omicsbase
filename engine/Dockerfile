@@ -56,7 +56,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY image/r-package-list.R image/r-packages.R /tmp/r/
 RUN R_PACKAGE_STAGE=cran Rscript /tmp/r/r-packages.R
 RUN R_PACKAGE_STAGE=bioc Rscript /tmp/r/r-packages.R
-RUN R_PACKAGE_STAGE=github Rscript /tmp/r/r-packages.R && rm -rf /tmp/r
+# CI passes its GitHub token, so the GitHub API does not refuse a shared runner address.
+RUN --mount=type=secret,id=github_pat \
+    GITHUB_PAT="$(cat /run/secrets/github_pat 2>/dev/null)" \
+    R_PACKAGE_STAGE=github Rscript /tmp/r/r-packages.R && rm -rf /tmp/r
 
 # Quarto renders the notes' reports (render_quarto_report).
 ARG QUARTO_VERSION=1.6.42
